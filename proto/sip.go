@@ -309,16 +309,23 @@ func (sl *startLine) String() string {
 // ParseSIPUDP parses a complete SIP message from a byte slice, consuming any
 // trailing datagram data.
 func ParseSIPUDP(data []byte) (*SIPMessage, error) {
-	return parseSIP(bufio.NewReader(bytes.NewReader(data)), false)
+	pbr := bufioReaderPool.Get().(*bufio.Reader)
+	pbr.Reset(bytes.NewReader(data))
+	defer bufioReaderPool.Put(pbr)
+	return parseSIP(pbr, false)
 }
 
 // ParseSIP parses a SIP message from r. If r is already a *bufio.Reader it
 // is used directly; otherwise a buffered reader is created. For streamed
 // transports (TCP), remaining data after the body is preserved in the reader.
 func ParseSIP(r io.Reader) (*SIPMessage, error) {
-	br,ok := r.(*bufio.Reader)
+	var pooled *bufio.Reader
+	br, ok := r.(*bufio.Reader)
 	if !ok {
-		br = bufio.NewReader(r)
+		pooled = bufioReaderPool.Get().(*bufio.Reader)
+		pooled.Reset(r)
+		br = pooled
+		defer bufioReaderPool.Put(pooled)
 	}
 	return parseSIP(br, true)
 }

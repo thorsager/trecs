@@ -4,7 +4,14 @@ import (
 	"bufio"
 	"fmt"
 	"strings"
+	"sync"
 )
+
+var bufioReaderPool = sync.Pool{
+	New: func() any {
+		return bufio.NewReaderSize(nil, 4096)
+	},
+}
 
 // ParserError represents a SIP parsing failure and may wrap an underlying cause.
 type ParserError struct {
@@ -33,7 +40,7 @@ func ParseErrorWrap(cause error, msg string, args ...any) *ParserError {
 
 func readLine(r *bufio.Reader) (string, error) {
 	line, err := r.ReadString('\n')
-	if err != nil {
+	if err != nil && line == "" {
 		return "", err
 	}
 	return strings.TrimSuffix(line, "\r\n"), nil
