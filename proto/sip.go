@@ -416,6 +416,9 @@ func parseSIP(r *bufio.Reader, streamed bool) (*SIPMessage, error) {
 			_, _ = io.CopyN(io.Discard, r, 1<<20)
 		}
 	} else {
+		if streamed {
+			return nil, ParseError("Content-Length required for stream transport")
+		}
 		msg.Body, err = io.ReadAll(r)
 		if err != nil {
 			return nil, ParseErrorWrap(err, "error reading body")

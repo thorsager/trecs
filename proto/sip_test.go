@@ -44,6 +44,13 @@ func TestParseSIP_ValidResponse(t *testing.T) {
 func TestParseSIP_NoContentLength(t *testing.T) {
 	input := "BYE sip:alice@example.com SIP/2.0\r\n\r\n"
 	msg, err := ParseSIP(newTestReader(input))
+	assert.Error(t, err)
+	assert.Nil(t, msg)
+}
+
+func TestParseSIPUDP_NoContentLength(t *testing.T) {
+	input := "BYE sip:alice@example.com SIP/2.0\r\n\r\n"
+	msg, err := ParseSIPUDP([]byte(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "BYE sip:alice@example.com SIP/2.0", msg.StartLine())
 		assert.Empty(t, msg.Body)
@@ -1146,8 +1153,7 @@ func TestParseHeaders_CanonicalizesMixedCaseLongForm(t *testing.T) {
 
 func TestParseHeaders_EmptyHeaders(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\n\r\n"
-	tp := newTestReader(input)
-	msg, err := ParseSIP(tp)
+	msg, err := ParseSIPUDP([]byte(input))
 	if assert.NoError(t, err) {
 		assert.Len(t, msg.Headers, 0)
 	}
