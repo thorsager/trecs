@@ -71,6 +71,47 @@ func init() {
 	}
 }
 
+// compactKey returns the compact form of header k if one exists, otherwise k.
+func compactKey(k string) string {
+	switch k {
+	case "Accept-Contact":
+		return "a"
+	case "Referred-By":
+		return "b"
+	case "Content-Type":
+		return "c"
+	case "Request-Disposition":
+		return "d"
+	case "Content-Encoding":
+		return "e"
+	case "From":
+		return "f"
+	case "Call-ID":
+		return "i"
+	case "Reject-Contact":
+		return "j"
+	case "Supported":
+		return "k"
+	case "Content-Length":
+		return "l"
+	case "Contact":
+		return "m"
+	case "Event":
+		return "o"
+	case "Refer-To":
+		return "r"
+	case "Subject":
+		return "s"
+	case "To":
+		return "t"
+	case "Allow-Events":
+		return "u"
+	case "Via":
+		return "v"
+	}
+	return k
+}
+
 // SIPMethod identifies a SIP method as defined in RFC 3261 and extension RFCs.
 type SIPMethod string
 
@@ -490,11 +531,10 @@ func parseMethod(v string) (SIPMethod, error) {
 	return "", ParseError("Invalid Method: %s", v)
 }
 
-// MarshalSize returns the exact number of bytes needed for Marshal*.
-// The Content-Length and CSeq header values in the Headers map are
-// not counted; Content-Length is computed from len(m.Body) and CSeq is
-// taken from the m.CSeq struct field.
-func (m *SIPMessage) MarshalSize() int {
+// marshalSize returns the exact number of bytes needed to marshal m.
+// When compact is true, headers with registered compact forms use the
+// single-character form.
+func (m *SIPMessage) marshalSize(compact bool) int {
 	if m.startLine == nil {
 		return 0
 	}
@@ -509,19 +549,42 @@ func (m *SIPMessage) MarshalSize() int {
 		if k == "CSeq" || k == "Content-Length" {
 			continue
 		}
+		key := k
+		if compact {
+			key = compactKey(k)
+		}
 		for _, v := range vals {
-			sz += len(k) + 2 + len(v) + 2 // "Key: value\r\n"
+			sz += len(key) + 2 + len(v) + 2 // "Key: value\r\n"
 		}
 	}
 	// CSeq from struct field; Content-Length from body
 	sz += 6 + intLen(int64(m.CSeq.Seq)) + 1 + len(m.CSeq.Method) + 2 // "CSeq: <seq> <method>\r\n"
+	clKey := "Content-Length"
+	if compact {
+		clKey = compactKey(clKey)
+	}
 	cl := intLen(int64(len(m.Body)))
-	sz += 16 + cl + 2 // "Content-Length: <n>\r\n"
+	sz += len(clKey) + 2 + cl + 2 // "<key>: <n>\r\n"
 	sz += 2 + len(m.Body) // \r\n separator + body
 	return sz
 }
 
-func (m *SIPMessage) marshalTo(buf []byte) int {
+// MarshalSize returns the exact number of bytes needed for Marshal*.
+// The Content-Length and CSeq header values in the Headers map are
+// not counted; Content-Length is computed from len(m.Body) and CSeq is
+// taken from the m.CSeq struct field.
+func (m *SIPMessage) MarshalSize() int {
+	return m.marshalSize(false)
+}
+
+// MarshalCompactSize returns the exact number of bytes needed for
+// MarshalCompact*. Header keys that have registered compact forms
+// (e.g. "Via"→"v") are counted at their compact length.
+func (m *SIPMessage) MarshalCompactSize() int {
+	return m.marshalSize(true)
+}
+
+func (m *SIPMessage) marshalToImpl(buf []byte, compact bool) int {
 	pos := 0
 	if m.startLine == nil {
 		return 0
@@ -553,8 +616,12 @@ func (m *SIPMessage) marshalTo(buf []byte) int {
 	}
 	slices.Sort(keys)
 	for _, k := range keys {
+		key := k
+		if compact {
+			key = compactKey(k)
+		}
 		for _, v := range m.Headers[k] {
-			pos += copy(buf[pos:], k)
+			pos += copy(buf[pos:], key)
 			buf[pos] = ':'; buf[pos+1] = ' '; pos += 2
 			pos += copy(buf[pos:], v)
 			buf[pos] = '\r'; buf[pos+1] = '\n'; pos += 2
@@ -567,7 +634,12 @@ func (m *SIPMessage) marshalTo(buf []byte) int {
 	pos += copy(buf[pos:], string(m.CSeq.Method))
 	buf[pos] = '\r'; buf[pos+1] = '\n'; pos += 2
 
-	pos += copy(buf[pos:], "Content-Length: ")
+	clKey := "Content-Length"
+	if compact {
+		clKey = compactKey(clKey)
+	}
+	pos += copy(buf[pos:], clKey)
+	buf[pos] = ':'; buf[pos+1] = ' '; pos += 2
 	pos += len(strconv.AppendInt(buf[pos:pos], int64(len(m.Body)), 10))
 	buf[pos] = '\r'; buf[pos+1] = '\n'; pos += 2
 
@@ -576,6 +648,14 @@ func (m *SIPMessage) marshalTo(buf []byte) int {
 
 	pos += copy(buf[pos:], m.Body)
 	return pos
+}
+
+func (m *SIPMessage) marshalTo(buf []byte) int {
+	return m.marshalToImpl(buf, false)
+}
+
+func (m *SIPMessage) marshalToCompact(buf []byte) int {
+	return m.marshalToImpl(buf, true)
 }
 
 // MarshalTo serializes m into buf using MarshalSize for the length
@@ -604,4 +684,25 @@ func (m *SIPMessage) String() string {
 	buf := make([]byte, sz)
 	m.marshalTo(buf)
 	return string(buf)
+}
+
+// MarshalCompactTo serializes m into buf using compact header forms.
+// Headers with registered compact forms (e.g. "Via"→"v", "From"→"f")
+// are output using the single-character key. Content-Length is still
+// computed from len(m.Body) and CSeq from the m.CSeq struct field.
+func (m *SIPMessage) MarshalCompactTo(buf []byte) (int, error) {
+	sz := m.MarshalCompactSize()
+	if len(buf) < sz {
+		return 0, fmt.Errorf("sip: buffer too small for compact marshal")
+	}
+	return m.marshalToCompact(buf), nil
+}
+
+// MarshalCompact serializes m to a wire-format byte slice using compact
+// header forms.
+func (m *SIPMessage) MarshalCompact() ([]byte, error) {
+	sz := m.MarshalCompactSize()
+	buf := make([]byte, sz)
+	m.marshalToCompact(buf)
+	return buf, nil
 }

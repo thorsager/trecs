@@ -2110,6 +2110,158 @@ func sipBenchMinimal() *SIPMessage {
 	return msg
 }
 
+// ---------------------------------------------------------------------------
+// MarshalCompact
+// ---------------------------------------------------------------------------
+
+func TestSIPMarshalCompact_HeaderForms(t *testing.T) {
+	msg := sipBenchRequest()
+	got, err := msg.MarshalCompact()
+	if !assert.NoError(t, err) {
+		return
+	}
+	s := string(got)
+	// Verify compact forms are used
+	assert.Contains(t, s, "v: ", "Via should become v:")
+	assert.Contains(t, s, "f: ", "From should become f:")
+	assert.Contains(t, s, "t: ", "To should become t:")
+	assert.Contains(t, s, "i: ", "Call-ID should become i:")
+	assert.Contains(t, s, "m: ", "Contact should become m:")
+	assert.Contains(t, s, "c: ", "Content-Type should become c:")
+	assert.Contains(t, s, "l: ", "Content-Length should become l:")
+	assert.NotContains(t, s, "Via: ", "long form Via must not appear")
+	assert.NotContains(t, s, "Content-Length: ", "long form Content-Length must not appear")
+
+	// CSeq has no compact form; must remain long
+	assert.Contains(t, s, "CSeq: ", "CSeq has no compact form")
+	// Max-Forwards has no compact form
+	assert.Contains(t, s, "Max-Forwards: ", "Max-Forwards has no compact form")
+}
+
+func TestSIPMarshalCompact_Response(t *testing.T) {
+	msg := sipBenchResponse()
+	got, err := msg.MarshalCompact()
+	if !assert.NoError(t, err) {
+		return
+	}
+	s := string(got)
+	assert.Contains(t, s, "SIP/2.0 200 OK\r\n")
+	assert.Contains(t, s, "v: ", "Via compact")
+	assert.Contains(t, s, "f: ", "From compact")
+	assert.Contains(t, s, "t: ", "To compact")
+	assert.Contains(t, s, "i: ", "Call-ID compact")
+	assert.Contains(t, s, "m: ", "Contact compact")
+	assert.Contains(t, s, "l: ", "Content-Length compact")
+}
+
+func TestSIPMarshalCompact_RoundTrip(t *testing.T) {
+	input := "INVITE sip:bob@biloxi.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK776asdhds\r\n" +
+		"Max-Forwards: 70\r\n" +
+		"To: Bob <sip:bob@biloxi.com>\r\n" +
+		"From: Alice <sip:alice@atlanta.com>;tag=1928301774\r\n" +
+		"Call-ID: a84b4c76e66710@pc33.atlanta.com\r\n" +
+		"CSeq: 314159 INVITE\r\n" +
+		"Contact: <sip:alice@pc33.atlanta.com>\r\n" +
+		"Content-Type: application/sdp\r\n" +
+		"Content-Length: 0\r\n\r\n"
+	msg, err := ParseSIP(newTestReader(input))
+	if !assert.NoError(t, err) {
+		return
+	}
+	got, err := msg.MarshalCompact()
+	if !assert.NoError(t, err) {
+		return
+	}
+
+	// Verify compact output parses back correctly (parser accepts compact forms)
+	msg2, err := ParseSIP(newTestReader(string(got)))
+	if assert.NoError(t, err) {
+		assert.Equal(t, msg.StartLine(), msg2.StartLine())
+		assert.Equal(t, msg.Method(), msg2.Method())
+		for k, vals := range msg.Headers {
+			assert.Equal(t, vals, msg2.Headers.Get(k), "header %s round-trip", k)
+		}
+		assert.Equal(t, msg.CSeq, msg2.CSeq)
+		assert.Equal(t, msg.Body, msg2.Body)
+	}
+}
+
+func TestSIPMarshalCompact_SizeMatches(t *testing.T) {
+	msg := sipBenchRequest()
+	sz := msg.MarshalCompactSize()
+	got, err := msg.MarshalCompact()
+	if assert.NoError(t, err) {
+		assert.Equal(t, sz, len(got), "MarshalCompactSize must match actual output length")
+	}
+}
+
+func BenchmarkSIPMarshalCompact_Request(b *testing.B) {
+	msg := sipBenchRequest()
+	sz := msg.MarshalCompactSize()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf := make([]byte, sz)
+		msg.marshalToCompact(buf)
+	}
+}
+
+func BenchmarkSIPMarshalCompact_Response(b *testing.B) {
+	msg := sipBenchResponse()
+	sz := msg.MarshalCompactSize()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf := make([]byte, sz)
+		msg.marshalToCompact(buf)
+	}
+}
+
+func BenchmarkSIPMarshalCompact_Minimal(b *testing.B) {
+	msg := sipBenchMinimal()
+	sz := msg.MarshalCompactSize()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf := make([]byte, sz)
+		msg.marshalToCompact(buf)
+	}
+}
+
+func BenchmarkSIPMarshalCompactTo_Request(b *testing.B) {
+	msg := sipBenchRequest()
+	sz := msg.MarshalCompactSize()
+	buf := make([]byte, sz)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		msg.marshalToCompact(buf)
+	}
+}
+
+func BenchmarkSIPMarshalCompactTo_Response(b *testing.B) {
+	msg := sipBenchResponse()
+	sz := msg.MarshalCompactSize()
+	buf := make([]byte, sz)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		msg.marshalToCompact(buf)
+	}
+}
+
+func BenchmarkSIPMarshalCompactTo_Minimal(b *testing.B) {
+	msg := sipBenchMinimal()
+	sz := msg.MarshalCompactSize()
+	buf := make([]byte, sz)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		msg.marshalToCompact(buf)
+	}
+}
+
 func BenchmarkSIPMarshal_Request(b *testing.B) {
 	msg := sipBenchRequest()
 	sz := msg.MarshalSize()
