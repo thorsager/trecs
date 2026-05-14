@@ -2110,6 +2110,497 @@ func sipBenchMinimal() *SIPMessage {
 	return msg
 }
 
+// =============================================================================
+// RFC 3261 Strict Compliance — SIP Compact Marshalling (§7.3.3)
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Section 7.3.3: Compact Form — single-character header field names
+// -----------------------------------------------------------------------------
+
+func TestRFC3261_MarshalCompact_Section7_3_3(t *testing.T) {
+	// Build a message covering all 17 registered compact-form headers
+	msg := &SIPMessage{
+		startLine: &startLine{
+			IsRequest: true, Method: "INVITE",
+			URI: "sip:user@host", Version: "SIP/2.0",
+		},
+		Headers: SIPHeaders{
+			"Accept-Contact":      {"+sip.instances"},
+			"Referred-By":         {"<sip:a@b>"},
+			"Content-Type":        {"application/sdp"},
+			"Request-Disposition": {"queue"},
+			"Content-Encoding":    {"gzip"},
+			"From":                {"<sip:a@a>"},
+			"Call-ID":             {"call123"},
+			"Reject-Contact":      {"*"},
+			"Supported":           {"100rel"},
+			"Contact":             {"<sip:a@a>"},
+			"Event":               {"presence"},
+			"Refer-To":            {"<sip:b@b>"},
+			"Subject":             {"meeting"},
+			"To":                  {"<sip:b@b>"},
+			"Allow-Events":        {"presence"},
+			"Via":                 {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
+		Body: []byte("hello"),
+	}
+	got, err := msg.MarshalCompact()
+	if !assert.NoError(t, err) {
+		return
+	}
+	s := string(got)
+
+	// Every registered compact form appears as a header line
+	assert.Contains(t, s, "a: ", "Accept-Contact -> a:")
+	assert.Contains(t, s, "b: ", "Referred-By -> b:")
+	assert.Contains(t, s, "c: ", "Content-Type -> c:")
+	assert.Contains(t, s, "d: ", "Request-Disposition -> d:")
+	assert.Contains(t, s, "e: ", "Content-Encoding -> e:")
+	assert.Contains(t, s, "f: ", "From -> f:")
+	assert.Contains(t, s, "i: ", "Call-ID -> i:")
+	assert.Contains(t, s, "j: ", "Reject-Contact -> j:")
+	assert.Contains(t, s, "k: ", "Supported -> k:")
+	assert.Contains(t, s, "l: ", "Content-Length -> l:")
+	assert.Contains(t, s, "m: ", "Contact -> m:")
+	assert.Contains(t, s, "o: ", "Event -> o:")
+	assert.Contains(t, s, "r: ", "Refer-To -> r:")
+	assert.Contains(t, s, "s: ", "Subject -> s:")
+	assert.Contains(t, s, "t: ", "To -> t:")
+	assert.Contains(t, s, "u: ", "Allow-Events -> u:")
+	assert.Contains(t, s, "v: ", "Via -> v:")
+
+	// No long forms of compressed headers appear
+	assert.NotContains(t, s, "Accept-Contact: ")
+	assert.NotContains(t, s, "Referred-By: ")
+	assert.NotContains(t, s, "Content-Type: ")
+	assert.NotContains(t, s, "Request-Disposition: ")
+	assert.NotContains(t, s, "Content-Encoding: ")
+	assert.NotContains(t, s, "From: ")
+	assert.NotContains(t, s, "Call-ID: ")
+	assert.NotContains(t, s, "Reject-Contact: ")
+	assert.NotContains(t, s, "Supported: ")
+	assert.NotContains(t, s, "Contact: ")
+	assert.NotContains(t, s, "Event: ")
+	assert.NotContains(t, s, "Refer-To: ")
+	assert.NotContains(t, s, "Subject: ")
+	assert.NotContains(t, s, "To: ")
+	assert.NotContains(t, s, "Allow-Events: ")
+	assert.NotContains(t, s, "Via: ")
+	assert.NotContains(t, s, "Content-Length: ")
+
+	// CSeq has no compact form and is unaffected
+	assert.Contains(t, s, "CSeq: ")
+
+	// Output parses back correctly
+	msg2, err := ParseSIP(newTestReader(s))
+	if assert.NoError(t, err) {
+		for k, vals := range msg.Headers {
+			assert.Equal(t, vals, msg2.Headers.Get(k), "header %s round-trip", k)
+		}
+		assert.Equal(t, msg.CSeq, msg2.CSeq)
+		assert.Equal(t, msg.Body, msg2.Body)
+	}
+}
+
+func TestRFC3261_MarshalCompact_CompactKeyIsToken(t *testing.T) {
+	// §7.3.3: compact form is a single character that is a valid token
+	msg := &SIPMessage{
+		startLine: &startLine{
+			IsRequest: true, Method: "INVITE",
+			URI: "sip:user@host", Version: "SIP/2.0",
+		},
+		Headers: SIPHeaders{
+			"Via":       {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+			"From":      {"<sip:a@a>"},
+			"To":        {"<sip:b@b>"},
+			"Call-ID":   {"id"},
+			"Supported": {"100rel"},
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
+	}
+	got, err := msg.MarshalCompact()
+	if !assert.NoError(t, err) {
+		return
+	}
+	s := string(got)
+	headerEnd := strings.Index(s, "\r\n\r\n")
+	if !assert.Greater(t, headerEnd, 0) {
+		return
+	}
+	for i, line := range strings.Split(s[:headerEnd], "\r\n") {
+		if i == 0 {
+			continue // skip start-line
+		}
+		colonIdx := strings.IndexByte(line, ':')
+		if colonIdx <= 0 {
+			continue
+		}
+		fieldName := line[:colonIdx]
+		if fieldName == "CSeq" || fieldName == "l" || fieldName == "Max-Forwards" {
+			continue // already valid
+		}
+		// Compact key must be a single token character (alphanumeric)
+		if assert.Len(t, fieldName, 1, "compact form must be single char, got %q", fieldName) {
+			c := fieldName[0]
+			assert.True(t, c >= 'a' && c <= 'z', "compact key %q must be lowercase letter", c)
+		}
+	}
+}
+
+func TestRFC3261_MarshalCompact_UnchangedHeaders(t *testing.T) {
+	// Headers without registered compact forms must remain in long form
+	msg := &SIPMessage{
+		startLine: &startLine{
+			IsRequest: true, Method: "INVITE",
+			URI: "sip:user@host", Version: "SIP/2.0",
+		},
+		Headers: SIPHeaders{
+			"CSeq":          {"1 INVITE"},
+			"Max-Forwards":  {"70"},
+			"User-Agent":    {"test"},
+			"Content-Length": {"0"},
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
+	}
+	got, err := msg.MarshalCompact()
+	if assert.NoError(t, err) {
+		s := string(got)
+		// CSeq and Max-Forwards have no compact form
+		assert.Contains(t, s, "CSeq: 1 INVITE", "CSeq unchanged in compact mode")
+		assert.NotContains(t, s, "cseq: ")
+		assert.Contains(t, s, "Max-Forwards: 70", "Max-Forwards unchanged")
+		// User-Agent has no compact form
+		assert.Contains(t, s, "User-Agent: test", "custom header unchanged")
+		// Content-Length DOES have compact form, so it should be "l:"
+		assert.Contains(t, s, "l: 0", "Content-Length uses compact form l:")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Section 7: Start-line unchanged by compact mode
+// -----------------------------------------------------------------------------
+
+func TestRFC3261_MarshalCompact_RequestLineUnchanged(t *testing.T) {
+	msg := sipBenchRequest()
+	normal, err := msg.Marshal()
+	if !assert.NoError(t, err) {
+		return
+	}
+	compact, err := msg.MarshalCompact()
+	if !assert.NoError(t, err) {
+		return
+	}
+	// Extract start-lines (everything before first CRLF)
+	nl := strings.Index(string(normal), "\r\n")
+	cl := strings.Index(string(compact), "\r\n")
+	if assert.Equal(t, nl, cl, "start-line length must match") {
+		assert.Equal(t, string(normal[:nl]), string(compact[:cl]),
+			"start-line must be identical in normal and compact mode")
+	}
+}
+
+func TestRFC3261_MarshalCompact_StatusLineUnchanged(t *testing.T) {
+	msg := sipBenchResponse()
+	normal, err := msg.Marshal()
+	if !assert.NoError(t, err) {
+		return
+	}
+	compact, err := msg.MarshalCompact()
+	if !assert.NoError(t, err) {
+		return
+	}
+	nl := strings.Index(string(normal), "\r\n")
+	cl := strings.Index(string(compact), "\r\n")
+	if assert.Equal(t, nl, cl) {
+		assert.Equal(t, string(normal[:nl]), string(compact[:cl]),
+			"status-line must be identical")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Section 7.3.1: Header format rules apply equally to compact headers
+// -----------------------------------------------------------------------------
+
+func TestRFC3261_MarshalCompact_HeaderFormat(t *testing.T) {
+	msg := sipBenchRequest()
+	got, err := msg.MarshalCompact()
+	if !assert.NoError(t, err) {
+		return
+	}
+	s := string(got)
+	headerEnd := strings.Index(s, "\r\n\r\n")
+	if !assert.Greater(t, headerEnd, 0) {
+		return
+	}
+	for i, line := range strings.Split(s[:headerEnd], "\r\n") {
+		if i == 0 {
+			continue // skip start-line (contains sip: URI)
+		}
+		colonIdx := strings.IndexByte(line, ':')
+		if colonIdx <= 0 {
+			continue
+		}
+		// §7.3.1: field-name ":" SP field-value
+		assert.Equal(t, byte(' '), line[colonIdx+1], "SP after colon in compact header %q", line)
+	}
+}
+
+func TestRFC3261_MarshalCompact_CRLFOnly(t *testing.T) {
+	msg := sipBenchRequest()
+	got, err := msg.MarshalCompact()
+	if !assert.NoError(t, err) {
+		return
+	}
+	crCount, lfCount := 0, 0
+	for i := 0; i < len(got); i++ {
+		switch got[i] {
+		case '\r':
+			crCount++
+			assert.Less(t, i+1, len(got), "CR at final byte")
+			if i+1 < len(got) {
+				assert.Equal(t, byte('\n'), got[i+1], "CR must be followed by LF at byte %d", i)
+			}
+		case '\n':
+			lfCount++
+			assert.Greater(t, i, 0, "LF at byte 0")
+			if i > 0 {
+				assert.Equal(t, byte('\r'), got[i-1], "LF must be preceded by CR at byte %d", i)
+			}
+		}
+	}
+	assert.Equal(t, crCount, lfCount, "CR/LF must be paired")
+}
+
+// -----------------------------------------------------------------------------
+// Section 20.14: Content-Length in compact form
+// -----------------------------------------------------------------------------
+
+func TestRFC3261_MarshalCompact_ContentLengthAccuracy(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{"empty", nil},
+		{"zero_length", []byte{}},
+		{"small", []byte("hello")},
+		{"sdp", []byte("v=0\r\no=user 1\r\n")},
+		{"binary", []byte{0x00, 0x01, 0xFF}},
+		{"large", make([]byte, 65535)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := &SIPMessage{
+				startLine: &startLine{
+					IsRequest: true, Method: "INVITE",
+					URI: "sip:x", Version: "SIP/2.0",
+				},
+				CSeq: CSeq{Seq: 1, Method: "INVITE"},
+				Body: tt.body,
+			}
+			got, err := msg.MarshalCompact()
+			if !assert.NoError(t, err) {
+				return
+			}
+			s := string(got)
+			expectedCL := len(msg.Body)
+			clLine := fmt.Sprintf("l: %d", expectedCL)
+			assert.Contains(t, s, clLine,
+				"compact Content-Length (l:) must match body length %d", expectedCL)
+			// Must be the last header before body separator
+			clIdx := strings.Index(s, clLine)
+			if assert.Greater(t, clIdx, 0) {
+				lineEnd := clIdx + len(clLine)
+				assert.Equal(t, "\r\n", s[lineEnd:lineEnd+2], "l: line must end with CRLF")
+			}
+		})
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Section 20.16: CSeq unaffected by compact mode
+// -----------------------------------------------------------------------------
+
+func TestRFC3261_MarshalCompact_CSeqUnchanged(t *testing.T) {
+	msg := &SIPMessage{
+		startLine: &startLine{
+			IsRequest: true, Method: "INVITE",
+			URI: "sip:x", Version: "SIP/2.0",
+		},
+		CSeq: CSeq{Seq: 42, Method: "INVITE"},
+	}
+	got, err := msg.MarshalCompact()
+	if assert.NoError(t, err) {
+		assert.Contains(t, string(got), "CSeq: 42 INVITE",
+			"CSeq must remain in long form")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Section 7.5: Body separator and preservation
+// -----------------------------------------------------------------------------
+
+func TestRFC3261_MarshalCompact_BodyPreserved(t *testing.T) {
+	body := []byte("v=0\r\no=user 2890844526 IN IP4 host\r\ns=-\r\n")
+	msg := &SIPMessage{
+		startLine: &startLine{
+			IsRequest: true, Method: "INVITE",
+			URI: "sip:bob@example.com", Version: "SIP/2.0",
+		},
+		Headers: SIPHeaders{
+			"Content-Type": {"application/sdp"},
+			"From":         {"<sip:alice@atlanta.com>;tag=abc"},
+			"To":           {"<sip:bob@biloxi.com>"},
+			"Call-ID":      {"id123"},
+			"Via":          {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
+		Body: body,
+	}
+	got, err := msg.MarshalCompact()
+	if !assert.NoError(t, err) {
+		return
+	}
+	// Body follows the \r\n\r\n separator
+	s := string(got)
+	lastSep := strings.LastIndex(s, "\r\n\r\n")
+	if assert.Greater(t, lastSep, 0) {
+		extracted := got[lastSep+4:]
+		assert.Equal(t, body, extracted, "body must be byte-identical")
+	}
+	// The separator must be the empty line after the last header (l:)
+	assert.Contains(t, s, "l: "+fmt.Sprintf("%d", len(body))+"\r\n\r\n")
+}
+
+// -----------------------------------------------------------------------------
+// Deterministic header ordering applies to compact mode too
+// -----------------------------------------------------------------------------
+
+func TestRFC3261_MarshalCompact_DeterministicOrder(t *testing.T) {
+	msg := &SIPMessage{
+		startLine: &startLine{
+			IsRequest: true, Method: "INVITE",
+			URI: "sip:x", Version: "SIP/2.0",
+		},
+		Headers: SIPHeaders{
+			"Z-Last":  {"z"},
+			"From":    {"<sip:a>"},
+			"To":      {"<sip:b>"},
+			"Subject": {"hello"},
+			"Call-ID": {"id"},
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
+	}
+	got, err := msg.MarshalCompact()
+	if !assert.NoError(t, err) {
+		return
+	}
+	// Order is determined by LONG header names, but keys are output as compact forms
+	// Sorted long names: Call-ID, From, Subject, To, Z-Last
+	// Output keys: i, f, s, t, Z-Last (Z-Last has no compact form)
+	expected := "INVITE sip:x SIP/2.0\r\n" +
+		"i: id\r\n" +
+		"f: <sip:a>\r\n" +
+		"s: hello\r\n" +
+		"t: <sip:b>\r\n" +
+		"Z-Last: z\r\n" +
+		"CSeq: 1 INVITE\r\n" +
+		"l: 0\r\n\r\n"
+	assert.Equal(t, expected, string(got))
+}
+
+// -----------------------------------------------------------------------------
+// Round-trip: compact output is valid SIP parsable by our parser
+// -----------------------------------------------------------------------------
+
+func TestRFC3261_MarshalCompact_RoundTrip_Response(t *testing.T) {
+	input := "SIP/2.0 200 OK\r\n" +
+		"Via: SIP/2.0/UDP server.example.com;branch=z9hG4bK9a8b\r\n" +
+		"From: Alice <sip:alice@example.com>;tag=abc\r\n" +
+		"To: Bob <sip:bob@example.com>;tag=def\r\n" +
+		"Call-ID: a84b4c76e66710@pc33.atlanta.com\r\n" +
+		"CSeq: 314159 INVITE\r\n" +
+		"Contact: <sip:bob@biloxi.com>\r\n" +
+		"Content-Length: 0\r\n\r\n"
+	msg, err := ParseSIP(newTestReader(input))
+	if !assert.NoError(t, err) {
+		return
+	}
+	got, err := msg.MarshalCompact()
+	if !assert.NoError(t, err) {
+		return
+	}
+	msg2, err := ParseSIP(newTestReader(string(got)))
+	if assert.NoError(t, err) {
+		assert.Equal(t, msg.StartLine(), msg2.StartLine())
+		for k, vals := range msg.Headers {
+			assert.Equal(t, vals, msg2.Headers.Get(k), "header %s round-trip", k)
+		}
+		assert.Equal(t, msg.CSeq, msg2.CSeq)
+		assert.Equal(t, msg.Body, msg2.Body)
+	}
+}
+
+func TestRFC3261_MarshalCompact_RoundTrip_SDP(t *testing.T) {
+	input := "INVITE sip:bob@biloxi.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK776asdhds\r\n" +
+		"Max-Forwards: 70\r\n" +
+		"To: Bob <sip:bob@biloxi.com>\r\n" +
+		"From: Alice <sip:alice@atlanta.com>;tag=1928301774\r\n" +
+		"Call-ID: a84b4c76e66710@pc33.atlanta.com\r\n" +
+		"CSeq: 314159 INVITE\r\n" +
+		"Contact: <sip:alice@pc33.atlanta.com>\r\n" +
+		"Content-Type: application/sdp\r\n" +
+		"Content-Length: 137\r\n" +
+		"\r\n" +
+		"v=0\r\n" +
+		"o=alice 2890844526 2890844526 IN IP4 pc33.atlanta.com\r\n" +
+		"s=-\r\n" +
+		"c=IN IP4 pc33.atlanta.com\r\n" +
+		"t=0 0\r\n" +
+		"m=audio 49172 RTP/AVP 0\r\n" +
+		"a=rtpmap:0 PCMU/8000\r\n"
+	msg, err := ParseSIP(newTestReader(input))
+	if !assert.NoError(t, err) {
+		return
+	}
+	got, err := msg.MarshalCompact()
+	if !assert.NoError(t, err) {
+		return
+	}
+	msg2, err := ParseSIP(newTestReader(string(got)))
+	if assert.NoError(t, err) {
+		assert.Equal(t, msg.Method(), msg2.Method())
+		for k, vals := range msg.Headers {
+			assert.Equal(t, vals, msg2.Headers.Get(k), "header %s round-trip", k)
+		}
+		assert.Equal(t, msg.CSeq, msg2.CSeq)
+		assert.Equal(t, msg.Body, msg2.Body, "SDP body round-trip")
+	}
+}
+
+func TestRFC3261_MarshalCompact_SizeMatchesOutput(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  *SIPMessage
+	}{
+		{"request", sipBenchRequest()},
+		{"response", sipBenchResponse()},
+		{"minimal", sipBenchMinimal()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sz := tt.msg.MarshalCompactSize()
+			got, err := tt.msg.MarshalCompact()
+			if assert.NoError(t, err) {
+				assert.Equal(t, sz, len(got),
+					"MarshalCompactSize %d must match actual output length %d", sz, len(got))
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // MarshalCompact
 // ---------------------------------------------------------------------------
