@@ -15,7 +15,7 @@ func newTestReader(input string) *bufio.Reader {
 
 func TestParseSIP_ValidRequest(t *testing.T) {
 	input := "INVITE sip:bob@example.com SIP/2.0\r\nContent-Length: 4\r\n\r\nbody"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "INVITE sip:bob@example.com SIP/2.0", msg.StartLine())
 		assert.Equal(t, SIPMethodINVITE, msg.Method())
@@ -29,7 +29,7 @@ func TestParseSIP_ValidRequest(t *testing.T) {
 
 func TestParseSIP_ValidResponse(t *testing.T) {
 	input := "SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "SIP/2.0 200 OK", msg.StartLine())
 		assert.Empty(t, msg.Method())
@@ -43,14 +43,14 @@ func TestParseSIP_ValidResponse(t *testing.T) {
 
 func TestParseSIP_NoContentLength(t *testing.T) {
 	input := "BYE sip:alice@example.com SIP/2.0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	assert.Error(t, err)
 	assert.Nil(t, msg)
 }
 
 func TestParseSIPUDP_NoContentLength(t *testing.T) {
 	input := "BYE sip:alice@example.com SIP/2.0\r\n\r\n"
-	msg, err := ParseSIPUDP([]byte(input))
+	msg, err := UnmarshalSIPDatagram([]byte(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "BYE sip:alice@example.com SIP/2.0", msg.StartLine())
 		assert.Empty(t, msg.Body)
@@ -59,7 +59,7 @@ func TestParseSIPUDP_NoContentLength(t *testing.T) {
 
 func TestParseSIP_ContentLengthZero(t *testing.T) {
 	input := "ACK sip:host SIP/2.0\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "ACK sip:host SIP/2.0", msg.StartLine())
 		assert.Empty(t, msg.Body)
@@ -68,7 +68,7 @@ func TestParseSIP_ContentLengthZero(t *testing.T) {
 
 func TestParseSIP_MultipleHeaders(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nVia: SIP/2.0/TCP host\r\nVia: SIP/2.0/UDP host2\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "INVITE sip:x SIP/2.0", msg.StartLine())
 		via := msg.Headers.Get("Via")
@@ -82,7 +82,7 @@ func TestParseSIP_MultipleHeaders(t *testing.T) {
 
 func TestParseSIP_WithBody(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nContent-Length: 13\r\n\r\nv=0\r\no=user 1"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "INVITE sip:x SIP/2.0", msg.StartLine())
 		assert.Equal(t, []byte("v=0\r\no=user 1"), msg.Body)
@@ -90,20 +90,20 @@ func TestParseSIP_WithBody(t *testing.T) {
 }
 
 func TestParseSIP_EOFOnStartLine(t *testing.T) {
-	msg, err := ParseSIP(newTestReader(""))
+	msg, err := UnmarshalSIP(newTestReader(""))
 	assert.Error(t, err)
 	assert.Nil(t, msg)
 }
 
 func TestParseSIP_EOFOnHeaders(t *testing.T) {
-	msg, err := ParseSIP(newTestReader("INVITE sip:x SIP/2.0\r\n"))
+	msg, err := UnmarshalSIP(newTestReader("INVITE sip:x SIP/2.0\r\n"))
 	assert.Error(t, err)
 	assert.Nil(t, msg)
 }
 
 func TestParseSIP_StreamFalseDiscardsExtraData(t *testing.T) {
 	input := "INVITE sip:bob@example.com SIP/2.0\r\nContent-Length: 4\r\n\r\nbodyEXTRA_DATA_SHOULD_BE_DISCARDED"
-	msg, err := ParseSIPUDP([]byte(input))
+	msg, err := UnmarshalSIPDatagram([]byte(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "INVITE sip:bob@example.com SIP/2.0", msg.StartLine())
 		assert.Equal(t, []byte("body"), msg.Body)
@@ -112,7 +112,7 @@ func TestParseSIP_StreamFalseDiscardsExtraData(t *testing.T) {
 
 func TestParseSIP_NoContentLengthReadsAllRemainingData(t *testing.T) {
 	input := "INVITE sip:bob@example.com SIP/2.0\r\n\r\nall remaining data goes into body"
-	msg, err := ParseSIPUDP([]byte(input))
+	msg, err := UnmarshalSIPDatagram([]byte(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "INVITE sip:bob@example.com SIP/2.0", msg.StartLine())
 		assert.Equal(t, []byte("all remaining data goes into body"), msg.Body)
@@ -121,7 +121,7 @@ func TestParseSIP_NoContentLengthReadsAllRemainingData(t *testing.T) {
 
 func TestParseSIP_CSeqHeader(t *testing.T) {
 	input := "INVITE sip:bob@example.com SIP/2.0\r\nCSeq: 314159 INVITE\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, 314159, msg.CSeq.Seq)
 		assert.Equal(t, SIPMethodINVITE, msg.CSeq.Method)
@@ -153,7 +153,7 @@ func TestParseMethod_AllValidMethods(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			method, err := parseMethod(tt.input)
+			method, err := unmarshalMethod(tt.input)
 			assert.NoError(t, err)
 			assert.Equal(t, tt.expected, method)
 		})
@@ -169,7 +169,7 @@ func TestParseMethod_InvalidMethods(t *testing.T) {
 
 	for _, input := range tests {
 		t.Run(input, func(t *testing.T) {
-			method, err := parseMethod(input)
+			method, err := unmarshalMethod(input)
 			assert.Error(t, err)
 			assert.Empty(t, method)
 		})
@@ -192,7 +192,7 @@ func TestParseCSeq_ValidCSeq(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input[0], func(t *testing.T) {
-			cseq, err := parseCSeq(tt.input)
+			cseq, err := unmarshalCSeq(tt.input)
 			assert.NoError(t, err)
 			assert.Equal(t, tt.seq, cseq.Seq)
 			assert.Equal(t, tt.method, cseq.Method)
@@ -214,7 +214,7 @@ func TestParseCSeq_Errors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.expectErr, func(t *testing.T) {
-			cseq, err := parseCSeq(tt.input)
+			cseq, err := unmarshalCSeq(tt.input)
 			assert.Error(t, err)
 			assert.Zero(t, cseq)
 			assert.Contains(t, err.Error(), tt.expectErr)
@@ -288,7 +288,7 @@ func TestRFC3261_Request_LineStructure(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msg, err := ParseSIP(newTestReader(tt.input))
+			msg, err := UnmarshalSIP(newTestReader(tt.input))
 			if assert.NoError(t, err) {
 				assert.True(t, msg.IsRequest())
 				assert.Equal(t, tt.method, msg.Method())
@@ -308,7 +308,7 @@ func TestRFC3261_Request_InvalidMethods(t *testing.T) {
 
 	for _, input := range tests {
 		t.Run(input[:10], func(t *testing.T) {
-			msg, err := ParseSIP(newTestReader(input))
+			msg, err := UnmarshalSIP(newTestReader(input))
 			assert.Error(t, err)
 			assert.Nil(t, msg)
 		})
@@ -333,7 +333,7 @@ func TestParseSIP_ExtensionMethods(t *testing.T) {
 	for _, tt := range methods {
 		t.Run(tt.input, func(t *testing.T) {
 			input := tt.input + " sip:user@example.com SIP/2.0\r\nCSeq: 1 " + tt.input + "\r\nContent-Length: 0\r\n\r\n"
-			msg, err := ParseSIP(newTestReader(input))
+			msg, err := UnmarshalSIP(newTestReader(input))
 			if assert.NoError(t, err) {
 				assert.True(t, msg.IsRequest())
 				assert.Equal(t, tt.method, msg.Method())
@@ -352,7 +352,7 @@ func TestRFC3261_Request_InsufficientTokens(t *testing.T) {
 
 	for _, input := range tests {
 		t.Run(input[:20], func(t *testing.T) {
-			msg, err := ParseSIP(newTestReader(input))
+			msg, err := UnmarshalSIP(newTestReader(input))
 			assert.Error(t, err)
 			assert.Nil(t, msg)
 		})
@@ -395,7 +395,7 @@ func TestRFC3261_Response_StatusCodes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msg, err := ParseSIP(newTestReader(tt.input))
+			msg, err := UnmarshalSIP(newTestReader(tt.input))
 			if assert.NoError(t, err) {
 				assert.False(t, msg.IsRequest())
 				assert.Equal(t, tt.statusCode, msg.StatusCode())
@@ -414,7 +414,7 @@ func TestRFC3261_Response_InvalidStatusCodes(t *testing.T) {
 
 	for _, input := range tests {
 		t.Run(input[9:14], func(t *testing.T) {
-			msg, err := ParseSIP(newTestReader(input))
+			msg, err := UnmarshalSIP(newTestReader(input))
 			assert.Error(t, err)
 			assert.Nil(t, msg)
 		})
@@ -429,7 +429,7 @@ func TestRFC3261_Response_InvalidStatusCodes(t *testing.T) {
 
 func TestRFC3261_Headers_MultipleValues(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nVia: SIP/2.0/UDP host1;branch=z9hG4bK1\r\nVia: SIP/2.0/UDP host2;branch=z9hG4bK2\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		via := msg.Headers.Get("Via")
 		if assert.NotNil(t, via) {
@@ -440,7 +440,7 @@ func TestRFC3261_Headers_MultipleValues(t *testing.T) {
 
 func TestRFC3261_Headers_CommaSeparated(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nAccept: application/sdp, text/plain\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "application/sdp, text/plain", msg.Headers.GetFirst("Accept"))
 	}
@@ -448,7 +448,7 @@ func TestRFC3261_Headers_CommaSeparated(t *testing.T) {
 
 func TestRFC3261_Headers_WhitespaceFolding(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nVia: SIP/2.0/UDP host1;\r\n branch=z9hG4bK1\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "SIP/2.0/UDP host1; branch=z9hG4bK1", msg.Headers.GetFirst("Via"))
 	}
@@ -456,7 +456,7 @@ func TestRFC3261_Headers_WhitespaceFolding(t *testing.T) {
 
 func TestRFC3261_Headers_CaseInsensitive(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\ncontent-length: 4\r\n\r\nbody"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, []byte("body"), msg.Body)
 	}
@@ -487,7 +487,7 @@ func TestRFC3261_CompactHeaders(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msg, err := ParseSIP(newTestReader(tt.input))
+			msg, err := UnmarshalSIP(newTestReader(tt.input))
 			if assert.NoError(t, err) {
 				assert.Equal(t, tt.expected, msg.Headers.GetFirst(tt.key))
 				_, ok := msg.Headers[strings.ToLower(tt.key)]
@@ -506,7 +506,7 @@ func TestRFC3261_CompactHeaders(t *testing.T) {
 
 func TestRFC3261_Body_ContentLengthHonored(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nContent-Length: 5\r\n\r\n12345EXTRA"
-	msg, err := ParseSIPUDP([]byte(input))
+	msg, err := UnmarshalSIPDatagram([]byte(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, []byte("12345"), msg.Body)
 	}
@@ -514,7 +514,7 @@ func TestRFC3261_Body_ContentLengthHonored(t *testing.T) {
 
 func TestRFC3261_Body_EmptyBody(t *testing.T) {
 	input := "BYE sip:x SIP/2.0\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Empty(t, msg.Body)
 	}
@@ -523,7 +523,7 @@ func TestRFC3261_Body_EmptyBody(t *testing.T) {
 func TestRFC3261_Body_SDPBody(t *testing.T) {
 	sdp := "v=0\r\no=alice 2890844526 2890844526 IN IP4 host.atlanta.com\r\ns= \r\nc=IN IP4 host.atlanta.com\r\nt=0 0\r\nm=audio 49170 RTP/AVP 0\r\n"
 	input := fmt.Sprintf("INVITE sip:bob@example.com SIP/2.0\r\nContent-Length: %d\r\n\r\n%s", len(sdp), sdp)
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, []byte(sdp), msg.Body)
 	}
@@ -536,7 +536,7 @@ func TestRFC3261_Body_SDPBody(t *testing.T) {
 
 func TestRFC3261_Framing_CRLFSeparator(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nContent-Length: 4\r\n\r\nbody"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, []byte("body"), msg.Body)
 	}
@@ -544,7 +544,7 @@ func TestRFC3261_Framing_CRLFSeparator(t *testing.T) {
 
 func TestRFC3261_Framing_MissingCRLFInHeaders(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nContent-Length: 0"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	assert.Error(t, err)
 	assert.Nil(t, msg)
 }
@@ -566,7 +566,7 @@ func TestRFC3261_MandatoryHeaders_AllPresent(t *testing.T) {
 		"CSeq: 314159 INVITE\r\n" +
 		"Content-Length: 0\r\n\r\n"
 
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.True(t, msg.IsRequest())
 		assert.Equal(t, SIPMethodINVITE, msg.Method())
@@ -583,7 +583,7 @@ func TestRFC3261_MandatoryHeaders_AllPresent(t *testing.T) {
 
 func TestRFC3261_CSeq_MethodMatchesRequest(t *testing.T) {
 	input := "BYE sip:bob@example.com SIP/2.0\r\nCSeq: 100 BYE\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, SIPMethodBYE, msg.CSeq.Method)
 		assert.Equal(t, 100, msg.CSeq.Seq)
@@ -593,7 +593,7 @@ func TestRFC3261_CSeq_MethodMatchesRequest(t *testing.T) {
 func TestRFC3261_CSeq_LargeSequenceNumber(t *testing.T) {
 	max32 := 2147483647
 	input := fmt.Sprintf("INVITE sip:x SIP/2.0\r\nCSeq: %d INVITE\r\nContent-Length: 0\r\n\r\n", max32)
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, max32, msg.CSeq.Seq)
 	}
@@ -601,7 +601,7 @@ func TestRFC3261_CSeq_LargeSequenceNumber(t *testing.T) {
 
 func TestRFC3261_CSeq_InResponse(t *testing.T) {
 	input := "SIP/2.0 200 OK\r\nCSeq: 5 REGISTER\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, SIPMethodREGISTER, msg.CSeq.Method)
 		assert.Equal(t, 5, msg.CSeq.Seq)
@@ -614,7 +614,7 @@ func TestRFC3261_CSeq_InResponse(t *testing.T) {
 
 func TestRFC3261_Header_EmptyValue(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nCall-ID:\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "", msg.Headers.GetFirst("Call-ID"))
 	}
@@ -622,7 +622,7 @@ func TestRFC3261_Header_EmptyValue(t *testing.T) {
 
 func TestRFC3261_Header_MissingColon(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nHeaderWithoutColon\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	assert.Error(t, err)
 	assert.Nil(t, msg)
 }
@@ -633,7 +633,7 @@ func TestRFC3261_Header_MissingColon(t *testing.T) {
 
 func TestRFC3261_Header_TabContinuation(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nVia: SIP/2.0/UDP host1;\r\n\tbranch=z9hG4bK1\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "SIP/2.0/UDP host1;\tbranch=z9hG4bK1", msg.Headers.GetFirst("Via"))
 	}
@@ -641,7 +641,7 @@ func TestRFC3261_Header_TabContinuation(t *testing.T) {
 
 func TestRFC3261_Header_MultipleContinuations(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nSubject: a\r\n b\r\n c\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "a b c", msg.Headers.GetFirst("Subject"))
 	}
@@ -653,7 +653,7 @@ func TestRFC3261_Header_MultipleContinuations(t *testing.T) {
 
 func TestRFC3261_Header_MultipleSpacesAfterColon(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nContact:   <sip:alice@atlanta.com>\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "<sip:alice@atlanta.com>", msg.Headers.GetFirst("Contact"))
 	}
@@ -665,7 +665,7 @@ func TestRFC3261_Header_MultipleSpacesAfterColon(t *testing.T) {
 
 func TestRFC3261_DuplicateContentLength(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nContent-Length: 4\r\nContent-Length: 5\r\n\r\nbody"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, []byte("body"), msg.Body)
 	}
@@ -677,7 +677,7 @@ func TestRFC3261_DuplicateContentLength(t *testing.T) {
 
 func TestRFC3261_SIPSRequest(t *testing.T) {
 	input := "INVITE sips:bob@example.com SIP/2.0\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.True(t, msg.IsRequest())
 		assert.Equal(t, SIPMethodINVITE, msg.Method())
@@ -687,7 +687,7 @@ func TestRFC3261_SIPSRequest(t *testing.T) {
 
 func TestRFC3261_Request_URIParameters(t *testing.T) {
 	input := "INVITE sip:bob@example.com;lr;transport=tcp SIP/2.0\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.True(t, msg.IsRequest())
 		assert.Equal(t, SIPMethodINVITE, msg.Method())
@@ -701,7 +701,7 @@ func TestRFC3261_Request_URIParameters(t *testing.T) {
 
 func TestRFC3261_Response_MultiWordReason(t *testing.T) {
 	input := "SIP/2.0 181 Call Is Being Forwarded\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		assert.False(t, msg.IsRequest())
 		assert.Equal(t, 181, msg.StatusCode())
@@ -715,7 +715,7 @@ func TestSIPMessage_From_Request(t *testing.T) {
 		"To: Bob <sip:bob@biloxi.com>\r\n" +
 		"CSeq: 1 INVITE\r\n" +
 		"Content-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		from, err := msg.From()
 		if assert.NoError(t, err) {
@@ -732,7 +732,7 @@ func TestSIPMessage_From_AddrSpec(t *testing.T) {
 		"To: <sip:bob@biloxi.com>\r\n" +
 		"CSeq: 1 INVITE\r\n" +
 		"Content-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		from, err := msg.From()
 		if assert.NoError(t, err) {
@@ -749,7 +749,7 @@ func TestSIPMessage_To_Response(t *testing.T) {
 		"To: \"Bob\" <sip:bob@biloxi.com>;tag=a6c85cf\r\n" +
 		"CSeq: 1 INVITE\r\n" +
 		"Content-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		to, err := msg.To()
 		if assert.NoError(t, err) {
@@ -766,7 +766,7 @@ func TestSIPMessage_FromTo_NoDisplayName(t *testing.T) {
 		"To: <sip:bob@biloxi.com>;tag=def\r\n" +
 		"CSeq: 1 INVITE\r\n" +
 		"Content-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		from, err := msg.From()
 		if assert.NoError(t, err) {
@@ -788,7 +788,7 @@ func TestSIPMessage_From_MissingFrom(t *testing.T) {
 		"To: <sip:bob@biloxi.com>\r\n" +
 		"CSeq: 1 INVITE\r\n" +
 		"Content-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		from, err := msg.From()
 		assert.Error(t, err)
@@ -801,7 +801,7 @@ func TestSIPMessage_To_MissingTo(t *testing.T) {
 		"From: <sip:alice@atlanta.com>\r\n" +
 		"CSeq: 1 INVITE\r\n" +
 		"Content-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		to, err := msg.To()
 		assert.Error(t, err)
@@ -815,7 +815,7 @@ func TestSIPMessage_From_CompactForm(t *testing.T) {
 		"t: \"Bob\" <sip:bob@biloxi.com>;tag=def\r\n" +
 		"CSeq: 1 INVITE\r\n" +
 		"Content-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		from, err := msg.From()
 		if assert.NoError(t, err) {
@@ -836,7 +836,7 @@ func TestSIPMessage_From_Anonymous(t *testing.T) {
 		"To: <sip:bob@biloxi.com>\r\n" +
 		"CSeq: 1 INVITE\r\n" +
 		"Content-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		from, err := msg.From()
 		if assert.NoError(t, err) {
@@ -853,7 +853,7 @@ func TestSIPMessage_FromTo_SIPSURI(t *testing.T) {
 		"To: <sips:bob@biloxi.com>;tag=def\r\n" +
 		"CSeq: 1 INVITE\r\n" +
 		"Content-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		from, err := msg.From()
 		if assert.NoError(t, err) {
@@ -872,7 +872,7 @@ func TestSIPMessage_FromTo_URIParams(t *testing.T) {
 		"To: <sip:bob@biloxi.com;transport=tcp>;tag=def\r\n" +
 		"CSeq: 1 INVITE\r\n" +
 		"Content-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
 		from, err := msg.From()
 		if assert.NoError(t, err) {
@@ -888,7 +888,7 @@ func TestSIPMessage_FromTo_URIParams(t *testing.T) {
 }
 
 func TestParseSIPAddress_NameAddrWithDisplayName(t *testing.T) {
-	ft, err := ParseSIPAddress(`"Bob" <sip:bob@biloxi.com>;tag=a48s`)
+	ft, err := UnmarshalSIPAddress(`"Bob" <sip:bob@biloxi.com>;tag=a48s`)
 	if assert.NoError(t, err) {
 		assert.Equal(t, "Bob", ft.DisplayName)
 		assert.Equal(t, "sip:bob@biloxi.com", ft.URI)
@@ -897,7 +897,7 @@ func TestParseSIPAddress_NameAddrWithDisplayName(t *testing.T) {
 }
 
 func TestParseSIPAddress_NameAddrWithoutDisplayName(t *testing.T) {
-	ft, err := ParseSIPAddress(`<sip:bob@biloxi.com>;tag=a48s`)
+	ft, err := UnmarshalSIPAddress(`<sip:bob@biloxi.com>;tag=a48s`)
 	if assert.NoError(t, err) {
 		assert.Empty(t, ft.DisplayName)
 		assert.Equal(t, "sip:bob@biloxi.com", ft.URI)
@@ -906,7 +906,7 @@ func TestParseSIPAddress_NameAddrWithoutDisplayName(t *testing.T) {
 }
 
 func TestParseSIPAddress_NameAddrWithoutTag(t *testing.T) {
-	ft, err := ParseSIPAddress(`<sip:alice@atlanta.com>`)
+	ft, err := UnmarshalSIPAddress(`<sip:alice@atlanta.com>`)
 	if assert.NoError(t, err) {
 		assert.Empty(t, ft.DisplayName)
 		assert.Equal(t, "sip:alice@atlanta.com", ft.URI)
@@ -915,7 +915,7 @@ func TestParseSIPAddress_NameAddrWithoutTag(t *testing.T) {
 }
 
 func TestParseSIPAddress_AddrSpec(t *testing.T) {
-	ft, err := ParseSIPAddress(`sip:alice@atlanta.com;tag=887s`)
+	ft, err := UnmarshalSIPAddress(`sip:alice@atlanta.com;tag=887s`)
 	if assert.NoError(t, err) {
 		assert.Empty(t, ft.DisplayName)
 		assert.Equal(t, "sip:alice@atlanta.com", ft.URI)
@@ -924,7 +924,7 @@ func TestParseSIPAddress_AddrSpec(t *testing.T) {
 }
 
 func TestParseSIPAddress_AddrSpecWithoutTag(t *testing.T) {
-	ft, err := ParseSIPAddress(`sip:alice@atlanta.com`)
+	ft, err := UnmarshalSIPAddress(`sip:alice@atlanta.com`)
 	if assert.NoError(t, err) {
 		assert.Empty(t, ft.DisplayName)
 		assert.Equal(t, "sip:alice@atlanta.com", ft.URI)
@@ -933,7 +933,7 @@ func TestParseSIPAddress_AddrSpecWithoutTag(t *testing.T) {
 }
 
 func TestParseSIPAddress_Anonymous(t *testing.T) {
-	ft, err := ParseSIPAddress(`Anonymous <sip:c8oqz84zk7z@privacy.org>;tag=hyh8`)
+	ft, err := UnmarshalSIPAddress(`Anonymous <sip:c8oqz84zk7z@privacy.org>;tag=hyh8`)
 	if assert.NoError(t, err) {
 		assert.Equal(t, "Anonymous", ft.DisplayName)
 		assert.Equal(t, "sip:c8oqz84zk7z@privacy.org", ft.URI)
@@ -942,7 +942,7 @@ func TestParseSIPAddress_Anonymous(t *testing.T) {
 }
 
 func TestParseSIPAddress_NameAddrWithURIParams(t *testing.T) {
-	ft, err := ParseSIPAddress(`"Alice" <sip:alice@atlanta.com;lr>;tag=abc`)
+	ft, err := UnmarshalSIPAddress(`"Alice" <sip:alice@atlanta.com;lr>;tag=abc`)
 	if assert.NoError(t, err) {
 		assert.Equal(t, "Alice", ft.DisplayName)
 		assert.Equal(t, "sip:alice@atlanta.com;lr", ft.URI)
@@ -951,7 +951,7 @@ func TestParseSIPAddress_NameAddrWithURIParams(t *testing.T) {
 }
 
 func TestParseSIPAddress_DisplayNameWithSpaces(t *testing.T) {
-	ft, err := ParseSIPAddress(`"Bob Smith" <sip:bob@example.com>`)
+	ft, err := UnmarshalSIPAddress(`"Bob Smith" <sip:bob@example.com>`)
 	if assert.NoError(t, err) {
 		assert.Equal(t, "Bob Smith", ft.DisplayName)
 		assert.Equal(t, "sip:bob@example.com", ft.URI)
@@ -960,13 +960,13 @@ func TestParseSIPAddress_DisplayNameWithSpaces(t *testing.T) {
 }
 
 func TestParseSIPAddress_EmptyString(t *testing.T) {
-	ft, err := ParseSIPAddress("")
+	ft, err := UnmarshalSIPAddress("")
 	assert.Error(t, err)
 	assert.Nil(t, ft)
 }
 
 func TestParseSIPAddress_SIPSURI(t *testing.T) {
-	ft, err := ParseSIPAddress(`<sips:bob@biloxi.com>;tag=abc`)
+	ft, err := UnmarshalSIPAddress(`<sips:bob@biloxi.com>;tag=abc`)
 	if assert.NoError(t, err) {
 		assert.Empty(t, ft.DisplayName)
 		assert.Equal(t, "sips:bob@biloxi.com", ft.URI)
@@ -975,16 +975,16 @@ func TestParseSIPAddress_SIPSURI(t *testing.T) {
 }
 
 func TestParseSIPAddress_MissingClosingBracket(t *testing.T) {
-	ft, err := ParseSIPAddress(`<sip:bob@biloxi.com`)
+	ft, err := UnmarshalSIPAddress(`<sip:bob@biloxi.com`)
 	assert.Error(t, err)
 	assert.Nil(t, ft)
 }
 
 func TestParseSIPAddress_CaseInsensitiveLookup(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nf: <sip:alice@atlanta.com>;tag=1928\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
-		ft, err := ParseSIPAddress(msg.Headers.GetFirst("From"))
+		ft, err := UnmarshalSIPAddress(msg.Headers.GetFirst("From"))
 		if assert.NoError(t, err) {
 			assert.Equal(t, "sip:alice@atlanta.com", ft.URI)
 			assert.Equal(t, "1928", ft.Tag)
@@ -997,16 +997,16 @@ func TestParseSIPAddress_ExtractFromSIPMessage(t *testing.T) {
 		"From: \"Alice\" <sip:alice@atlanta.com>;tag=1928301774\r\n" +
 		"To: \"Bob\" <sip:bob@biloxi.com>;tag=abc\r\n" +
 		"CSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if assert.NoError(t, err) {
-		from, err := ParseSIPAddress(msg.Headers.GetFirst("From"))
+		from, err := UnmarshalSIPAddress(msg.Headers.GetFirst("From"))
 		if assert.NoError(t, err) {
 			assert.Equal(t, "Alice", from.DisplayName)
 			assert.Equal(t, "sip:alice@atlanta.com", from.URI)
 			assert.Equal(t, "1928301774", from.Tag)
 		}
 
-		to, err := ParseSIPAddress(msg.Headers.GetFirst("To"))
+		to, err := UnmarshalSIPAddress(msg.Headers.GetFirst("To"))
 		if assert.NoError(t, err) {
 			assert.Equal(t, "Bob", to.DisplayName)
 			assert.Equal(t, "sip:bob@biloxi.com", to.URI)
@@ -1016,7 +1016,7 @@ func TestParseSIPAddress_ExtractFromSIPMessage(t *testing.T) {
 }
 
 func TestParseSIPAddress_AddrSpecWithURIParams(t *testing.T) {
-	ft, err := ParseSIPAddress(`sip:alice@atlanta.com;lr;tag=abc`)
+	ft, err := UnmarshalSIPAddress(`sip:alice@atlanta.com;lr;tag=abc`)
 	if assert.NoError(t, err) {
 		assert.Equal(t, "sip:alice@atlanta.com;lr", ft.URI)
 		assert.Equal(t, "abc", ft.Tag)
@@ -1121,7 +1121,7 @@ func TestHeaders_Get_NilOnEmptyMap(t *testing.T) {
 func TestParseHeaders_ExpandsCompactForm(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nf: <sip:alice@atlanta.com>;tag=1928\r\nContent-Length: 0\r\n\r\n"
 	tp := newTestReader(input)
-	msg, err := ParseSIP(tp)
+	msg, err := UnmarshalSIP(tp)
 	if assert.NoError(t, err) {
 		assert.Equal(t, "<sip:alice@atlanta.com>;tag=1928", msg.Headers.GetFirst("From"))
 		_, ok := msg.Headers["From"]
@@ -1136,7 +1136,7 @@ func TestParseHeaders_ExpandsCompactForm(t *testing.T) {
 func TestParseHeaders_PassesThroughUnknownKeys(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nX-Custom: custom-value\r\nContent-Length: 0\r\n\r\n"
 	tp := newTestReader(input)
-	msg, err := ParseSIP(tp)
+	msg, err := UnmarshalSIP(tp)
 	if assert.NoError(t, err) {
 		assert.Equal(t, "custom-value", msg.Headers.GetFirst("X-Custom"))
 	}
@@ -1145,7 +1145,7 @@ func TestParseHeaders_PassesThroughUnknownKeys(t *testing.T) {
 func TestParseHeaders_CanonicalizesMixedCaseLongForm(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nvia: SIP/2.0/UDP host\r\nContent-Length: 0\r\n\r\n"
 	tp := newTestReader(input)
-	msg, err := ParseSIP(tp)
+	msg, err := UnmarshalSIP(tp)
 	if assert.NoError(t, err) {
 		assert.Equal(t, "SIP/2.0/UDP host", msg.Headers.GetFirst("Via"))
 	}
@@ -1153,7 +1153,7 @@ func TestParseHeaders_CanonicalizesMixedCaseLongForm(t *testing.T) {
 
 func TestParseHeaders_EmptyHeaders(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\n\r\n"
-	msg, err := ParseSIPUDP([]byte(input))
+	msg, err := UnmarshalSIPDatagram([]byte(input))
 	if assert.NoError(t, err) {
 		assert.Len(t, msg.Headers, 0)
 	}
@@ -1175,7 +1175,7 @@ func TestSIPMarshal_RequestRoundTrip(t *testing.T) {
 		"\r\n" +
 		"body"
 
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -1187,7 +1187,7 @@ func TestSIPMarshal_RequestRoundTrip(t *testing.T) {
 
 	// Re-parse to verify round-trip semantic equivalence
 	// (header order is normalized during marshal)
-	msg2, err := ParseSIP(newTestReader(string(got)))
+	msg2, err := UnmarshalSIP(newTestReader(string(got)))
 	if assert.NoError(t, err) {
 		assert.Equal(t, msg.StartLine(), msg2.StartLine())
 		assert.Equal(t, msg.Headers.Get("Via"), msg2.Headers.Get("Via"))
@@ -1219,7 +1219,7 @@ func TestSIPMarshal_ResponseRoundTrip(t *testing.T) {
 		"Content-Length: 0\r\n" +
 		"\r\n"
 
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -1229,7 +1229,7 @@ func TestSIPMarshal_ResponseRoundTrip(t *testing.T) {
 		return
 	}
 
-	msg2, err := ParseSIP(newTestReader(string(got)))
+	msg2, err := UnmarshalSIP(newTestReader(string(got)))
 	if assert.NoError(t, err) {
 		assert.Equal(t, msg.StartLine(), msg2.StartLine())
 		assert.Equal(t, msg.Headers.Get("Via"), msg2.Headers.Get("Via"))
@@ -1243,7 +1243,7 @@ func TestSIPMarshal_ResponseRoundTrip(t *testing.T) {
 
 func TestSIPMarshal_IgnoreStaleCSeqInHeaders(t *testing.T) {
 	input := "INVITE sip:bob@example.com SIP/2.0\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -1259,7 +1259,7 @@ func TestSIPMarshal_IgnoreStaleCSeqInHeaders(t *testing.T) {
 
 func TestSIPMarshal_IgnoreStaleContentLengthInHeaders(t *testing.T) {
 	input := "INVITE sip:bob@example.com SIP/2.0\r\nContent-Length: 4\r\n\r\nbody"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -1295,7 +1295,7 @@ func TestSIPMarshal_MarshalSize(t *testing.T) {
 	}
 
 	// re-parse and verify
-	msg2, err := ParseSIP(newTestReader(string(got)))
+	msg2, err := UnmarshalSIP(newTestReader(string(got)))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "INVITE sip:bob@example.com SIP/2.0", msg2.StartLine())
 		assert.Equal(t, "<sip:alice@atlanta.com>;tag=abc", msg2.Headers.GetFirst("From"))
@@ -1931,7 +1931,7 @@ func TestRFC3261_Marshal_RoundTrip_InviteSDP(t *testing.T) {
 		"t=0 0\r\n" +
 		"m=audio 49172 RTP/AVP 0\r\n" +
 		"a=rtpmap:0 PCMU/8000\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -1940,7 +1940,7 @@ func TestRFC3261_Marshal_RoundTrip_InviteSDP(t *testing.T) {
 		return
 	}
 	// Re-parse and verify complete semantic round-trip
-	msg2, err := ParseSIP(newTestReader(string(got)))
+	msg2, err := UnmarshalSIP(newTestReader(string(got)))
 	if assert.NoError(t, err) {
 		assert.Equal(t, msg.StartLine(), msg2.StartLine())
 		assert.Equal(t, msg.Method(), msg2.Method())
@@ -1970,7 +1970,7 @@ func TestRFC3261_Marshal_RoundTrip_ResponseWithBody(t *testing.T) {
 		"t=0 0\r\n" +
 		"m=audio 49170 RTP/AVP 0\r\n" +
 		"a=rtpmap:0 PCMU/8000\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -1978,7 +1978,7 @@ func TestRFC3261_Marshal_RoundTrip_ResponseWithBody(t *testing.T) {
 	if !assert.NoError(t, err) {
 		return
 	}
-	msg2, err := ParseSIP(newTestReader(string(got)))
+	msg2, err := UnmarshalSIP(newTestReader(string(got)))
 	if assert.NoError(t, err) {
 		assert.False(t, msg2.IsRequest())
 		assert.Equal(t, 200, msg2.StatusCode())
@@ -1994,7 +1994,7 @@ func TestRFC3261_Marshal_Response_NoBody(t *testing.T) {
 		"Call-ID: call123\r\n" +
 		"CSeq: 1 INVITE\r\n" +
 		"Content-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -2039,7 +2039,7 @@ func TestRFC3261_Marshal_AllMethodsProduceValidWireFormat(t *testing.T) {
 				return
 			}
 			// Verify result is parseable by our own parser
-			msg2, err := ParseSIP(newTestReader(string(got)))
+			msg2, err := UnmarshalSIP(newTestReader(string(got)))
 			if assert.NoError(t, err) {
 				assert.Equal(t, method, msg2.Method())
 				assert.Equal(t, method, msg2.CSeq.Method)
@@ -2080,7 +2080,7 @@ func sipBenchRequest() *SIPMessage {
 		"t=0 0\r\n" +
 		"m=audio 49172 RTP/AVP 0\r\n" +
 		"a=rtpmap:0 PCMU/8000\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if err != nil {
 		panic(err)
 	}
@@ -2096,7 +2096,7 @@ func sipBenchResponse() *SIPMessage {
 		"CSeq: 314159 INVITE\r\n" +
 		"Contact: <sip:bob@biloxi.com>\r\n" +
 		"Content-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if err != nil {
 		panic(err)
 	}
@@ -2109,7 +2109,7 @@ func sipBenchMinimal() *SIPMessage {
 		"From: Bob <sip:bob@example.com>;tag=def\r\n" +
 		"CSeq: 1 BYE\r\n" +
 		"Content-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if err != nil {
 		panic(err)
 	}
@@ -2200,7 +2200,7 @@ func TestRFC3261_MarshalCompact_Section7_3_3(t *testing.T) {
 	assert.Contains(t, s, "CSeq: ")
 
 	// Output parses back correctly
-	msg2, err := ParseSIP(newTestReader(s))
+	msg2, err := UnmarshalSIP(newTestReader(s))
 	if assert.NoError(t, err) {
 		for k, vals := range msg.Headers {
 			assert.Equal(t, vals, msg2.Headers.Get(k), "header %s round-trip", k)
@@ -2529,7 +2529,7 @@ func TestRFC3261_MarshalCompact_RoundTrip_Response(t *testing.T) {
 		"CSeq: 314159 INVITE\r\n" +
 		"Contact: <sip:bob@biloxi.com>\r\n" +
 		"Content-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -2537,7 +2537,7 @@ func TestRFC3261_MarshalCompact_RoundTrip_Response(t *testing.T) {
 	if !assert.NoError(t, err) {
 		return
 	}
-	msg2, err := ParseSIP(newTestReader(string(got)))
+	msg2, err := UnmarshalSIP(newTestReader(string(got)))
 	if assert.NoError(t, err) {
 		assert.Equal(t, msg.StartLine(), msg2.StartLine())
 		for k, vals := range msg.Headers {
@@ -2567,7 +2567,7 @@ func TestRFC3261_MarshalCompact_RoundTrip_SDP(t *testing.T) {
 		"t=0 0\r\n" +
 		"m=audio 49172 RTP/AVP 0\r\n" +
 		"a=rtpmap:0 PCMU/8000\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -2575,7 +2575,7 @@ func TestRFC3261_MarshalCompact_RoundTrip_SDP(t *testing.T) {
 	if !assert.NoError(t, err) {
 		return
 	}
-	msg2, err := ParseSIP(newTestReader(string(got)))
+	msg2, err := UnmarshalSIP(newTestReader(string(got)))
 	if assert.NoError(t, err) {
 		assert.Equal(t, msg.Method(), msg2.Method())
 		for k, vals := range msg.Headers {
@@ -2662,7 +2662,7 @@ func TestSIPMarshalCompact_RoundTrip(t *testing.T) {
 		"Contact: <sip:alice@pc33.atlanta.com>\r\n" +
 		"Content-Type: application/sdp\r\n" +
 		"Content-Length: 0\r\n\r\n"
-	msg, err := ParseSIP(newTestReader(input))
+	msg, err := UnmarshalSIP(newTestReader(input))
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -2672,7 +2672,7 @@ func TestSIPMarshalCompact_RoundTrip(t *testing.T) {
 	}
 
 	// Verify compact output parses back correctly (parser accepts compact forms)
-	msg2, err := ParseSIP(newTestReader(string(got)))
+	msg2, err := UnmarshalSIP(newTestReader(string(got)))
 	if assert.NoError(t, err) {
 		assert.Equal(t, msg.StartLine(), msg2.StartLine())
 		assert.Equal(t, msg.Method(), msg2.Method())

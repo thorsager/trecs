@@ -479,7 +479,7 @@ func (p *RawRTCP) Marshal() ([]byte, error) {
 // operation to produce valid compound output.
 func MarshalRTCP(packets []RTCPPacket) ([]byte, error) {
 	if len(packets) == 0 {
-		return nil, ParseError("rtcp: no packets to marshal")
+		return nil, UnmarshalErrorf("rtcp: no packets to marshal")
 	}
 	var total int
 	for _, pkt := range packets {
@@ -497,13 +497,13 @@ func MarshalRTCP(packets []RTCPPacket) ([]byte, error) {
 	return buf[:n], nil
 }
 
-func parseRTCPHeader(data []byte) (RTCPHeader, error) {
+func unmarshalRTCPHeader(data []byte) (RTCPHeader, error) {
 	if len(data) < 4 {
-		return RTCPHeader{}, ParseError("rtcp: packet too short for header")
+		return RTCPHeader{}, UnmarshalErrorf("rtcp: packet too short for header")
 	}
 	version := data[0] >> 6 & 0x03
 	if version != rtcpVersion {
-		return RTCPHeader{}, ParseError("rtcp: bad version %d", version)
+		return RTCPHeader{}, UnmarshalErrorf("rtcp: bad version %d", version)
 	}
 	return RTCPHeader{
 		Padding: (data[0]>>5)&0x01 != 0,
@@ -513,36 +513,36 @@ func parseRTCPHeader(data []byte) (RTCPHeader, error) {
 	}, nil
 }
 
-// ParseRTCP parses a compound RTCP packet from a byte slice, returning all
+// UnmarshalRTCP parses a compound RTCP packet from a byte slice, returning all
 // individual RTCP packets contained within.
-func ParseRTCP(data []byte) ([]RTCPPacket, error) {
+func UnmarshalRTCP(data []byte) ([]RTCPPacket, error) {
 	packets := make([]RTCPPacket, 0, 4)
 	for len(data) > 0 {
 		if len(data) < 4 {
-			return packets, ParseError("rtcp: truncated compound packet")
+			return packets, UnmarshalErrorf("rtcp: truncated compound packet")
 		}
-		hdr, err := parseRTCPHeader(data)
+		hdr, err := unmarshalRTCPHeader(data)
 		if err != nil {
 			return packets, err
 		}
 		pktLen := (int(hdr.Length) + 1) * 4
 		if pktLen > len(data) {
-			return packets, ParseError("rtcp: packet length %d exceeds remaining data %d", pktLen, len(data))
+			return packets, UnmarshalErrorf("rtcp: packet length %d exceeds remaining data %d", pktLen, len(data))
 		}
 		pktData := data[:pktLen]
 
 		var pkt RTCPPacket
 		switch hdr.Type {
 		case RTCPTypeSR:
-			pkt, err = parseSenderReport(hdr, pktData)
+			pkt, err = unmarshalSenderReport(hdr, pktData)
 		case RTCPTypeRR:
-			pkt, err = parseReceiverReport(hdr, pktData)
+			pkt, err = unmarshalReceiverReport(hdr, pktData)
 		case RTCPTypeSDES:
-			pkt, err = parseSourceDescription(hdr, pktData)
+			pkt, err = unmarshalSourceDescription(hdr, pktData)
 		case RTCPTypeBYE:
-			pkt, err = parseGoodbye(hdr, pktData)
+			pkt, err = unmarshalGoodbye(hdr, pktData)
 		case RTCPTypeAPP:
-			pkt, err = parseApplicationDefined(hdr, pktData)
+			pkt, err = unmarshalApplicationDefined(hdr, pktData)
 		default:
 			pkt = &RawRTCP{HeaderField: hdr, Data: pktData[4:]}
 		}
@@ -553,14 +553,14 @@ func ParseRTCP(data []byte) ([]RTCPPacket, error) {
 		data = data[pktLen:]
 	}
 	if len(packets) == 0 {
-		return nil, ParseError("rtcp: empty compound packet")
+		return nil, UnmarshalErrorf("rtcp: empty compound packet")
 	}
 	return packets, nil
 }
 
-func parseSenderReport(hdr RTCPHeader, data []byte) (*SenderReport, error) {
+func unmarshalSenderReport(hdr RTCPHeader, data []byte) (*SenderReport, error) {
 	if len(data) < 28 {
-		return nil, ParseError("rtcp: sender report too short")
+		return nil, UnmarshalErrorf("rtcp: sender report too short")
 	}
 	p := &SenderReport{hdr: hdr, Reports: make([]ReceptionReport, hdr.Count)}
 	body := data[4:]
@@ -573,9 +573,9 @@ func parseSenderReport(hdr RTCPHeader, data []byte) (*SenderReport, error) {
 	off := 24
 	for i := 0; i < int(hdr.Count); i++ {
 		if off+24 > len(body) {
-			return nil, ParseError("rtcp: sender report truncated in report block %d", i)
+			return nil, UnmarshalErrorf("rtcp: sender report truncated in report block %d", i)
 		}
-		rr, err := parseReceptionReport(body[off:])
+		rr, err := unmarshalReceptionReport(body[off:])
 		if err != nil {
 			return nil, err
 		}
@@ -588,9 +588,9 @@ func parseSenderReport(hdr RTCPHeader, data []byte) (*SenderReport, error) {
 	return p, nil
 }
 
-func parseReceiverReport(hdr RTCPHeader, data []byte) (*ReceiverReport, error) {
+func unmarshalReceiverReport(hdr RTCPHeader, data []byte) (*ReceiverReport, error) {
 	if len(data) < 8 {
-		return nil, ParseError("rtcp: receiver report too short")
+		return nil, UnmarshalErrorf("rtcp: receiver report too short")
 	}
 	p := &ReceiverReport{hdr: hdr, Reports: make([]ReceptionReport, hdr.Count)}
 	body := data[4:]
@@ -599,9 +599,9 @@ func parseReceiverReport(hdr RTCPHeader, data []byte) (*ReceiverReport, error) {
 	off := 4
 	for i := 0; i < int(hdr.Count); i++ {
 		if off+24 > len(body) {
-			return nil, ParseError("rtcp: receiver report truncated in report block %d", i)
+			return nil, UnmarshalErrorf("rtcp: receiver report truncated in report block %d", i)
 		}
-		rr, err := parseReceptionReport(body[off:])
+		rr, err := unmarshalReceptionReport(body[off:])
 		if err != nil {
 			return nil, err
 		}
@@ -614,9 +614,9 @@ func parseReceiverReport(hdr RTCPHeader, data []byte) (*ReceiverReport, error) {
 	return p, nil
 }
 
-func parseReceptionReport(data []byte) (ReceptionReport, error) {
+func unmarshalReceptionReport(data []byte) (ReceptionReport, error) {
 	if len(data) < 24 {
-		return ReceptionReport{}, ParseError("rtcp: reception report block too short")
+		return ReceptionReport{}, UnmarshalErrorf("rtcp: reception report block too short")
 	}
 	rr := ReceptionReport{
 		SSRC:               binary.BigEndian.Uint32(data[0:4]),
@@ -630,13 +630,13 @@ func parseReceptionReport(data []byte) (ReceptionReport, error) {
 	return rr, nil
 }
 
-func parseSourceDescription(hdr RTCPHeader, data []byte) (*SourceDescription, error) {
+func unmarshalSourceDescription(hdr RTCPHeader, data []byte) (*SourceDescription, error) {
 	p := &SourceDescription{hdr: hdr, Chunks: make([]SourceDescriptionChunk, 0, hdr.Count)}
 	body := data[4:]
 	off := 0
 	for i := 0; i < int(hdr.Count); i++ {
 		if off+4 > len(body) {
-			return nil, ParseError("rtcp: sdes chunk %d too short for source", i)
+			return nil, UnmarshalErrorf("rtcp: sdes chunk %d too short for source", i)
 		}
 		var chunk SourceDescriptionChunk
 		chunk.Source = binary.BigEndian.Uint32(body[off:])
@@ -650,7 +650,7 @@ func parseSourceDescription(hdr RTCPHeader, data []byte) (*SourceDescription, er
 				break
 			}
 			if off+2 > len(body) {
-				return nil, ParseError("rtcp: sdes item %d truncated at header", len(chunk.Items))
+				return nil, UnmarshalErrorf("rtcp: sdes item %d truncated at header", len(chunk.Items))
 			}
 			item := SourceDescriptionItem{
 				Type: SDESType(body[off]),
@@ -658,7 +658,7 @@ func parseSourceDescription(hdr RTCPHeader, data []byte) (*SourceDescription, er
 			itemLen := int(body[off+1])
 			off += 2
 			if off+itemLen > len(body) {
-				return nil, ParseError("rtcp: sdes item %d truncated at text", len(chunk.Items))
+				return nil, UnmarshalErrorf("rtcp: sdes item %d truncated at text", len(chunk.Items))
 			}
 			item.Text = string(body[off : off+itemLen])
 			off += itemLen
@@ -670,13 +670,13 @@ func parseSourceDescription(hdr RTCPHeader, data []byte) (*SourceDescription, er
 	return p, nil
 }
 
-func parseGoodbye(hdr RTCPHeader, data []byte) (*Goodbye, error) {
+func unmarshalGoodbye(hdr RTCPHeader, data []byte) (*Goodbye, error) {
 	p := &Goodbye{hdr: hdr}
 	body := data[4:]
 	p.Sources = make([]uint32, hdr.Count)
 	for i := 0; i < int(hdr.Count); i++ {
 		if i*4+4 > len(body) {
-			return nil, ParseError("rtcp: bye truncated at source %d", i)
+			return nil, UnmarshalErrorf("rtcp: bye truncated at source %d", i)
 		}
 		p.Sources[i] = binary.BigEndian.Uint32(body[i*4:])
 	}
@@ -685,16 +685,16 @@ func parseGoodbye(hdr RTCPHeader, data []byte) (*Goodbye, error) {
 		reasonLen := int(body[off])
 		off++
 		if off+reasonLen > len(body) {
-			return nil, ParseError("rtcp: bye truncated at reason")
+			return nil, UnmarshalErrorf("rtcp: bye truncated at reason")
 		}
 		p.Reason = string(body[off : off+reasonLen])
 	}
 	return p, nil
 }
 
-func parseApplicationDefined(hdr RTCPHeader, data []byte) (*ApplicationDefined, error) {
+func unmarshalApplicationDefined(hdr RTCPHeader, data []byte) (*ApplicationDefined, error) {
 	if len(data) < 12 {
-		return nil, ParseError("rtcp: app packet too short")
+		return nil, UnmarshalErrorf("rtcp: app packet too short")
 	}
 	p := &ApplicationDefined{hdr: hdr}
 	p.SubType = hdr.Count

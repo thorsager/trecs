@@ -164,12 +164,12 @@ type SIPAddress struct {
 	Params      map[string]string
 }
 
-// ParseSIPAddress parses a raw From/To/Contact header value and returns a
+// UnmarshalSIPAddress parses a raw From/To/Contact header value and returns a
 // structured SIPAddress. The empty string is an error.
-func ParseSIPAddress(raw string) (*SIPAddress, error) {
+func UnmarshalSIPAddress(raw string) (*SIPAddress, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return nil, ParseError("empty From/To value")
+		return nil, UnmarshalErrorf("empty From/To value")
 	}
 
 	ft := &SIPAddress{}
@@ -177,7 +177,7 @@ func ParseSIPAddress(raw string) (*SIPAddress, error) {
 	if openBracket := strings.IndexByte(raw, '<'); openBracket >= 0 {
 		closeBracket := strings.IndexByte(raw[openBracket:], '>')
 		if closeBracket < 0 {
-			return nil, ParseError("invalid name-addr: missing closing bracket")
+			return nil, UnmarshalErrorf("invalid name-addr: missing closing bracket")
 		}
 		closeBracket += openBracket
 
@@ -189,11 +189,11 @@ func ParseSIPAddress(raw string) (*SIPAddress, error) {
 		ft.URI = strings.TrimSpace(raw[openBracket+1 : closeBracket])
 
 		rest := strings.TrimSpace(raw[closeBracket+1:])
-		ft.parseParams(rest)
+		ft.unmarshalParams(rest)
 	} else {
 		uri, params := splitAddrSpec(raw)
 		ft.URI = uri
-		ft.parseParams(params)
+		ft.unmarshalParams(params)
 	}
 
 	return ft, nil
@@ -208,7 +208,7 @@ func unquoteDisplayName(s string) string {
 	return s
 }
 
-func (ft *SIPAddress) parseParams(s string) {
+func (ft *SIPAddress) unmarshalParams(s string) {
 	if s == "" {
 		return
 	}
@@ -326,13 +326,13 @@ func (m *SIPMessage) Version() string {
 // From parses and returns the From header as a SIPAddress. Returns an error
 // if the header is absent or malformed.
 func (m *SIPMessage) From() (*SIPAddress, error) {
-	return ParseSIPAddress(m.Headers.GetFirst("From"))
+	return UnmarshalSIPAddress(m.Headers.GetFirst("From"))
 }
 
 // To parses and returns the To header as a SIPAddress. Returns an error if
 // the header is absent or malformed.
 func (m *SIPMessage) To() (*SIPAddress, error) {
-	return ParseSIPAddress(m.Headers.GetFirst("To"))
+	return UnmarshalSIPAddress(m.Headers.GetFirst("To"))
 }
 
 type startLine struct {
@@ -351,19 +351,19 @@ func (sl *startLine) String() string {
 	return sl.Version + " " + sl.Status
 }
 
-// ParseSIPUDP parses a complete SIP message from a byte slice, consuming any
+// UnmarshalSIPDatagram parses a complete SIP message from a byte slice, consuming any
 // trailing datagram data.
-func ParseSIPUDP(data []byte) (*SIPMessage, error) {
+func UnmarshalSIPDatagram(data []byte) (*SIPMessage, error) {
 	pbr := bufioReaderPool.Get().(*bufio.Reader)
 	pbr.Reset(bytes.NewReader(data))
 	defer bufioReaderPool.Put(pbr)
-	return parseSIP(pbr, false)
+	return unmarshalSIP(pbr, false)
 }
 
-// ParseSIP parses a SIP message from r. If r is already a *bufio.Reader it
+// UnmarshalSIP parses a SIP message from r. If r is already a *bufio.Reader it
 // is used directly; otherwise a buffered reader is created. For streamed
 // transports (TCP), remaining data after the body is preserved in the reader.
-func ParseSIP(r io.Reader) (*SIPMessage, error) {
+func UnmarshalSIP(r io.Reader) (*SIPMessage, error) {
 	var pooled *bufio.Reader
 	br, ok := r.(*bufio.Reader)
 	if !ok {
@@ -372,31 +372,31 @@ func ParseSIP(r io.Reader) (*SIPMessage, error) {
 		br = pooled
 		defer bufioReaderPool.Put(pooled)
 	}
-	return parseSIP(br, true)
+	return unmarshalSIP(br, true)
 }
 
-func parseSIP(r *bufio.Reader, streamed bool) (*SIPMessage, error) {
+func unmarshalSIP(r *bufio.Reader, streamed bool) (*SIPMessage, error) {
 	msg := &SIPMessage{
 		Headers: make(SIPHeaders, 16),
 	}
 
 	line, err := readLine(r)
 	if err != nil {
-		return nil, ParseErrorWrap(err, "error reading start-line")
+		return nil, UnmarshalErrorWrap(err, "error reading start-line")
 	}
 
-	if sl, err := parseStartLine(line); err != nil {
+	if sl, err := unmarshalStartLine(line); err != nil {
 		return nil, err
 	} else {
 		msg.startLine = sl
 	}
 
-	if msg.Headers, err = parseHeaders(r); err != nil {
+	if msg.Headers, err = unmarshalHeaders(r); err != nil {
 		return nil, err
 	}
 
 	if values, ok := msg.Headers["CSeq"]; ok {
-		cseq, err := parseCSeq(values)
+		cseq, err := unmarshalCSeq(values)
 		if err != nil {
 			return nil, err
 		}
@@ -409,7 +409,7 @@ func parseSIP(r *bufio.Reader, streamed bool) (*SIPMessage, error) {
 			msg.Body = make([]byte, contentLength)
 			_, err = io.ReadFull(r, msg.Body)
 			if err != nil {
-				return nil, ParseErrorWrap(err, "error reading body")
+				return nil, UnmarshalErrorWrap(err, "error reading body")
 			}
 		}
 		if !streamed {
@@ -417,26 +417,26 @@ func parseSIP(r *bufio.Reader, streamed bool) (*SIPMessage, error) {
 		}
 	} else {
 		if streamed {
-			return nil, ParseError("Content-Length required for stream transport")
+			return nil, UnmarshalErrorf("Content-Length required for stream transport")
 		}
 		msg.Body, err = io.ReadAll(r)
 		if err != nil {
-			return nil, ParseErrorWrap(err, "error reading body")
+			return nil, UnmarshalErrorWrap(err, "error reading body")
 		}
 	}
 
 	return msg, nil
 }
 
-func parseHeaders(r *bufio.Reader) (SIPHeaders, error) {
+func unmarshalHeaders(r *bufio.Reader) (SIPHeaders, error) {
 	h := make(SIPHeaders, 16)
 	for {
 		line, err := readContinuedLine(r)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return nil, ParseErrorWrap(io.EOF, "header terminated prematurely")
+				return nil, UnmarshalErrorWrap(io.EOF, "header terminated prematurely")
 			}
-			return nil, ParseErrorWrap(err, "Failed to read headers")
+			return nil, UnmarshalErrorWrap(err, "Failed to read headers")
 		}
 
 		if line == "" {
@@ -444,7 +444,7 @@ func parseHeaders(r *bufio.Reader) (SIPHeaders, error) {
 		}
 		k, v, found := strings.Cut(line, ":")
 		if !found {
-			return nil, ParseError("Invalid header: %s", line)
+			return nil, UnmarshalErrorf("Invalid header: %s", line)
 		}
 		if l, found := compactHeaders[k]; found {
 			k = l
@@ -458,14 +458,14 @@ func parseHeaders(r *bufio.Reader) (SIPHeaders, error) {
 	return h, nil
 }
 
-func parseStartLine(s string) (*startLine, error) {
+func unmarshalStartLine(s string) (*startLine, error) {
 	t0, rest, ok := strings.Cut(s, " ")
 	if !ok {
-		return nil, ParseError("Invalid start-line: %s", s)
+		return nil, UnmarshalErrorf("Invalid start-line: %s", s)
 	}
 	t1, t2, ok := strings.Cut(rest, " ")
 	if !ok || t1 == "" || t2 == "" {
-		return nil, ParseError("Invalid start-line: %s", s)
+		return nil, UnmarshalErrorf("Invalid start-line: %s", s)
 	}
 
 	sl := &startLine{}
@@ -473,17 +473,17 @@ func parseStartLine(s string) (*startLine, error) {
 		sl.IsRequest = false
 		sl.Version = t0
 		if len(t1) != 3 {
-			return nil, ParseError("Invalid start-line status-code: %s", t1)
+			return nil, UnmarshalErrorf("Invalid start-line status-code: %s", t1)
 		}
 		if sc, err := strconv.Atoi(t1); err != nil {
-			return nil, ParseErrorWrap(err, "Invalid start-line status-code: %s", t1)
+			return nil, UnmarshalErrorWrap(err, "Invalid start-line status-code: %s", t1)
 		} else {
 			sl.StatusCode = sc
 		}
 		sl.Status = t1 + " " + t2
 	} else {
 		sl.IsRequest = true
-		if m, err := parseMethod(t0); err != nil {
+		if m, err := unmarshalMethod(t0); err != nil {
 			return nil, err
 		} else {
 			sl.Method = m
@@ -492,37 +492,37 @@ func parseStartLine(s string) (*startLine, error) {
 		sl.URI = t1
 
 		if !strings.HasPrefix(t2, "SIP/") {
-			return nil, ParseError("Invalid start-line version: %s", t2)
+			return nil, UnmarshalErrorf("Invalid start-line version: %s", t2)
 		}
 		sl.Version = t2
 	}
 	return sl, nil
 }
 
-func parseCSeq(values []string) (CSeq, error) {
+func unmarshalCSeq(values []string) (CSeq, error) {
 	if len(values) == 0 {
-		return CSeq{}, ParseError("No Cseq value found")
+		return CSeq{}, UnmarshalErrorf("No Cseq value found")
 	}
 	if len(values) > 1 {
-		return CSeq{}, ParseError("Multipel Cseq values found")
+		return CSeq{}, UnmarshalErrorf("Multipel Cseq values found")
 	}
 	seqStr, methodStr, found := strings.Cut(values[0], " ")
 	if !found {
-		return CSeq{}, ParseError("Invalid Cseq payload: %s", values[0])
+		return CSeq{}, UnmarshalErrorf("Invalid Cseq payload: %s", values[0])
 	}
 	seq, err := strconv.Atoi(seqStr)
 	if err != nil {
-		return CSeq{}, ParseErrorWrap(err, "Invalid Cseq Sequence %s", seqStr)
+		return CSeq{}, UnmarshalErrorWrap(err, "Invalid Cseq Sequence %s", seqStr)
 	}
-	method, err := parseMethod(methodStr)
+	method, err := unmarshalMethod(methodStr)
 	if err != nil {
-		return CSeq{}, ParseErrorWrap(err, "Invalid Cseq Method")
+		return CSeq{}, UnmarshalErrorWrap(err, "Invalid Cseq Method")
 	}
 
 	return CSeq{Seq: seq, Method: method}, nil
 }
 
-func parseMethod(v string) (SIPMethod, error) {
+func unmarshalMethod(v string) (SIPMethod, error) {
 	switch SIPMethod(v) {
 	case SIPMethodINVITE, SIPMethodACK, SIPMethodCANCEL, SIPMethodOPTIONS,
 		SIPMethodBYE, SIPMethodREGISTER,
@@ -531,7 +531,7 @@ func parseMethod(v string) (SIPMethod, error) {
 		SIPMethodMESSAGE, SIPMethodUPDATE:
 		return SIPMethod(v), nil
 	}
-	return "", ParseError("Invalid Method: %s", v)
+	return "", UnmarshalErrorf("Invalid Method: %s", v)
 }
 
 // marshalSize returns the exact number of bytes needed to marshal m.

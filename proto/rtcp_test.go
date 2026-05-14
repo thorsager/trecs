@@ -29,7 +29,7 @@ func TestParseRTCP_SenderReport(t *testing.T) {
 	body = putU32BEAppend(body, 3400)
 	body = append(body, makeReceptionReport(0xbc5e9a40, 0, 0, 0x46e1, 273, 0x9f36432, 150137)...)
 
-	packets, err := ParseRTCP(body)
+	packets, err := UnmarshalRTCP(body)
 	require.NoError(t, err)
 	require.Len(t, packets, 1)
 
@@ -51,7 +51,7 @@ func TestParseRTCP_ReceiverReport(t *testing.T) {
 	body = append(body, putRTCPHeader(false, 0, RTCPTypeRR, 1)...)
 	body = putU32BEAppend(body, 0x11111111)
 
-	packets, err := ParseRTCP(body)
+	packets, err := UnmarshalRTCP(body)
 	require.NoError(t, err)
 	require.Len(t, packets, 1)
 
@@ -68,7 +68,7 @@ func TestParseRTCP_ReceiverReportWithReports(t *testing.T) {
 	body = append(body, makeReceptionReport(0xaaaaaaaa, 5, 10, 54321, 100, 0xffffffff, 200)...)
 	body = append(body, makeReceptionReport(0xbbbbbbbb, 0, 0, 9876, 50, 0, 0)...)
 
-	packets, err := ParseRTCP(body)
+	packets, err := UnmarshalRTCP(body)
 	require.NoError(t, err)
 	require.Len(t, packets, 1)
 	rr := packets[0].(*ReceiverReport)
@@ -101,7 +101,7 @@ func TestParseRTCP_SDES(t *testing.T) {
 	body = append(body, []byte("test@host")...)
 	body = append(body, 0x00)
 
-	packets, err := ParseRTCP(body)
+	packets, err := UnmarshalRTCP(body)
 	require.NoError(t, err)
 	require.Len(t, packets, 1)
 
@@ -127,7 +127,7 @@ func TestParseRTCP_SDES_MultipleItems(t *testing.T) {
 	body[2] = 0
 	body[3] = byte(len(body)/4 - 1)
 
-	packets, err := ParseRTCP(body)
+	packets, err := UnmarshalRTCP(body)
 	require.NoError(t, err)
 	require.Len(t, packets, 1)
 
@@ -145,7 +145,7 @@ func TestParseRTCP_BYE(t *testing.T) {
 	body = append(body, putRTCPHeader(false, 1, RTCPTypeBYE, 1)...)
 	body = putU32BEAppend(body, 0xDEADBEEF)
 
-	packets, err := ParseRTCP(body)
+	packets, err := UnmarshalRTCP(body)
 	require.NoError(t, err)
 	require.Len(t, packets, 1)
 
@@ -166,7 +166,7 @@ func TestParseRTCP_BYE_WithReason(t *testing.T) {
 	pktLen := len(body)
 	binary.BigEndian.PutUint16(body[2:4], uint16(pktLen/4-1))
 
-	packets, err := ParseRTCP(body)
+	packets, err := UnmarshalRTCP(body)
 	require.NoError(t, err)
 	require.Len(t, packets, 1)
 
@@ -183,7 +183,7 @@ func TestParseRTCP_APP(t *testing.T) {
 	body = append(body, []byte("TEST")...)
 	body = append(body, appData...)
 
-	packets, err := ParseRTCP(body)
+	packets, err := UnmarshalRTCP(body)
 	require.NoError(t, err)
 	require.Len(t, packets, 1)
 
@@ -222,7 +222,7 @@ func TestParseRTCP_Compound(t *testing.T) {
 	byeBody = putU32BEAppend(byeBody, 0xAAAAAAAA)
 	compound = append(compound, byeBody...)
 
-	packets, err := ParseRTCP(compound)
+	packets, err := UnmarshalRTCP(compound)
 	require.NoError(t, err)
 	require.Len(t, packets, 3)
 
@@ -237,34 +237,34 @@ func TestParseRTCP_Compound(t *testing.T) {
 }
 
 func TestParseRTCP_Empty(t *testing.T) {
-	_, err := ParseRTCP(nil)
+	_, err := UnmarshalRTCP(nil)
 	assert.Error(t, err)
 
-	_, err = ParseRTCP([]byte{})
+	_, err = UnmarshalRTCP([]byte{})
 	assert.Error(t, err)
 }
 
 func TestParseRTCP_BadVersion(t *testing.T) {
 	data := []byte{0x00, 0x00, 0x00, 0x00}
-	_, err := ParseRTCP(data)
+	_, err := UnmarshalRTCP(data)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "version")
 }
 
 func TestParseRTCP_HeaderTooShort(t *testing.T) {
-	_, err := ParseRTCP([]byte{0x80, 0xC8})
+	_, err := UnmarshalRTCP([]byte{0x80, 0xC8})
 	assert.Error(t, err)
 }
 
 func TestParseRTCP_Truncated(t *testing.T) {
 	data := putRTCPHeader(false, 0, RTCPTypeRR, 10)
-	_, err := ParseRTCP(data)
+	_, err := UnmarshalRTCP(data)
 	assert.Error(t, err)
 }
 
 func TestParseRTCP_RawPacket(t *testing.T) {
 	data := putRTCPHeader(false, 0, RTCPPacketType(255), 0)
-	packets, err := ParseRTCP(data)
+	packets, err := UnmarshalRTCP(data)
 	require.NoError(t, err)
 	require.Len(t, packets, 1)
 	_, ok := packets[0].(*RawRTCP)
@@ -349,7 +349,7 @@ func TestRTCPMarshal_SenderReport_Minimal(t *testing.T) {
 	got = append(got, data[4:]...)
 	assert.Equal(t, expected, got, "SR body (SSRC+NTP+RTP+Pkts+Octets)")
 
-	parsed, err := ParseRTCP(data)
+	parsed, err := UnmarshalRTCP(data)
 	require.NoError(t, err)
 	require.Len(t, parsed, 1)
 	sr2, ok := parsed[0].(*SenderReport)
@@ -406,7 +406,7 @@ func TestRTCPMarshal_SenderReport_WithReports(t *testing.T) {
 	assert.Equal(t, uint32(0x9f36432), binary.BigEndian.Uint32(data[off+16:off+20]))
 	assert.Equal(t, uint32(150137), binary.BigEndian.Uint32(data[off+20:off+24]))
 
-	parsed, err := ParseRTCP(data)
+	parsed, err := UnmarshalRTCP(data)
 	require.NoError(t, err)
 	require.Len(t, parsed, 1)
 	sr2 := parsed[0].(*SenderReport)
@@ -434,7 +434,7 @@ func TestRTCPMarshal_SenderReport_ProfileExtensions(t *testing.T) {
 	assert.Equal(t, []byte{0xDE, 0xAD}, data[28:30], "profile extensions")
 	assert.Equal(t, []byte{0x00, 0x00}, data[30:32], "padding to 4 bytes")
 
-	parsed, err := ParseRTCP(data)
+	parsed, err := UnmarshalRTCP(data)
 	require.NoError(t, err)
 	sr2 := parsed[0].(*SenderReport)
 	assert.Equal(t, []byte{0xDE, 0xAD, 0x00, 0x00}, sr2.ProfileExtensions, "profile extensions include alignment padding")
@@ -453,7 +453,7 @@ func TestRTCPMarshal_ReceiverReport_Minimal(t *testing.T) {
 	assert.Equal(t, []byte{0x00, 0x01}, data[2:4], "Length=1 (8/4-1)")
 	assert.Equal(t, uint32(0x11111111), binary.BigEndian.Uint32(data[4:8]))
 
-	parsed, err := ParseRTCP(data)
+	parsed, err := UnmarshalRTCP(data)
 	require.NoError(t, err)
 	rr2 := parsed[0].(*ReceiverReport)
 	assert.Equal(t, rr.SSRC, rr2.SSRC)
@@ -487,7 +487,7 @@ func TestRTCPMarshal_ReceiverReport_WithReports(t *testing.T) {
 		off += 24
 	}
 
-	parsed, err := ParseRTCP(data)
+	parsed, err := UnmarshalRTCP(data)
 	require.NoError(t, err)
 	rr2 := parsed[0].(*ReceiverReport)
 	require.Len(t, rr2.Reports, 2)
@@ -557,7 +557,7 @@ func TestRTCPMarshal_SDES_SingleChunk(t *testing.T) {
 	assert.Equal(t, []byte("test@host"), data[10:19], "SDES text")
 	assert.Equal(t, byte(0x00), data[19], "padding/termination")
 
-	parsed, err := ParseRTCP(data)
+	parsed, err := UnmarshalRTCP(data)
 	require.NoError(t, err)
 	sdes2 := parsed[0].(*SourceDescription)
 	require.Len(t, sdes2.Chunks, 1)
@@ -579,7 +579,7 @@ func TestRTCPMarshal_SDES_MultipleChunks(t *testing.T) {
 
 	assert.Equal(t, byte(0x82), data[0], "RC=2")
 
-	parsed, err := ParseRTCP(data)
+	parsed, err := UnmarshalRTCP(data)
 	require.NoError(t, err)
 	sdes2 := parsed[0].(*SourceDescription)
 	require.Len(t, sdes2.Chunks, 2)
@@ -604,7 +604,7 @@ func TestRTCPMarshal_SDES_MultipleItems(t *testing.T) {
 	data, err := sdes.Marshal()
 	require.NoError(t, err)
 
-	parsed, err := ParseRTCP(data)
+	parsed, err := UnmarshalRTCP(data)
 	require.NoError(t, err)
 	sdes2 := parsed[0].(*SourceDescription)
 	require.Len(t, sdes2.Chunks, 1)
@@ -627,7 +627,7 @@ func TestRTCPMarshal_SDES_4ByteAlignment(t *testing.T) {
 
 	assert.Equal(t, 0, len(data)%4, "SDES must be 4-byte aligned, got %d bytes", len(data))
 
-	parsed, err := ParseRTCP(data)
+	parsed, err := UnmarshalRTCP(data)
 	require.NoError(t, err)
 	require.Len(t, parsed, 1)
 	require.Len(t, parsed[0].(*SourceDescription).Chunks, 2)
@@ -646,7 +646,7 @@ func TestRTCPMarshal_BYE_Minimal(t *testing.T) {
 	assert.Equal(t, []byte{0x00, 0x01}, data[2:4], "Length=1 (8/4-1)")
 	assert.Equal(t, uint32(0xDEADBEEF), binary.BigEndian.Uint32(data[4:8]))
 
-	parsed, err := ParseRTCP(data)
+	parsed, err := UnmarshalRTCP(data)
 	require.NoError(t, err)
 	bye2 := parsed[0].(*Goodbye)
 	assert.Equal(t, bye.Sources, bye2.Sources)
@@ -670,7 +670,7 @@ func TestRTCPMarshal_BYE_WithReason(t *testing.T) {
 	assert.Equal(t, []byte("camera off"), data[9:19], "reason text")
 	assert.Equal(t, byte(0x00), data[19], "padding")
 
-	parsed, err := ParseRTCP(data)
+	parsed, err := UnmarshalRTCP(data)
 	require.NoError(t, err)
 	bye2 := parsed[0].(*Goodbye)
 	assert.Equal(t, bye.Sources, bye2.Sources)
@@ -687,7 +687,7 @@ func TestRTCPMarshal_BYE_MultipleSources(t *testing.T) {
 	assert.Equal(t, byte(0x83), data[0], "RC=3")
 	assert.Equal(t, []byte{0x00, 0x03}, data[2:4], "Length=3 (16/4-1)")
 
-	parsed, err := ParseRTCP(data)
+	parsed, err := UnmarshalRTCP(data)
 	require.NoError(t, err)
 	bye2 := parsed[0].(*Goodbye)
 	assert.Equal(t, bye.Sources, bye2.Sources)
@@ -718,7 +718,7 @@ func TestRTCPMarshal_APP_Minimal(t *testing.T) {
 	assert.Equal(t, uint32(0x55555555), binary.BigEndian.Uint32(data[4:8]))
 	assert.Equal(t, []byte("TEST"), data[8:12], "name")
 
-	parsed, err := ParseRTCP(data)
+	parsed, err := UnmarshalRTCP(data)
 	require.NoError(t, err)
 	app2 := parsed[0].(*ApplicationDefined)
 	assert.Equal(t, app.SubType, app2.SubType)
@@ -744,7 +744,7 @@ func TestRTCPMarshal_APP_WithData(t *testing.T) {
 	assert.Equal(t, []byte("TEST"), data[8:12], "name")
 	assert.Equal(t, []byte{0x01, 0x02, 0x03, 0x04}, data[12:16], "app data")
 
-	parsed, err := ParseRTCP(data)
+	parsed, err := UnmarshalRTCP(data)
 	require.NoError(t, err)
 	app2 := parsed[0].(*ApplicationDefined)
 	assert.Equal(t, app.SubType, app2.SubType)
@@ -788,7 +788,7 @@ func TestRTCPMarshal_RawRTCP(t *testing.T) {
 	assert.Len(t, data, 8)
 	assert.Equal(t, []byte{0xDE, 0xAD, 0xBE, 0xEF}, data[4:8])
 
-	parsed, err := ParseRTCP(data)
+	parsed, err := UnmarshalRTCP(data)
 	require.NoError(t, err)
 	require.Len(t, parsed, 1)
 	_, ok := parsed[0].(*RawRTCP)
@@ -882,7 +882,7 @@ func TestRTCPMarshal_RoundTripAllTypes(t *testing.T) {
 			}).Marshal()
 			require.NoError(t, err)
 
-			parsed, err := ParseRTCP(data)
+			parsed, err := UnmarshalRTCP(data)
 			require.NoError(t, err)
 			require.Len(t, parsed, 1)
 
@@ -991,7 +991,7 @@ func TestRTCPMarshal_Compound(t *testing.T) {
 
 	require.Len(t, data, byeOffset+8)
 
-	parsed, err := ParseRTCP(data)
+	parsed, err := UnmarshalRTCP(data)
 	require.NoError(t, err)
 	require.Len(t, parsed, 3)
 

@@ -57,7 +57,7 @@ func putU64BEAppend(buf []byte, v uint64) []byte {
 
 func TestParseRTP_Minimal(t *testing.T) {
 	data := mustBuildRTP(t, false, false, 0, 1, 100, 0xDEADBEEF, nil, nil)
-	pkt, err := ParseRTP(data)
+	pkt, err := UnmarshalRTP(data)
 	require.NoError(t, err)
 	require.NotNil(t, pkt)
 	assert.Equal(t, uint8(2), pkt.Header.Version)
@@ -75,7 +75,7 @@ func TestParseRTP_Minimal(t *testing.T) {
 func TestParseRTP_WithPayload(t *testing.T) {
 	payload := []byte{0x01, 0x02, 0x03, 0x04}
 	data := mustBuildRTP(t, false, false, 8, 42, 12345, 0x55555555, nil, payload)
-	pkt, err := ParseRTP(data)
+	pkt, err := UnmarshalRTP(data)
 	require.NoError(t, err)
 	assert.Equal(t, uint8(8), pkt.Header.PayloadType)
 	assert.Equal(t, uint16(42), pkt.Header.SequenceNumber)
@@ -84,7 +84,7 @@ func TestParseRTP_WithPayload(t *testing.T) {
 
 func TestParseRTP_MarkerBit(t *testing.T) {
 	data := mustBuildRTP(t, true, false, 96, 1, 0, 0x12345678, nil, []byte{0xFF})
-	pkt, err := ParseRTP(data)
+	pkt, err := UnmarshalRTP(data)
 	require.NoError(t, err)
 	assert.True(t, pkt.Header.Marker)
 	assert.Equal(t, uint8(96), pkt.Header.PayloadType)
@@ -93,7 +93,7 @@ func TestParseRTP_MarkerBit(t *testing.T) {
 func TestParseRTP_CSRC(t *testing.T) {
 	csrc := []uint32{0x11111111, 0x22222222}
 	data := mustBuildRTP(t, false, false, 0, 0, 0, 0xAAAAAAAA, csrc, []byte{0x00})
-	pkt, err := ParseRTP(data)
+	pkt, err := UnmarshalRTP(data)
 	require.NoError(t, err)
 	assert.Equal(t, csrc, pkt.Header.CSRC)
 	assert.Equal(t, []byte{0x00}, pkt.Payload)
@@ -106,7 +106,7 @@ func TestParseRTP_Padding(t *testing.T) {
 	data = append(data, make([]byte, padSize)...)
 	data[len(data)-1] = padSize
 
-	pkt, err := ParseRTP(data)
+	pkt, err := UnmarshalRTP(data)
 	require.NoError(t, err)
 	assert.True(t, pkt.Header.Padding)
 	assert.Equal(t, padSize, pkt.Header.PaddingSize)
@@ -116,13 +116,13 @@ func TestParseRTP_Padding(t *testing.T) {
 func TestParseRTP_InvalidVersion(t *testing.T) {
 	data := mustBuildRTP(t, false, false, 0, 0, 0, 0, nil, nil)
 	data[0] = 0
-	_, err := ParseRTP(data)
+	_, err := UnmarshalRTP(data)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "version")
 }
 
 func TestParseRTP_TooShort(t *testing.T) {
-	_, err := ParseRTP([]byte{0x80, 0x00, 0x00})
+	_, err := UnmarshalRTP([]byte{0x80, 0x00, 0x00})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "too short")
 }
@@ -130,7 +130,7 @@ func TestParseRTP_TooShort(t *testing.T) {
 func TestParseRTP_EmptyPadding(t *testing.T) {
 	data := mustBuildRTP(t, false, true, 0, 0, 0, 0, nil, nil)
 	data = append(data, 0x00)
-	_, err := ParseRTP(data)
+	_, err := UnmarshalRTP(data)
 	assert.Error(t, err)
 }
 
@@ -153,7 +153,7 @@ func TestParseRTP_OneByteExtensions(t *testing.T) {
 	buf[22] = 0xEE
 	buf[23] = 0x00 // padding
 
-	pkt, err := ParseRTP(buf)
+	pkt, err := UnmarshalRTP(buf)
 	require.NoError(t, err)
 	assert.True(t, pkt.Header.Extension)
 	assert.Equal(t, uint16(ExtensionProfileOneByte), pkt.Header.ExtensionProfile)
@@ -187,7 +187,7 @@ func TestParseRTP_TwoByteExtensions(t *testing.T) {
 	buf[26] = 0x00
 	buf[27] = 0x00
 
-	pkt, err := ParseRTP(buf)
+	pkt, err := UnmarshalRTP(buf)
 	require.NoError(t, err)
 	require.Len(t, pkt.Header.Extensions, 2)
 	assert.Equal(t, uint8(5), pkt.Header.Extensions[0].ID)
@@ -208,7 +208,7 @@ func TestParseRTP_RFC3550Extension(t *testing.T) {
 	putU16(buf[14:16], uint16(len(extPayload)/4))
 	copy(buf[16:], extPayload)
 
-	pkt, err := ParseRTP(buf)
+	pkt, err := UnmarshalRTP(buf)
 	require.NoError(t, err)
 	assert.True(t, pkt.Header.Extension)
 	assert.Equal(t, uint16(0x4321), pkt.Header.ExtensionProfile)
@@ -234,7 +234,7 @@ func TestRTP_RoundTrip(t *testing.T) {
 	data, err := orig.Marshal()
 	require.NoError(t, err)
 
-	parsed, err := ParseRTP(data)
+	parsed, err := UnmarshalRTP(data)
 	require.NoError(t, err)
 	assert.Equal(t, orig.Header.Version, parsed.Header.Version)
 	assert.Equal(t, orig.Header.Marker, parsed.Header.Marker)
@@ -265,7 +265,7 @@ func TestRTP_RoundTripWithExtensions(t *testing.T) {
 	}
 	data, err := orig.Marshal()
 	require.NoError(t, err)
-	parsed, err := ParseRTP(data)
+	parsed, err := UnmarshalRTP(data)
 	require.NoError(t, err)
 	assert.True(t, parsed.Header.Extension)
 	assert.Equal(t, orig.Header.ExtensionProfile, parsed.Header.ExtensionProfile)
@@ -294,7 +294,7 @@ func TestRTP_RoundTripWithTwoByteExtensions(t *testing.T) {
 	}
 	data, err := orig.Marshal()
 	require.NoError(t, err)
-	parsed, err := ParseRTP(data)
+	parsed, err := UnmarshalRTP(data)
 	require.NoError(t, err)
 	assert.Equal(t, ExtensionProfileTwoByte, parsed.Header.ExtensionProfile)
 	require.Len(t, parsed.Header.Extensions, 1)
@@ -316,7 +316,7 @@ func TestRTP_PaddingRoundTrip(t *testing.T) {
 	}
 	data, err := orig.Marshal()
 	require.NoError(t, err)
-	parsed, err := ParseRTP(data)
+	parsed, err := UnmarshalRTP(data)
 	require.NoError(t, err)
 	assert.True(t, parsed.Header.Padding)
 	assert.Equal(t, byte(4), parsed.Header.PaddingSize)
@@ -631,7 +631,7 @@ func TestRTPMarshal_OneByteExt_SingleBytePadding(t *testing.T) {
 	assert.Equal(t, byte(0x00), data[extOff+7], "padding byte")
 	assert.Len(t, data, payloadOff, "no payload after extension")
 
-	parsed, err := ParseRTP(data)
+	parsed, err := UnmarshalRTP(data)
 	require.NoError(t, err)
 	assert.True(t, parsed.Header.Extension)
 	require.Len(t, parsed.Header.Extensions, 1)
@@ -664,7 +664,7 @@ func TestRTPMarshal_ExtensionInterleavedPadding(t *testing.T) {
 	assert.Equal(t, byte(0x20), data[extOff+6], "ext[1]: ID=2 len-1=0")
 	assert.Equal(t, byte(0xBB), data[extOff+7], "ext[1] payload")
 
-	parsed, err := ParseRTP(data)
+	parsed, err := UnmarshalRTP(data)
 	require.NoError(t, err)
 	require.Len(t, parsed.Header.Extensions, 2)
 }
@@ -718,7 +718,7 @@ func TestRTPMarshal_AllFeaturesCombined(t *testing.T) {
 	assert.Equal(t, byte(4), data[len(data)-1], "padding size in last byte")
 	assert.Len(t, data, payloadOff+3+4, "total length")
 
-	parsed, err := ParseRTP(data)
+	parsed, err := UnmarshalRTP(data)
 	require.NoError(t, err)
 	assert.Equal(t, pkt.Header.Version, parsed.Header.Version)
 	assert.Equal(t, pkt.Header.Padding, parsed.Header.Padding)
@@ -908,7 +908,7 @@ func TestRTPMarshal_RoundTripAllVariants(t *testing.T) {
 		data, err := pkt.Marshal()
 		require.NoError(t, err, "variants[%d] Marshal", i)
 
-		parsed, err := ParseRTP(data)
+		parsed, err := UnmarshalRTP(data)
 		require.NoError(t, err, "variants[%d] ParseRTP", i)
 
 		assert.Equal(t, pkt.Header.Version, parsed.Header.Version, "variants[%d] Version", i)
@@ -950,7 +950,7 @@ func TestRTPMarshal_ZeroPayload(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, data, 12)
 
-	parsed, err := ParseRTP(data)
+	parsed, err := UnmarshalRTP(data)
 	require.NoError(t, err)
 	assert.Empty(t, parsed.Payload)
 }
@@ -1081,7 +1081,7 @@ func TestRTPMarshal_OneByteExtRoundTrip(t *testing.T) {
 		}
 		data, err := orig.Marshal()
 		require.NoError(t, err)
-		parsed, err := ParseRTP(data)
+		parsed, err := UnmarshalRTP(data)
 		require.NoError(t, err)
 		require.Len(t, parsed.Header.Extensions, 1)
 		assert.Equal(t, payload, parsed.Header.Extensions[0].Payload, "payloadLen=%d", payloadLen)
@@ -1108,7 +1108,7 @@ func TestRTPMarshal_MultipleExtensionsRoundTrip(t *testing.T) {
 	}
 	data, err := orig.Marshal()
 	require.NoError(t, err)
-	parsed, err := ParseRTP(data)
+	parsed, err := UnmarshalRTP(data)
 	require.NoError(t, err)
 	require.Len(t, parsed.Header.Extensions, 4)
 	for i := range orig.Header.Extensions {
@@ -1142,7 +1142,7 @@ func TestRTPMarshal_TwoByteExtMultiple(t *testing.T) {
 	extData := data[extOff+4 : extOff+4+4] // 2 elements (3+4=7, rounded to 8)
 	_ = extData
 
-	parsed, err := ParseRTP(data)
+	parsed, err := UnmarshalRTP(data)
 	require.NoError(t, err)
 	require.Len(t, parsed.Header.Extensions, 2)
 	assert.Equal(t, uint8(1), parsed.Header.Extensions[0].ID)

@@ -13,29 +13,29 @@ var bufioReaderPool = sync.Pool{
 	},
 }
 
-// ParserError represents a SIP parsing failure and may wrap an underlying cause.
-type ParserError struct {
+// UnmarshalError represents a SIP parsing failure and may wrap an underlying cause.
+type UnmarshalError struct {
 	Msg   string
 	Cause error
 }
 
-func (e *ParserError) Error() string {
+func (e *UnmarshalError) Error() string {
 	if e.Cause != nil {
 		return e.Msg + ": " + e.Cause.Error()
 	}
 	return e.Msg
 }
 
-func (e *ParserError) Unwrap() error {
+func (e *UnmarshalError) Unwrap() error {
 	return e.Cause
 }
 
-func ParseError(msg string, args ...any) *ParserError {
-	return &ParserError{Msg: fmt.Sprintf(msg, args...)}
+func UnmarshalErrorf(msg string, args ...any) *UnmarshalError {
+	return &UnmarshalError{Msg: fmt.Sprintf(msg, args...)}
 }
 
-func ParseErrorWrap(cause error, msg string, args ...any) *ParserError {
-	return &ParserError{Msg: fmt.Sprintf(msg, args...), Cause: cause}
+func UnmarshalErrorWrap(cause error, msg string, args ...any) *UnmarshalError {
+	return &UnmarshalError{Msg: fmt.Sprintf(msg, args...), Cause: cause}
 }
 
 func readLine(r *bufio.Reader) (string, error) {

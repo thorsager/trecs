@@ -49,10 +49,10 @@ func (p RTPPacket) String() string {
 		p.Header.Timestamp, p.Header.SSRC, p.Header.Marker, p.Header.Padding, len(p.Payload))
 }
 
-// ParseRTP parses a single RTP packet from a byte slice.
-func ParseRTP(data []byte) (RTPPacket, error) {
+// UnmarshalRTP parses a single RTP packet from a byte slice.
+func UnmarshalRTP(data []byte) (RTPPacket, error) {
 	if len(data) < rtpFixedHeaderLen {
-		return RTPPacket{}, ParseError("rtp: packet too short: %d < %d", len(data), rtpFixedHeaderLen)
+		return RTPPacket{}, UnmarshalErrorf("rtp: packet too short: %d < %d", len(data), rtpFixedHeaderLen)
 	}
 
 	var h RTPHeader
@@ -60,7 +60,7 @@ func ParseRTP(data []byte) (RTPPacket, error) {
 
 	h.Version = data[0] >> 6 & 0x03
 	if h.Version != rtpVersion {
-		return RTPPacket{}, ParseError("rtp: unsupported version %d", h.Version)
+		return RTPPacket{}, UnmarshalErrorf("rtp: unsupported version %d", h.Version)
 	}
 
 	h.Padding = (data[0]>>5)&0x01 != 0
@@ -84,30 +84,30 @@ func ParseRTP(data []byte) (RTPPacket, error) {
 
 	if hasExtension {
 		if len(data) < n+4 {
-			return RTPPacket{}, ParseError("rtp: header too short for extension header")
+			return RTPPacket{}, UnmarshalErrorf("rtp: header too short for extension header")
 		}
 		h.Extension = true
 		h.ExtensionProfile = binary.BigEndian.Uint16(data[n:])
 		extLen := int(binary.BigEndian.Uint16(data[n+2:])) * 4
 		n += 4
 		if len(data) < n+extLen {
-			return RTPPacket{}, ParseError("rtp: header too short for extension data")
+			return RTPPacket{}, UnmarshalErrorf("rtp: header too short for extension data")
 		}
-		h.Extensions, _ = parseExtensions(h.ExtensionProfile, data[n:n+extLen])
+		h.Extensions, _ = unmarshalExtensions(h.ExtensionProfile, data[n:n+extLen])
 		n += extLen
 	}
 
 	end := len(data)
 	if h.Padding {
 		if end <= n {
-			return RTPPacket{}, ParseError("rtp: padding flag set but no room for pad byte")
+			return RTPPacket{}, UnmarshalErrorf("rtp: padding flag set but no room for pad byte")
 		}
 		h.PaddingSize = data[end-1]
 		if h.PaddingSize == 0 {
-			return RTPPacket{}, ParseError("rtp: invalid padding size 0")
+			return RTPPacket{}, UnmarshalErrorf("rtp: invalid padding size 0")
 		}
 		if int(h.PaddingSize) > end-n {
-			return RTPPacket{}, ParseError("rtp: padding size %d exceeds payload length %d", h.PaddingSize, end-n)
+			return RTPPacket{}, UnmarshalErrorf("rtp: padding size %d exceeds payload length %d", h.PaddingSize, end-n)
 		}
 		end -= int(h.PaddingSize)
 	}
@@ -118,13 +118,13 @@ func ParseRTP(data []byte) (RTPPacket, error) {
 	}, nil
 }
 
-// parseExtensions parses RTP header extension data based on the profile.
-func parseExtensions(profile uint16, data []byte) ([]RTPExtension, error) {
+// unmarshalExtensions parses RTP header extension data based on the profile.
+func unmarshalExtensions(profile uint16, data []byte) ([]RTPExtension, error) {
 	switch profile {
 	case ExtensionProfileOneByte:
-		return parseOneByteExtensions(data)
+		return unmarshalOneByteExtensions(data)
 	case ExtensionProfileTwoByte:
-		return parseTwoByteExtensions(data)
+		return unmarshalTwoByteExtensions(data)
 	default:
 		if len(data) == 0 {
 			return nil, nil
@@ -133,7 +133,7 @@ func parseExtensions(profile uint16, data []byte) ([]RTPExtension, error) {
 	}
 }
 
-func parseOneByteExtensions(data []byte) ([]RTPExtension, error) {
+func unmarshalOneByteExtensions(data []byte) ([]RTPExtension, error) {
 	exts := make([]RTPExtension, 0, len(data)/2)
 	for i := 0; i < len(data); {
 		if data[i] == 0x00 {
@@ -147,7 +147,7 @@ func parseOneByteExtensions(data []byte) ([]RTPExtension, error) {
 		payloadLen := int(data[i]&0x0F) + 1
 		i++
 		if i+payloadLen > len(data) {
-			return exts, ParseError("rtp: one-byte extension truncated")
+			return exts, UnmarshalErrorf("rtp: one-byte extension truncated")
 		}
 		exts = append(exts, RTPExtension{ID: id, Payload: data[i : i+payloadLen]})
 		i += payloadLen
@@ -155,7 +155,7 @@ func parseOneByteExtensions(data []byte) ([]RTPExtension, error) {
 	return exts, nil
 }
 
-func parseTwoByteExtensions(data []byte) ([]RTPExtension, error) {
+func unmarshalTwoByteExtensions(data []byte) ([]RTPExtension, error) {
 	exts := make([]RTPExtension, 0, len(data)/3)
 	for i := 0; i < len(data); {
 		if data[i] == 0x00 {
@@ -165,12 +165,12 @@ func parseTwoByteExtensions(data []byte) ([]RTPExtension, error) {
 		id := data[i]
 		i++
 		if i >= len(data) {
-			return exts, ParseError("rtp: two-byte extension truncated at length")
+			return exts, UnmarshalErrorf("rtp: two-byte extension truncated at length")
 		}
 		payloadLen := int(data[i])
 		i++
 		if i+payloadLen > len(data) {
-			return exts, ParseError("rtp: two-byte extension truncated")
+			return exts, UnmarshalErrorf("rtp: two-byte extension truncated")
 		}
 		exts = append(exts, RTPExtension{ID: id, Payload: data[i : i+payloadLen]})
 		i += payloadLen
@@ -219,7 +219,7 @@ func (p *RTPPacket) MarshalTo(buf []byte) (int, error) {
 
 	cc := len(p.Header.CSRC)
 	if cc > 15 {
-		return 0, ParseError("rtp: too many CSRCs: %d", cc)
+		return 0, UnmarshalErrorf("rtp: too many CSRCs: %d", cc)
 	}
 
 	buf[0] = (p.Header.Version << 6) | byte(cc)

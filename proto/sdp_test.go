@@ -10,7 +10,7 @@ import (
 
 func TestSDP_Minimal(t *testing.T) {
 	input := "v=0\r\no=jdoe 2890844526 2890844527 IN IP4 atlanta.example.com\r\ns=SDP Seminar\r\nt=3034423619 3042462419\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, 0, sdp.Version)
 		assert.Equal(t, "jdoe", sdp.Origin.Username)
@@ -41,7 +41,7 @@ func TestSDP_AllSessionFields(t *testing.T) {
 		"z=2882844526 -1h 2898848070 0\r\n" +
 		"k=prompt\r\n" +
 		"a=recvonly\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "A Seminar on SDP", sdp.SessionInfo)
 		assert.Equal(t, "http://www.example.com/seminar/", sdp.URI)
@@ -69,7 +69,7 @@ func TestSDP_RepeatTime(t *testing.T) {
 		"s=SDP Seminar\r\n" +
 		"t=3034423619 3042462419\r\n" +
 		"r=604800 3600 0 90000\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		assert.Len(t, sdp.Times, 1)
 		assert.Len(t, sdp.Times[0].Repeats, 1)
@@ -81,7 +81,7 @@ func TestSDP_RepeatTime(t *testing.T) {
 
 func TestSDP_AttributeFlag(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nt=0 0\r\na=recvonly\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		assert.Len(t, sdp.Attributes, 1)
 		assert.Equal(t, "recvonly", sdp.Attributes[0].Key)
@@ -91,7 +91,7 @@ func TestSDP_AttributeFlag(t *testing.T) {
 
 func TestSDP_AttributeKeyValue(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nt=0 0\r\na=rtpmap:0 PCMU/8000\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		assert.Len(t, sdp.Attributes, 1)
 		assert.Equal(t, "rtpmap", sdp.Attributes[0].Key)
@@ -106,7 +106,7 @@ func TestSDP_MediaSection(t *testing.T) {
 		"t=3034423619 3042462419\r\n" +
 		"m=audio 49170 RTP/AVP 0\r\n" +
 		"a=rtpmap:0 PCMU/8000\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		assert.Len(t, sdp.MediaDescs, 1)
 		md := sdp.MediaDescs[0]
@@ -129,7 +129,7 @@ func TestSDP_MultipleMediaSections(t *testing.T) {
 		"m=audio 49170 RTP/AVP 0\r\n" +
 		"m=video 51372 RTP/AVP 31\r\n" +
 		"a=rtpmap:31 H261/90000\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		assert.Len(t, sdp.MediaDescs, 2)
 		assert.Equal(t, "audio", sdp.MediaDescs[0].Type)
@@ -143,7 +143,7 @@ func TestSDP_MultipleMediaSections(t *testing.T) {
 
 func TestSDP_MediaWithPortCount(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nt=0 0\r\nm=video 49170/2 RTP/AVP 31\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		assert.Len(t, sdp.MediaDescs, 1)
 		md := sdp.MediaDescs[0]
@@ -154,7 +154,7 @@ func TestSDP_MediaWithPortCount(t *testing.T) {
 
 func TestSDP_MediaWithMultipleFormats(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nt=0 0\r\nm=audio 49170 RTP/AVP 0 8 9\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, []string{"0", "8", "9"}, sdp.MediaDescs[0].Fmt)
 	}
@@ -170,7 +170,7 @@ func TestSDP_MediaLevelFields(t *testing.T) {
 		"b=AS:64\r\n" +
 		"k=clear:abc123\r\n" +
 		"a=sendrecv\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		md := sdp.MediaDescs[0]
 		assert.Equal(t, "Phone call", md.Title)
@@ -191,7 +191,7 @@ func TestSDP_IPv6(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP6 2001:db8::1\r\ns=Test\r\n" +
 		"c=IN IP6 2001:db8::1\r\n" +
 		"t=0 0\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "IP6", sdp.Origin.AddressType)
 		assert.Equal(t, "2001:db8::1", sdp.Origin.Address)
@@ -202,7 +202,7 @@ func TestSDP_IPv6(t *testing.T) {
 
 func TestSDP_EncryptionKey(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nt=0 0\r\nk=clear:abc123\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		assert.NotNil(t, sdp.Encryption)
 		assert.Equal(t, "clear", sdp.Encryption.Method)
@@ -212,7 +212,7 @@ func TestSDP_EncryptionKey(t *testing.T) {
 
 func TestSDP_EncryptionMethodOnly(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nt=0 0\r\nk=prompt\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		assert.NotNil(t, sdp.Encryption)
 		assert.Equal(t, "prompt", sdp.Encryption.Method)
@@ -224,7 +224,7 @@ func TestSDP_Bandwidth(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\n" +
 		"b=CT:1000\r\nb=AS:64\r\n" +
 		"t=0 0\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		assert.Len(t, sdp.Bandwidths, 2)
 		assert.Equal(t, "CT", sdp.Bandwidths[0].Type)
@@ -235,49 +235,49 @@ func TestSDP_Bandwidth(t *testing.T) {
 }
 
 func TestSDP_EmptyBody(t *testing.T) {
-	_, err := ParseSDP(strings.NewReader(""))
+	_, err := UnmarshalSDP(strings.NewReader(""))
 	assert.Error(t, err)
 }
 
 func TestSDP_MissingVersion(t *testing.T) {
 	input := "o=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nt=0 0\r\n"
-	_, err := ParseSDP(strings.NewReader(input))
+	_, err := UnmarshalSDP(strings.NewReader(input))
 	assert.Error(t, err)
 }
 
 func TestSDP_MissingOrigin(t *testing.T) {
 	input := "v=0\r\ns=Test\r\nt=0 0\r\n"
-	_, err := ParseSDP(strings.NewReader(input))
+	_, err := UnmarshalSDP(strings.NewReader(input))
 	assert.Error(t, err)
 }
 
 func TestSDP_MissingSessionName(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\nt=0 0\r\n"
-	_, err := ParseSDP(strings.NewReader(input))
+	_, err := UnmarshalSDP(strings.NewReader(input))
 	assert.Error(t, err)
 }
 
 func TestSDP_MissingTime(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\n"
-	_, err := ParseSDP(strings.NewReader(input))
+	_, err := UnmarshalSDP(strings.NewReader(input))
 	assert.Error(t, err)
 }
 
 func TestSDP_InvalidVersion(t *testing.T) {
 	input := "v=1\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nt=0 0\r\n"
-	_, err := ParseSDP(strings.NewReader(input))
+	_, err := UnmarshalSDP(strings.NewReader(input))
 	assert.Error(t, err)
 }
 
 func TestSDP_MalformedLine(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ninvalid-line\r\ns=Test\r\nt=0 0\r\n"
-	_, err := ParseSDP(strings.NewReader(input))
+	_, err := UnmarshalSDP(strings.NewReader(input))
 	assert.Error(t, err)
 }
 
 func TestSDP_UnknownFieldType(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nx=unknown\r\nt=0 0\r\n"
-	_, err := ParseSDP(strings.NewReader(input))
+	_, err := UnmarshalSDP(strings.NewReader(input))
 	assert.Error(t, err)
 }
 
@@ -300,10 +300,10 @@ func TestSDP_RoundTrip(t *testing.T) {
 		"c=IN IP4 203.0.113.2\r\n" +
 		"b=AS:64\r\n" +
 		"a=rtpmap:0 PCMU/8000\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		output := sdp.String()
-		sdp2, err := ParseSDP(strings.NewReader(output))
+		sdp2, err := UnmarshalSDP(strings.NewReader(output))
 		if assert.NoError(t, err) {
 			assert.Equal(t, sdp.Origin, sdp2.Origin)
 			assert.Equal(t, sdp.SessionName, sdp2.SessionName)
@@ -331,7 +331,7 @@ func TestSDP_RoundTrip(t *testing.T) {
 
 func TestSDP_UnboundedTime(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nt=0 0\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		assert.Len(t, sdp.Times, 1)
 		assert.Equal(t, int64(0), sdp.Times[0].Start)
@@ -343,7 +343,7 @@ func TestSDP_MultipleTimes(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\n" +
 		"t=3034423619 3042462419\r\n" +
 		"t=3042462419 3050501219\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		assert.Len(t, sdp.Times, 2)
 		assert.Equal(t, int64(3034423619), sdp.Times[0].Start)
@@ -356,7 +356,7 @@ func TestSDP_MultipleTimes(t *testing.T) {
 func TestSDP_MultipleEmails(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nt=0 0\r\n" +
 		"e=alice@example.com\r\ne=bob@example.com\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, []string{"alice@example.com", "bob@example.com"}, sdp.Emails)
 	}
@@ -364,50 +364,50 @@ func TestSDP_MultipleEmails(t *testing.T) {
 
 func TestSDP_OriginInvalid(t *testing.T) {
 	input := "v=0\r\no=too few fields\r\ns=Test\r\nt=0 0\r\n"
-	_, err := ParseSDP(strings.NewReader(input))
+	_, err := UnmarshalSDP(strings.NewReader(input))
 	assert.Error(t, err)
 }
 
 func TestSDP_ConnectionInvalid(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\n" +
 		"c=too few\r\nt=0 0\r\n"
-	_, err := ParseSDP(strings.NewReader(input))
+	_, err := UnmarshalSDP(strings.NewReader(input))
 	assert.Error(t, err)
 }
 
 func TestSDP_BandwidthInvalid(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nt=0 0\r\nb=nocolon\r\n"
-	_, err := ParseSDP(strings.NewReader(input))
+	_, err := UnmarshalSDP(strings.NewReader(input))
 	assert.Error(t, err)
 }
 
 func TestSDP_BandwidthInvalidValue(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nt=0 0\r\nb=CT:notanumber\r\n"
-	_, err := ParseSDP(strings.NewReader(input))
+	_, err := UnmarshalSDP(strings.NewReader(input))
 	assert.Error(t, err)
 }
 
 func TestSDP_MediaInvalid(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nt=0 0\r\nm=too few\r\n"
-	_, err := ParseSDP(strings.NewReader(input))
+	_, err := UnmarshalSDP(strings.NewReader(input))
 	assert.Error(t, err)
 }
 
 func TestSDP_MediaInvalidPort(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nt=0 0\r\nm=audio notaport RTP/AVP 0\r\n"
-	_, err := ParseSDP(strings.NewReader(input))
+	_, err := UnmarshalSDP(strings.NewReader(input))
 	assert.Error(t, err)
 }
 
 func TestSDP_RepeatBeforeTime(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nr=604800 3600\r\nt=0 0\r\n"
-	_, err := ParseSDP(strings.NewReader(input))
+	_, err := UnmarshalSDP(strings.NewReader(input))
 	assert.Error(t, err)
 }
 
 func TestSDP_CRLFVariants(t *testing.T) {
 	input := "v=0\no=- 0 0 IN IP4 host.example.com\ns=Test\nt=0 0\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	assert.NoError(t, err)
 	assert.Equal(t, "Test", sdp.SessionName)
 }
@@ -425,7 +425,7 @@ func TestSDP_RFC4566Example(t *testing.T) {
 		"a=recvonly\r\n" +
 		"m=audio 49170 RTP/AVP 0\r\n" +
 		"a=rtpmap:0 PCMU/8000\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		assert.Equal(t, 0, sdp.Version)
 		assert.Equal(t, "jdoe", sdp.Origin.Username)
@@ -446,7 +446,7 @@ func TestSDP_RFC4566Example(t *testing.T) {
 
 func TestSDP_StartStopTime(t *testing.T) {
 	input := "v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nt=0 0\r\n"
-	sdp, err := ParseSDP(strings.NewReader(input))
+	sdp, err := UnmarshalSDP(strings.NewReader(input))
 	if assert.NoError(t, err) {
 		assert.True(t, sdp.StartTime().IsZero())
 		assert.True(t, sdp.StopTime().IsZero())
@@ -454,7 +454,7 @@ func TestSDP_StartStopTime(t *testing.T) {
 
 	input2 := fmt.Sprintf("v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nt=%d %d\r\n",
 		int64(3780064800), int64(3780064800+3600))
-	sdp2, err := ParseSDP(strings.NewReader(input2))
+	sdp2, err := UnmarshalSDP(strings.NewReader(input2))
 	if assert.NoError(t, err) {
 		assert.False(t, sdp2.StartTime().IsZero())
 		assert.False(t, sdp2.StopTime().IsZero())
@@ -467,7 +467,7 @@ func BenchmarkSDP_Minimal(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := ParseSDP(strings.NewReader(input))
+		_, err := UnmarshalSDP(strings.NewReader(input))
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -497,7 +497,7 @@ func BenchmarkSDP_FullFeatured(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := ParseSDP(strings.NewReader(input))
+		_, err := UnmarshalSDP(strings.NewReader(input))
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -516,7 +516,7 @@ func BenchmarkSDP_ManyMedia(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := ParseSDP(strings.NewReader(input))
+		_, err := UnmarshalSDP(strings.NewReader(input))
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -542,7 +542,7 @@ func TestSDP_MarshalRoundTrip(t *testing.T) {
 		"c=IN IP4 203.0.113.2\r\n" +
 		"b=AS:64\r\n" +
 		"a=rtpmap:0 PCMU/8000\r\n"
-	sdp, err := ParseSDPBytes([]byte(input))
+	sdp, err := UnmarshalSDPBytes([]byte(input))
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -550,7 +550,7 @@ func TestSDP_MarshalRoundTrip(t *testing.T) {
 	if !assert.NoError(t, err) {
 		return
 	}
-	sdp2, err := ParseSDPBytes(data)
+	sdp2, err := UnmarshalSDPBytes(data)
 	if assert.NoError(t, err) {
 		assert.Equal(t, sdp.Origin, sdp2.Origin)
 		assert.Equal(t, sdp.SessionName, sdp2.SessionName)
@@ -579,7 +579,7 @@ func TestSDP_MarshalTo_BufferTooSmall(t *testing.T) {
 
 func TestSDP_MarshalSize_MatchesActual(t *testing.T) {
 	input := "v=0\r\no=jdoe 2890844526 2890844527 IN IP4 atlanta.example.com\r\ns=SDP Seminar\r\nt=3034423619 3042462419\r\n"
-	sdp, err := ParseSDPBytes([]byte(input))
+	sdp, err := UnmarshalSDPBytes([]byte(input))
 	if !assert.NoError(t, err) {
 		return
 	}
@@ -603,13 +603,13 @@ func TestSDP_Marshal_AllSessionFields(t *testing.T) {
 		"z=2882844526 -1h 2898848070 0\r\n" +
 		"k=prompt\r\n" +
 		"a=recvonly\r\n"
-	sdp, err := ParseSDPBytes([]byte(input))
+	sdp, err := UnmarshalSDPBytes([]byte(input))
 	if !assert.NoError(t, err) {
 		return
 	}
 	data, err := sdp.Marshal()
 	if assert.NoError(t, err) {
-		sdp2, err := ParseSDPBytes(data)
+		sdp2, err := UnmarshalSDPBytes(data)
 		if assert.NoError(t, err) {
 			assert.Equal(t, sdp.SessionInfo, sdp2.SessionInfo)
 			assert.Equal(t, sdp.URI, sdp2.URI)
@@ -635,7 +635,7 @@ func BenchmarkSDP_LargeAttributes(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := ParseSDP(strings.NewReader(input))
+		_, err := UnmarshalSDP(strings.NewReader(input))
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -644,7 +644,7 @@ func BenchmarkSDP_LargeAttributes(b *testing.B) {
 
 func BenchmarkSDP_Marshal_Minimal(b *testing.B) {
 	input := "v=0\r\no=jdoe 2890844526 2890844527 IN IP4 atlanta.example.com\r\ns=SDP Seminar\r\nt=3034423619 3042462419\r\n"
-	sdp, err := ParseSDPBytes([]byte(input))
+	sdp, err := UnmarshalSDPBytes([]byte(input))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -678,7 +678,7 @@ func BenchmarkSDP_Marshal_FullFeatured(b *testing.B) {
 		"c=IN IP4 203.0.113.2\r\n" +
 		"b=AS:64\r\n" +
 		"a=rtpmap:0 PCMU/8000\r\n"
-	sdp, err := ParseSDPBytes([]byte(input))
+	sdp, err := UnmarshalSDPBytes([]byte(input))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -694,7 +694,7 @@ func BenchmarkSDP_Marshal_FullFeatured(b *testing.B) {
 
 func BenchmarkSDP_MarshalTo_Minimal(b *testing.B) {
 	input := "v=0\r\no=jdoe 2890844526 2890844527 IN IP4 atlanta.example.com\r\ns=SDP Seminar\r\nt=3034423619 3042462419\r\n"
-	sdp, err := ParseSDPBytes([]byte(input))
+	sdp, err := UnmarshalSDPBytes([]byte(input))
 	if err != nil {
 		b.Fatal(err)
 	}

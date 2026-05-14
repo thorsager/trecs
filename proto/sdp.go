@@ -103,10 +103,10 @@ type MediaDescription struct {
 	Attributes []Attribute
 }
 
-// ParseSDP parses a complete SDP session description from r, returning a
+// UnmarshalSDP parses a complete SDP session description from r, returning a
 // structured SDP value or an error. The reader must provide a complete
 // SDP body; parsing stops at the first empty line or EOF.
-func ParseSDP(r io.Reader) (*SDP, error) {
+func UnmarshalSDP(r io.Reader) (*SDP, error) {
 	var pooled *bufio.Reader
 	br, ok := r.(*bufio.Reader)
 	if !ok {
@@ -125,7 +125,7 @@ func ParseSDP(r io.Reader) (*SDP, error) {
 		line, err := readLine(br)
 		if err != nil && line == "" {
 			if !seenFirstLine {
-				return nil, ParseError("sdp: empty body")
+				return nil, UnmarshalErrorf("sdp: empty body")
 			}
 			break
 		}
@@ -139,13 +139,13 @@ func ParseSDP(r io.Reader) (*SDP, error) {
 			continue
 		}
 		if len(line) < 3 || line[1] != '=' {
-			return nil, ParseError("sdp: malformed line: %q", line)
+			return nil, UnmarshalErrorf("sdp: malformed line: %q", line)
 		}
 		typ := line[0]
 		val := line[2:]
 
 		if typ == 'm' {
-			md, err := parseMedia(val)
+			md, err := unmarshalMedia(val)
 			if err != nil {
 				return nil, err
 			}
@@ -156,23 +156,23 @@ func ParseSDP(r io.Reader) (*SDP, error) {
 
 		if typ == 'v' {
 			if seenVersion {
-				return nil, ParseError("sdp: duplicate version line")
+				return nil, UnmarshalErrorf("sdp: duplicate version line")
 			}
 			seenVersion = true
 			n, err := strconv.Atoi(strings.TrimSpace(val))
 			if err != nil {
-				return nil, ParseErrorWrap(err, "sdp: invalid version: %q", val)
+				return nil, UnmarshalErrorWrap(err, "sdp: invalid version: %q", val)
 			}
 			sdp.Version = n
 			continue
 		}
 
 		if media != nil {
-			if err := parseMediaLine(media, typ, val); err != nil {
+			if err := unmarshalMediaLine(media, typ, val); err != nil {
 				return nil, err
 			}
 		} else {
-			if err := parseSessionLine(sdp, typ, val); err != nil {
+			if err := unmarshalSessionLine(sdp, typ, val); err != nil {
 				return nil, err
 			}
 		}
@@ -183,28 +183,28 @@ func ParseSDP(r io.Reader) (*SDP, error) {
 	}
 
 	if !seenVersion {
-		return nil, ParseError("sdp: missing version (v=) line")
+		return nil, UnmarshalErrorf("sdp: missing version (v=) line")
 	}
 	if sdp.Version != 0 {
-		return nil, ParseError("sdp: protocol version must be 0, got %d", sdp.Version)
+		return nil, UnmarshalErrorf("sdp: protocol version must be 0, got %d", sdp.Version)
 	}
 	if sdp.Origin.Username == "" {
-		return nil, ParseError("sdp: missing origin (o=) line")
+		return nil, UnmarshalErrorf("sdp: missing origin (o=) line")
 	}
 	if sdp.SessionName == "" {
-		return nil, ParseError("sdp: missing session name (s=) line")
+		return nil, UnmarshalErrorf("sdp: missing session name (s=) line")
 	}
 	if len(sdp.Times) == 0 {
-		return nil, ParseError("sdp: missing time (t=) line")
+		return nil, UnmarshalErrorf("sdp: missing time (t=) line")
 	}
 
 	return sdp, nil
 }
 
-func parseSessionLine(sdp *SDP, typ byte, val string) error {
+func unmarshalSessionLine(sdp *SDP, typ byte, val string) error {
 	switch typ {
 	case 'o':
-		o, err := parseOrigin(val)
+		o, err := unmarshalOrigin(val)
 		if err != nil {
 			return err
 		}
@@ -220,28 +220,28 @@ func parseSessionLine(sdp *SDP, typ byte, val string) error {
 	case 'p':
 		sdp.Phones = append(sdp.Phones, val)
 	case 'c':
-		c, err := parseConnection(val)
+		c, err := unmarshalConnection(val)
 		if err != nil {
 			return err
 		}
 		sdp.Connection = c
 	case 'b':
-		b, err := parseBandwidth(val)
+		b, err := unmarshalBandwidth(val)
 		if err != nil {
 			return err
 		}
 		sdp.Bandwidths = append(sdp.Bandwidths, b)
 	case 't':
-		t, err := parseTime(val)
+		t, err := unmarshalTime(val)
 		if err != nil {
 			return err
 		}
 		sdp.Times = append(sdp.Times, t)
 	case 'r':
 		if len(sdp.Times) == 0 {
-			return ParseError("sdp: repeat line before any time line")
+			return UnmarshalErrorf("sdp: repeat line before any time line")
 		}
-		r, err := parseRepeat(val)
+		r, err := unmarshalRepeat(val)
 		if err != nil {
 			return err
 		}
@@ -250,69 +250,69 @@ func parseSessionLine(sdp *SDP, typ byte, val string) error {
 	case 'z':
 		sdp.TimeZone = val
 	case 'k':
-		k, err := parseEncryption(val)
+		k, err := unmarshalEncryption(val)
 		if err != nil {
 			return err
 		}
 		sdp.Encryption = k
 	case 'a':
-		sdp.Attributes = append(sdp.Attributes, parseAttribute(val))
+		sdp.Attributes = append(sdp.Attributes, unmarshalAttribute(val))
 	default:
-		return ParseError("sdp: unknown session-level field type: %c", typ)
+		return UnmarshalErrorf("sdp: unknown session-level field type: %c", typ)
 	}
 	return nil
 }
 
-func parseMediaLine(md *MediaDescription, typ byte, val string) error {
+func unmarshalMediaLine(md *MediaDescription, typ byte, val string) error {
 	switch typ {
 	case 'i':
 		md.Title = val
 	case 'c':
-		c, err := parseConnection(val)
+		c, err := unmarshalConnection(val)
 		if err != nil {
 			return err
 		}
 		md.Connection = c
 	case 'b':
-		b, err := parseBandwidth(val)
+		b, err := unmarshalBandwidth(val)
 		if err != nil {
 			return err
 		}
 		md.Bandwidths = append(md.Bandwidths, b)
 	case 'k':
-		k, err := parseEncryption(val)
+		k, err := unmarshalEncryption(val)
 		if err != nil {
 			return err
 		}
 		md.Encryption = k
 	case 'a':
-		md.Attributes = append(md.Attributes, parseAttribute(val))
+		md.Attributes = append(md.Attributes, unmarshalAttribute(val))
 	default:
-		return ParseError("sdp: unknown media-level field type: %c", typ)
+		return UnmarshalErrorf("sdp: unknown media-level field type: %c", typ)
 	}
 	return nil
 }
 
-func parseOrigin(val string) (Origin, error) {
+func unmarshalOrigin(val string) (Origin, error) {
 	f1, rest, ok := strings.Cut(val, " ")
 	if !ok {
-		return Origin{}, ParseError("sdp: invalid origin: %q", val)
+		return Origin{}, UnmarshalErrorf("sdp: invalid origin: %q", val)
 	}
 	f2, rest, ok := strings.Cut(strings.TrimLeft(rest, " "), " ")
 	if !ok {
-		return Origin{}, ParseError("sdp: invalid origin: %q", val)
+		return Origin{}, UnmarshalErrorf("sdp: invalid origin: %q", val)
 	}
 	f3, rest, ok := strings.Cut(strings.TrimLeft(rest, " "), " ")
 	if !ok {
-		return Origin{}, ParseError("sdp: invalid origin: %q", val)
+		return Origin{}, UnmarshalErrorf("sdp: invalid origin: %q", val)
 	}
 	f4, rest, ok := strings.Cut(strings.TrimLeft(rest, " "), " ")
 	if !ok {
-		return Origin{}, ParseError("sdp: invalid origin: %q", val)
+		return Origin{}, UnmarshalErrorf("sdp: invalid origin: %q", val)
 	}
 	f5, f6, ok := strings.Cut(strings.TrimLeft(rest, " "), " ")
 	if !ok {
-		return Origin{}, ParseError("sdp: invalid origin: %q", val)
+		return Origin{}, UnmarshalErrorf("sdp: invalid origin: %q", val)
 	}
 	return Origin{
 		Username:       f1,
@@ -324,14 +324,14 @@ func parseOrigin(val string) (Origin, error) {
 	}, nil
 }
 
-func parseConnection(val string) (*ConnectionInfo, error) {
+func unmarshalConnection(val string) (*ConnectionInfo, error) {
 	f1, rest, ok := strings.Cut(val, " ")
 	if !ok {
-		return nil, ParseError("sdp: invalid connection: %q", val)
+		return nil, UnmarshalErrorf("sdp: invalid connection: %q", val)
 	}
 	f2, f3, ok := strings.Cut(strings.TrimLeft(rest, " "), " ")
 	if !ok {
-		return nil, ParseError("sdp: invalid connection: %q", val)
+		return nil, UnmarshalErrorf("sdp: invalid connection: %q", val)
 	}
 	return &ConnectionInfo{
 		NetworkType: f1,
@@ -340,54 +340,54 @@ func parseConnection(val string) (*ConnectionInfo, error) {
 	}, nil
 }
 
-func parseBandwidth(val string) (BandwidthInfo, error) {
+func unmarshalBandwidth(val string) (BandwidthInfo, error) {
 	before, after, ok := strings.Cut(val, ":")
 	if !ok {
-		return BandwidthInfo{}, ParseError("sdp: invalid bandwidth: %q", val)
+		return BandwidthInfo{}, UnmarshalErrorf("sdp: invalid bandwidth: %q", val)
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(after))
 	if err != nil {
-		return BandwidthInfo{}, ParseErrorWrap(err, "sdp: invalid bandwidth value: %q", val)
+		return BandwidthInfo{}, UnmarshalErrorWrap(err, "sdp: invalid bandwidth value: %q", val)
 	}
 	return BandwidthInfo{Type: strings.TrimSpace(before), Value: n}, nil
 }
 
-func parseTime(val string) (TimeDescription, error) {
+func unmarshalTime(val string) (TimeDescription, error) {
 	startStr, rest, ok := strings.Cut(val, " ")
 	if !ok {
-		return TimeDescription{}, ParseError("sdp: invalid time: %q", val)
+		return TimeDescription{}, UnmarshalErrorf("sdp: invalid time: %q", val)
 	}
 	stopStr := strings.TrimSpace(rest)
 	if stopStr == "" {
-		return TimeDescription{}, ParseError("sdp: invalid time: %q", val)
+		return TimeDescription{}, UnmarshalErrorf("sdp: invalid time: %q", val)
 	}
 	start, err := strconv.ParseInt(startStr, 10, 64)
 	if err != nil {
-		return TimeDescription{}, ParseErrorWrap(err, "sdp: invalid time start: %q", val)
+		return TimeDescription{}, UnmarshalErrorWrap(err, "sdp: invalid time start: %q", val)
 	}
 	stop, err := strconv.ParseInt(stopStr, 10, 64)
 	if err != nil {
-		return TimeDescription{}, ParseErrorWrap(err, "sdp: invalid time stop: %q", val)
+		return TimeDescription{}, UnmarshalErrorWrap(err, "sdp: invalid time stop: %q", val)
 	}
 	return TimeDescription{Start: start, Stop: stop}, nil
 }
 
-func parseRepeat(val string) (RepeatInfo, error) {
+func unmarshalRepeat(val string) (RepeatInfo, error) {
 	intvStr, rest, ok := strings.Cut(val, " ")
 	if !ok {
-		return RepeatInfo{}, ParseError("sdp: invalid repeat: %q", val)
+		return RepeatInfo{}, UnmarshalErrorf("sdp: invalid repeat: %q", val)
 	}
 	durStr, rest, ok := strings.Cut(strings.TrimLeft(rest, " "), " ")
 	if !ok {
-		return RepeatInfo{}, ParseError("sdp: invalid repeat: %q", val)
+		return RepeatInfo{}, UnmarshalErrorf("sdp: invalid repeat: %q", val)
 	}
 	interval, err := strconv.ParseInt(intvStr, 10, 64)
 	if err != nil {
-		return RepeatInfo{}, ParseErrorWrap(err, "sdp: invalid repeat interval: %q", val)
+		return RepeatInfo{}, UnmarshalErrorWrap(err, "sdp: invalid repeat interval: %q", val)
 	}
 	duration, err := strconv.ParseInt(durStr, 10, 64)
 	if err != nil {
-		return RepeatInfo{}, ParseErrorWrap(err, "sdp: invalid repeat duration: %q", val)
+		return RepeatInfo{}, UnmarshalErrorWrap(err, "sdp: invalid repeat duration: %q", val)
 	}
 	var offsets []int64
 	rest = strings.TrimLeft(rest, " ")
@@ -396,7 +396,7 @@ func parseRepeat(val string) (RepeatInfo, error) {
 		oStr, rest, _ = strings.Cut(rest, " ")
 		n, err := strconv.ParseInt(oStr, 10, 64)
 		if err != nil {
-			return RepeatInfo{}, ParseErrorWrap(err, "sdp: invalid repeat offset: %q", oStr)
+			return RepeatInfo{}, UnmarshalErrorWrap(err, "sdp: invalid repeat offset: %q", oStr)
 		}
 		offsets = append(offsets, n)
 		rest = strings.TrimLeft(rest, " ")
@@ -404,7 +404,7 @@ func parseRepeat(val string) (RepeatInfo, error) {
 	return RepeatInfo{Interval: interval, Duration: duration, Offsets: offsets}, nil
 }
 
-func parseEncryption(val string) (*EncryptionKey, error) {
+func unmarshalEncryption(val string) (*EncryptionKey, error) {
 	before, after, ok := strings.Cut(val, ":")
 	if !ok {
 		return &EncryptionKey{Method: val, Key: ""}, nil
@@ -412,7 +412,7 @@ func parseEncryption(val string) (*EncryptionKey, error) {
 	return &EncryptionKey{Method: before, Key: after}, nil
 }
 
-func parseAttribute(val string) Attribute {
+func unmarshalAttribute(val string) Attribute {
 	k, v, found := strings.Cut(val, ":")
 	if found {
 		return Attribute{Key: k, Value: v}
@@ -420,18 +420,18 @@ func parseAttribute(val string) Attribute {
 	return Attribute{Key: val}
 }
 
-func parseMedia(val string) (MediaDescription, error) {
+func unmarshalMedia(val string) (MediaDescription, error) {
 	typ, rest, ok := strings.Cut(val, " ")
 	if !ok {
-		return MediaDescription{}, ParseError("sdp: invalid media: %q", val)
+		return MediaDescription{}, UnmarshalErrorf("sdp: invalid media: %q", val)
 	}
 	portStr, rest, ok := strings.Cut(strings.TrimLeft(rest, " "), " ")
 	if !ok {
-		return MediaDescription{}, ParseError("sdp: invalid media: %q", val)
+		return MediaDescription{}, UnmarshalErrorf("sdp: invalid media: %q", val)
 	}
 	proto, rest, ok := strings.Cut(strings.TrimLeft(rest, " "), " ")
 	if !ok {
-		return MediaDescription{}, ParseError("sdp: invalid media: %q", val)
+		return MediaDescription{}, UnmarshalErrorf("sdp: invalid media: %q", val)
 	}
 
 	md := MediaDescription{
@@ -443,14 +443,14 @@ func parseMedia(val string) (MediaDescription, error) {
 	if idx := strings.IndexByte(portStr, '/'); idx >= 0 {
 		n, err := strconv.Atoi(portStr[idx+1:])
 		if err != nil {
-			return MediaDescription{}, ParseErrorWrap(err, "sdp: invalid media port count: %q", val)
+			return MediaDescription{}, UnmarshalErrorWrap(err, "sdp: invalid media port count: %q", val)
 		}
 		portCount = n
 		portStr = portStr[:idx]
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		return MediaDescription{}, ParseErrorWrap(err, "sdp: invalid media port: %q", val)
+		return MediaDescription{}, UnmarshalErrorWrap(err, "sdp: invalid media port: %q", val)
 	}
 	md.Port = port
 	md.PortCount = portCount
@@ -822,9 +822,9 @@ func intLen(n int64) int {
 	return count
 }
 
-// ParseSDPBytes parses a complete SDP session description from a byte slice.
-func ParseSDPBytes(data []byte) (*SDP, error) {
-	return ParseSDP(bytes.NewReader(data))
+// UnmarshalSDPBytes parses a complete SDP session description from a byte slice.
+func UnmarshalSDPBytes(data []byte) (*SDP, error) {
+	return UnmarshalSDP(bytes.NewReader(data))
 }
 
 // StartTime returns the session start time as a Go time.Time, converting
