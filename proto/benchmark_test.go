@@ -565,6 +565,264 @@ func BenchmarkParseRTP_RoundTrip(b *testing.B) {
 	}
 }
 
+func BenchmarkRTPMarshal_Minimal(b *testing.B) {
+	p := &RTPPacket{
+		Header: RTPHeader{
+			Version:        2,
+			PayloadType:    0,
+			SequenceNumber: 1,
+			Timestamp:      100,
+			SSRC:           0xDEADBEEF,
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.Marshal()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTPMarshal_WithPayload(b *testing.B) {
+	p := &RTPPacket{
+		Header: RTPHeader{
+			Version:        2,
+			PayloadType:    96,
+			SequenceNumber: 42,
+			Timestamp:      5000,
+			SSRC:           0xAAAAAAAA,
+		},
+		Payload: make([]byte, 160),
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.Marshal()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTPMarshal_WithCSRC(b *testing.B) {
+	p := &RTPPacket{
+		Header: RTPHeader{
+			Version:        2,
+			PayloadType:    96,
+			SequenceNumber: 42,
+			Timestamp:      5000,
+			SSRC:           0xAAAAAAAA,
+			CSRC:           []uint32{0x11111111, 0x22222222, 0x33333333},
+		},
+		Payload: []byte{0x01, 0x02, 0x03},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.Marshal()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTPMarshal_OneByteExtension(b *testing.B) {
+	p := &RTPPacket{
+		Header: RTPHeader{
+			Version:          2,
+			PayloadType:      96,
+			SequenceNumber:   1,
+			Timestamp:        100,
+			SSRC:             0x12345678,
+			Extension:        true,
+			ExtensionProfile: ExtensionProfileOneByte,
+			Extensions: []RTPExtension{
+				{ID: 1, Payload: []byte{0xAA}},
+				{ID: 2, Payload: []byte{0xBB, 0xCC}},
+			},
+		},
+		Payload: []byte{0xFF},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.Marshal()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTPMarshal_TwoByteExtension(b *testing.B) {
+	p := &RTPPacket{
+		Header: RTPHeader{
+			Version:          2,
+			PayloadType:      96,
+			SequenceNumber:   1,
+			Timestamp:        100,
+			SSRC:             0x12345678,
+			Extension:        true,
+			ExtensionProfile: ExtensionProfileTwoByte,
+			Extensions: []RTPExtension{
+				{ID: 5, Payload: []byte{0xDE, 0xAD}},
+			},
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.Marshal()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTPMarshal_WithPadding(b *testing.B) {
+	p := &RTPPacket{
+		Header: RTPHeader{
+			Version:     2,
+			Padding:     true,
+			PaddingSize: 4,
+			PayloadType: 0,
+			SequenceNumber: 1,
+			Timestamp:   0,
+			SSRC:        0x12345678,
+		},
+		Payload: []byte{0x01, 0x02},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.Marshal()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTPMarshalTo_Minimal(b *testing.B) {
+	p := &RTPPacket{
+		Header: RTPHeader{
+			Version:        2,
+			PayloadType:    0,
+			SequenceNumber: 1,
+			Timestamp:      100,
+			SSRC:           0xDEADBEEF,
+		},
+	}
+	buf := make([]byte, p.MarshalSize())
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.MarshalTo(buf)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTPMarshalTo_WithPayload(b *testing.B) {
+	p := &RTPPacket{
+		Header: RTPHeader{
+			Version:        2,
+			PayloadType:    96,
+			SequenceNumber: 42,
+			Timestamp:      5000,
+			SSRC:           0xAAAAAAAA,
+		},
+		Payload: make([]byte, 160),
+	}
+	buf := make([]byte, p.MarshalSize())
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.MarshalTo(buf)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTPMarshalTo_WithCSRC(b *testing.B) {
+	p := &RTPPacket{
+		Header: RTPHeader{
+			Version:        2,
+			PayloadType:    96,
+			SequenceNumber: 42,
+			Timestamp:      5000,
+			SSRC:           0xAAAAAAAA,
+			CSRC:           []uint32{0x11111111, 0x22222222, 0x33333333},
+		},
+		Payload: []byte{0x01, 0x02, 0x03},
+	}
+	buf := make([]byte, p.MarshalSize())
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.MarshalTo(buf)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTPMarshalTo_OneByteExtension(b *testing.B) {
+	p := &RTPPacket{
+		Header: RTPHeader{
+			Version:          2,
+			PayloadType:      96,
+			SequenceNumber:   1,
+			Timestamp:        100,
+			SSRC:             0x12345678,
+			Extension:        true,
+			ExtensionProfile: ExtensionProfileOneByte,
+			Extensions: []RTPExtension{
+				{ID: 1, Payload: []byte{0xAA}},
+				{ID: 2, Payload: []byte{0xBB, 0xCC}},
+			},
+		},
+		Payload: []byte{0xFF},
+	}
+	buf := make([]byte, p.MarshalSize())
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.MarshalTo(buf)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTPMarshalTo_TwoByteExtension(b *testing.B) {
+	p := &RTPPacket{
+		Header: RTPHeader{
+			Version:          2,
+			PayloadType:      96,
+			SequenceNumber:   1,
+			Timestamp:        100,
+			SSRC:             0x12345678,
+			Extension:        true,
+			ExtensionProfile: ExtensionProfileTwoByte,
+			Extensions: []RTPExtension{
+				{ID: 5, Payload: []byte{0xDE, 0xAD}},
+			},
+		},
+	}
+	buf := make([]byte, p.MarshalSize())
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.MarshalTo(buf)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkParseRTCP_Marshal(b *testing.B) {
 	data := make([]byte, 0, 52)
 	data = append(data, putRTCPHeader(false, 1, RTCPTypeSR, 12)...)
