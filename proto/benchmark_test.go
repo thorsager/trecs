@@ -844,6 +844,245 @@ func BenchmarkParseRTCP_Marshal(b *testing.B) {
 	}
 }
 
+func BenchmarkRTCPMarshal_SR_Minimal(b *testing.B) {
+	p := &SenderReport{SSRC: 0x902f9e2e, NTPTime: 0xdf3cf7581c604540, RTPTime: 0x11223344, PacketCount: 17, OctetCount: 3400}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.Marshal()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTCPMarshal_SR_WithReports(b *testing.B) {
+	p := &SenderReport{
+		SSRC: 0x902f9e2e, NTPTime: 0xdf3cf7581c604540, RTPTime: 0x11223344, PacketCount: 17, OctetCount: 3400,
+		Reports: []ReceptionReport{
+			{SSRC: 0xbc5e9a40, FractionLost: 0, TotalLost: 0, LastSequenceNumber: 0x46e1, Jitter: 273, LastSenderReport: 0x9f36432, Delay: 150137},
+			{SSRC: 0x12345678, FractionLost: 1, TotalLost: 0x123456, LastSequenceNumber: 0x789A, Jitter: 100, LastSenderReport: 0, Delay: 0},
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.Marshal()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTCPMarshalTo_SR_Minimal(b *testing.B) {
+	p := &SenderReport{SSRC: 0x902f9e2e, NTPTime: 0xdf3cf7581c604540, RTPTime: 0x11223344, PacketCount: 17, OctetCount: 3400}
+	buf := make([]byte, p.MarshalSize())
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.MarshalTo(buf)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTCPMarshal_RR_Minimal(b *testing.B) {
+	p := &ReceiverReport{SSRC: 0x11111111}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.Marshal()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTCPMarshal_RR_WithReports(b *testing.B) {
+	p := &ReceiverReport{
+		SSRC: 0x11111111,
+		Reports: []ReceptionReport{
+			{SSRC: 0xaaaaaaaa, FractionLost: 5, TotalLost: 10, LastSequenceNumber: 54321, Jitter: 100, LastSenderReport: 0xffffffff, Delay: 200},
+			{SSRC: 0xbbbbbbbb, FractionLost: 0, TotalLost: 0, LastSequenceNumber: 9876, Jitter: 50, LastSenderReport: 0, Delay: 0},
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.Marshal()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTCPMarshalTo_RR_Minimal(b *testing.B) {
+	p := &ReceiverReport{SSRC: 0x11111111}
+	buf := make([]byte, p.MarshalSize())
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.MarshalTo(buf)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTCPMarshal_SDES_Single(b *testing.B) {
+	p := &SourceDescription{
+		Chunks: []SourceDescriptionChunk{
+			{Source: 0x902f9e2e, Items: []SourceDescriptionItem{{Type: SDESCNAME, Text: "test@host"}}},
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.Marshal()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTCPMarshal_SDES_MultiChunk(b *testing.B) {
+	p := &SourceDescription{
+		Chunks: []SourceDescriptionChunk{
+			{Source: 0x11111111, Items: []SourceDescriptionItem{{Type: SDESCNAME, Text: "user1"}, {Type: SDESName, Text: "One"}}},
+			{Source: 0x22222222, Items: []SourceDescriptionItem{{Type: SDESCNAME, Text: "user2"}}},
+			{Source: 0x33333333, Items: []SourceDescriptionItem{{Type: SDESCNAME, Text: "user3"}}},
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.Marshal()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTCPMarshalTo_SDES_Single(b *testing.B) {
+	p := &SourceDescription{
+		Chunks: []SourceDescriptionChunk{
+			{Source: 0x902f9e2e, Items: []SourceDescriptionItem{{Type: SDESCNAME, Text: "test@host"}}},
+		},
+	}
+	buf := make([]byte, p.MarshalSize())
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.MarshalTo(buf)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTCPMarshal_BYE_Minimal(b *testing.B) {
+	p := &Goodbye{Sources: []uint32{0xDEADBEEF}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.Marshal()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTCPMarshal_BYE_WithReason(b *testing.B) {
+	p := &Goodbye{Sources: []uint32{0xDEADBEEF, 0xCAFEBABE}, Reason: "camera off"}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.Marshal()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTCPMarshalTo_BYE_Minimal(b *testing.B) {
+	p := &Goodbye{Sources: []uint32{0xDEADBEEF}}
+	buf := make([]byte, p.MarshalSize())
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.MarshalTo(buf)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTCPMarshal_APP(b *testing.B) {
+	p := &ApplicationDefined{SubType: 3, SSRC: 0x55555555, Name: "TEST", Data: []byte{0x01, 0x02, 0x03, 0x04}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.Marshal()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTCPMarshalTo_APP(b *testing.B) {
+	p := &ApplicationDefined{SubType: 3, SSRC: 0x55555555, Name: "TEST", Data: []byte{0x01, 0x02, 0x03, 0x04}}
+	buf := make([]byte, p.MarshalSize())
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.MarshalTo(buf)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTCPMarshal_Compound(b *testing.B) {
+	sr := &SenderReport{SSRC: 0xAAAAAAAA, NTPTime: 0x1234567890ABCDEF, RTPTime: 5000, PacketCount: 42, OctetCount: 64000}
+	sdes := &SourceDescription{Chunks: []SourceDescriptionChunk{{Source: 0xAAAAAAAA, Items: []SourceDescriptionItem{{Type: SDESCNAME, Text: "test"}}}}}
+	bye := &Goodbye{Sources: []uint32{0xAAAAAAAA}}
+	packets := []RTCPPacket{sr, sdes, bye}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := MarshalRTCP(packets)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTCPMarshal_CompoundTo(b *testing.B) {
+	sr := &SenderReport{SSRC: 0xAAAAAAAA, NTPTime: 0x1234567890ABCDEF, RTPTime: 5000, PacketCount: 42, OctetCount: 64000}
+	sdes := &SourceDescription{Chunks: []SourceDescriptionChunk{{Source: 0xAAAAAAAA, Items: []SourceDescriptionItem{{Type: SDESCNAME, Text: "test"}}}}}
+	bye := &Goodbye{Sources: []uint32{0xAAAAAAAA}}
+	packets := []RTCPPacket{sr, sdes, bye}
+
+	var total int
+	for _, p := range packets {
+		total += p.MarshalSize()
+	}
+	buf := make([]byte, total)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		n := 0
+		for _, p := range packets {
+			nn, err := p.MarshalTo(buf[n:])
+			if err != nil {
+				b.Fatal(err)
+			}
+			n += nn
+		}
+	}
+}
+
 func BenchmarkParseSIP_CompactHeaders(b *testing.B) {
 	input := "INVITE sip:bob@biloxi.com SIP/2.0\r\n" +
 		"v: SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK776asdhds\r\n" +

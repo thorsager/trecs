@@ -52,6 +52,8 @@ func (h RTCPHeader) String() string {
 type RTCPPacket interface {
 	Header() RTCPHeader
 	DestinationSSRC() []uint32
+	MarshalTo([]byte) (int, error)
+	MarshalSize() int
 }
 
 // ReceptionReport conveys reception statistics for a single source (24 bytes).
@@ -228,6 +230,272 @@ type RawRTCP struct {
 
 func (p *RawRTCP) Header() RTCPHeader           { return p.HeaderField }
 func (p *RawRTCP) DestinationSSRC() []uint32     { return nil }
+
+func marshalHeaderTo(buf []byte, padding bool, count uint8, typ RTCPPacketType, length uint16) {
+	buf[0] = (rtcpVersion << 6) | (count & 0x1F)
+	if padding {
+		buf[0] |= 1 << 5
+	}
+	buf[1] = byte(typ)
+	binary.BigEndian.PutUint16(buf[2:4], length)
+}
+
+func (p *SenderReport) MarshalSize() int {
+	sz := 4 + 4 + 8 + 4 + 4 + 4 // hdr + SSRC + NTP + RTPTime + PktCount + OctetCount
+	sz += len(p.Reports) * 24
+	sz += len(p.ProfileExtensions)
+	return ((sz + 3) / 4) * 4
+}
+
+func (p *SenderReport) MarshalTo(buf []byte) (int, error) {
+	sz := p.MarshalSize()
+	if len(buf) < sz {
+		return 0, fmt.Errorf("rtcp: buffer too small for sender report")
+	}
+	count := uint8(len(p.Reports))
+	marshalHeaderTo(buf, p.hdr.Padding, count, RTCPTypeSR, uint16(sz/4-1))
+
+	off := 4
+	binary.BigEndian.PutUint32(buf[off:], p.SSRC)
+	off += 4
+	binary.BigEndian.PutUint64(buf[off:], p.NTPTime)
+	off += 8
+	binary.BigEndian.PutUint32(buf[off:], p.RTPTime)
+	off += 4
+	binary.BigEndian.PutUint32(buf[off:], p.PacketCount)
+	off += 4
+	binary.BigEndian.PutUint32(buf[off:], p.OctetCount)
+	off += 4
+
+	for i := range p.Reports {
+		marshalReceptionReportTo(buf[off:], &p.Reports[i])
+		off += 24
+	}
+	if len(p.ProfileExtensions) > 0 {
+		off += copy(buf[off:], p.ProfileExtensions)
+	}
+	clear(buf[off:sz])
+	return sz, nil
+}
+
+func (p *SenderReport) Marshal() ([]byte, error) {
+	buf := make([]byte, p.MarshalSize())
+	_, err := p.MarshalTo(buf)
+	return buf, err
+}
+
+func (p *ReceiverReport) MarshalSize() int {
+	sz := 4 + 4 // hdr + SSRC
+	sz += len(p.Reports) * 24
+	sz += len(p.ProfileExtensions)
+	return ((sz + 3) / 4) * 4
+}
+
+func (p *ReceiverReport) MarshalTo(buf []byte) (int, error) {
+	sz := p.MarshalSize()
+	if len(buf) < sz {
+		return 0, fmt.Errorf("rtcp: buffer too small for receiver report")
+	}
+	count := uint8(len(p.Reports))
+	marshalHeaderTo(buf, p.hdr.Padding, count, RTCPTypeRR, uint16(sz/4-1))
+
+	off := 4
+	binary.BigEndian.PutUint32(buf[off:], p.SSRC)
+	off += 4
+
+	for i := range p.Reports {
+		marshalReceptionReportTo(buf[off:], &p.Reports[i])
+		off += 24
+	}
+	if len(p.ProfileExtensions) > 0 {
+		off += copy(buf[off:], p.ProfileExtensions)
+	}
+	clear(buf[off:sz])
+	return sz, nil
+}
+
+func (p *ReceiverReport) Marshal() ([]byte, error) {
+	buf := make([]byte, p.MarshalSize())
+	_, err := p.MarshalTo(buf)
+	return buf, err
+}
+
+func marshalReceptionReportTo(buf []byte, rr *ReceptionReport) {
+	binary.BigEndian.PutUint32(buf[0:4], rr.SSRC)
+	buf[4] = rr.FractionLost
+	buf[5] = byte(rr.TotalLost >> 16)
+	buf[6] = byte(rr.TotalLost >> 8)
+	buf[7] = byte(rr.TotalLost)
+	binary.BigEndian.PutUint32(buf[8:12], rr.LastSequenceNumber)
+	binary.BigEndian.PutUint32(buf[12:16], rr.Jitter)
+	binary.BigEndian.PutUint32(buf[16:20], rr.LastSenderReport)
+	binary.BigEndian.PutUint32(buf[20:24], rr.Delay)
+}
+
+func (p *SourceDescription) MarshalSize() int {
+	sz := 4 // hdr
+	for _, chunk := range p.Chunks {
+		sz += 4 // SSRC
+		for _, item := range chunk.Items {
+			sz += 2 + len(item.Text) // type + length + text
+		}
+		sz += 1 // END marker (0x00)
+		sz = (sz + 3) &^ 3 // align chunk to 4 bytes
+	}
+	return sz
+}
+
+func (p *SourceDescription) MarshalTo(buf []byte) (int, error) {
+	sz := p.MarshalSize()
+	if len(buf) < sz {
+		return 0, fmt.Errorf("rtcp: buffer too small for source description")
+	}
+	count := uint8(len(p.Chunks))
+	marshalHeaderTo(buf, p.hdr.Padding, count, RTCPTypeSDES, uint16(sz/4-1))
+
+	off := 4
+	for ci := range p.Chunks {
+		chunk := &p.Chunks[ci]
+		binary.BigEndian.PutUint32(buf[off:], chunk.Source)
+		off += 4
+
+		for ii := range chunk.Items {
+			item := &chunk.Items[ii]
+			buf[off] = byte(item.Type)
+			off++
+			buf[off] = byte(len(item.Text))
+			off++
+			off += copy(buf[off:], item.Text)
+		}
+		buf[off] = 0 // END marker
+		off++
+		off = (off + 3) &^ 3 // align to 4 bytes
+	}
+	return sz, nil
+}
+
+func (p *SourceDescription) Marshal() ([]byte, error) {
+	buf := make([]byte, p.MarshalSize())
+	_, err := p.MarshalTo(buf)
+	return buf, err
+}
+
+func (p *Goodbye) MarshalSize() int {
+	sz := 4 // hdr
+	sz += len(p.Sources) * 4
+	if p.Reason != "" {
+		sz += 1 + len(p.Reason)
+	}
+	return ((sz + 3) / 4) * 4
+}
+
+func (p *Goodbye) MarshalTo(buf []byte) (int, error) {
+	sz := p.MarshalSize()
+	if len(buf) < sz {
+		return 0, fmt.Errorf("rtcp: buffer too small for goodbye")
+	}
+	count := uint8(len(p.Sources))
+	marshalHeaderTo(buf, p.hdr.Padding, count, RTCPTypeBYE, uint16(sz/4-1))
+
+	off := 4
+	for i := range p.Sources {
+		binary.BigEndian.PutUint32(buf[off:], p.Sources[i])
+		off += 4
+	}
+	if p.Reason != "" {
+		buf[off] = byte(len(p.Reason))
+		off++
+		off += copy(buf[off:], p.Reason)
+	}
+	clear(buf[off:sz])
+	return sz, nil
+}
+
+func (p *Goodbye) Marshal() ([]byte, error) {
+	buf := make([]byte, p.MarshalSize())
+	_, err := p.MarshalTo(buf)
+	return buf, err
+}
+
+func (p *ApplicationDefined) MarshalSize() int {
+	sz := 4 + 4 + 4 // hdr + SSRC + name
+	sz += len(p.Data)
+	return ((sz + 3) / 4) * 4
+}
+
+func (p *ApplicationDefined) MarshalTo(buf []byte) (int, error) {
+	sz := p.MarshalSize()
+	if len(buf) < sz {
+		return 0, fmt.Errorf("rtcp: buffer too small for application defined")
+	}
+	marshalHeaderTo(buf, p.hdr.Padding, p.SubType, RTCPTypeAPP, uint16(sz/4-1))
+
+	off := 4
+	binary.BigEndian.PutUint32(buf[off:], p.SSRC)
+	off += 4
+	off += copy(buf[off:], p.Name[:min(len(p.Name), 4)])
+	for i := len(p.Name); i < 4; i++ {
+		buf[off] = 0
+		off++
+	}
+	off += copy(buf[off:], p.Data)
+	clear(buf[off:sz])
+	return sz, nil
+}
+
+func (p *ApplicationDefined) Marshal() ([]byte, error) {
+	buf := make([]byte, p.MarshalSize())
+	_, err := p.MarshalTo(buf)
+	return buf, err
+}
+
+func (p *RawRTCP) MarshalSize() int {
+	return ((4 + len(p.Data)) + 3) / 4 * 4
+}
+
+func (p *RawRTCP) MarshalTo(buf []byte) (int, error) {
+	sz := p.MarshalSize()
+	if len(buf) < sz {
+		return 0, fmt.Errorf("rtcp: buffer too small for raw packet")
+	}
+	h := p.HeaderField
+	h.Length = uint16(sz/4 - 1)
+	marshalHeaderTo(buf, h.Padding, h.Count, h.Type, h.Length)
+	off := 4
+	off += copy(buf[off:], p.Data)
+	clear(buf[off:sz])
+	return sz, nil
+}
+
+func (p *RawRTCP) Marshal() ([]byte, error) {
+	buf := make([]byte, p.MarshalSize())
+	_, err := p.MarshalTo(buf)
+	return buf, err
+}
+
+// MarshalRTCP serializes a compound RTCP packet into a single byte slice.
+// RFC 3550 §6.1 mandates that RTCP packets MUST be sent as compound packets;
+// ParseRTCP likewise expects compound input, so this provides the symmetric
+// operation to produce valid compound output.
+func MarshalRTCP(packets []RTCPPacket) ([]byte, error) {
+	if len(packets) == 0 {
+		return nil, ParseError("rtcp: no packets to marshal")
+	}
+	var total int
+	for _, pkt := range packets {
+		total += pkt.MarshalSize()
+	}
+	buf := make([]byte, total)
+	n := 0
+	for _, pkt := range packets {
+		nn, err := pkt.MarshalTo(buf[n:])
+		if err != nil {
+			return nil, err
+		}
+		n += nn
+	}
+	return buf[:n], nil
+}
 
 func parseRTCPHeader(data []byte) (RTCPHeader, error) {
 	if len(data) < 4 {
