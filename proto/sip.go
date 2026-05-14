@@ -30,8 +30,9 @@ const (
 	SIPMethodMESSAGE   SIPMethod = "MESSAGE"   // RFC 3428
 	SIPMethodUPDATE    SIPMethod = "UPDATE"    // RFC 3311
 
+	SIPIndicator = "SIP/"
 	// SIPVersion is the SIP protocol version string used in start lines.
-	SIPVersion = "SIP/2.0"
+	SIPVersion = SIPIndicator + "2.0"
 )
 
 var (
@@ -469,7 +470,7 @@ func unmarshalStartLine(s string) (*startLine, error) {
 	}
 
 	sl := &startLine{}
-	if strings.HasPrefix(t0, "SIP/") {
+	if strings.HasPrefix(t0, SIPIndicator) {
 		sl.IsRequest = false
 		sl.Version = t0
 		if len(t1) != 3 {
@@ -491,7 +492,7 @@ func unmarshalStartLine(s string) (*startLine, error) {
 
 		sl.URI = t1
 
-		if !strings.HasPrefix(t2, "SIP/") {
+		if !strings.HasPrefix(t2, SIPIndicator) {
 			return nil, UnmarshalErrorf("Invalid start-line version: %s", t2)
 		}
 		sl.Version = t2
