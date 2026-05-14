@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/textproto"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -28,6 +29,9 @@ const (
 	SIPMethodREFER     SIPMethod = "REFER"     // RFC 3515
 	SIPMethodMESSAGE   SIPMethod = "MESSAGE"   // RFC 3428
 	SIPMethodUPDATE    SIPMethod = "UPDATE"    // RFC 3311
+
+	// SIPVersion is the SIP protocol version string used in start lines.
+	SIPVersion = "SIP/2.0"
 )
 
 var (
@@ -484,4 +488,120 @@ func parseMethod(v string) (SIPMethod, error) {
 		return SIPMethod(v), nil
 	}
 	return "", ParseError("Invalid Method: %s", v)
+}
+
+// MarshalSize returns the exact number of bytes needed for Marshal*.
+// The Content-Length and CSeq header values in the Headers map are
+// not counted; Content-Length is computed from len(m.Body) and CSeq is
+// taken from the m.CSeq struct field.
+func (m *SIPMessage) MarshalSize() int {
+	if m.startLine == nil {
+		return 0
+	}
+	sz := 0
+	if m.startLine.IsRequest {
+		sz += len(m.startLine.Method) + 1 + len(m.startLine.URI) + 1 + len(m.startLine.Version)
+	} else {
+		sz += len(m.startLine.Version) + 1 + len(m.startLine.Status)
+	}
+	sz += 2 // \r\n
+	for k, vals := range m.Headers {
+		if k == "CSeq" || k == "Content-Length" {
+			continue
+		}
+		for _, v := range vals {
+			sz += len(k) + 2 + len(v) + 2 // "Key: value\r\n"
+		}
+	}
+	// CSeq from struct field; Content-Length from body
+	sz += 6 + intLen(int64(m.CSeq.Seq)) + 1 + len(m.CSeq.Method) + 2 // "CSeq: <seq> <method>\r\n"
+	cl := intLen(int64(len(m.Body)))
+	sz += 16 + cl + 2 // "Content-Length: <n>\r\n"
+	sz += 2 + len(m.Body) // \r\n separator + body
+	return sz
+}
+
+func (m *SIPMessage) marshalTo(buf []byte) int {
+	pos := 0
+	if m.startLine == nil {
+		return 0
+	}
+	if m.startLine.IsRequest {
+		pos += copy(buf[pos:], string(m.startLine.Method))
+		buf[pos] = ' '; pos++
+		pos += copy(buf[pos:], m.startLine.URI)
+		buf[pos] = ' '; pos++
+		pos += copy(buf[pos:], m.startLine.Version)
+	} else {
+		pos += copy(buf[pos:], m.startLine.Version)
+		buf[pos] = ' '; pos++
+		pos += copy(buf[pos:], m.startLine.Status)
+	}
+	buf[pos] = '\r'; buf[pos+1] = '\n'
+	pos += 2
+
+	var keysBuf [16]string
+	keys := keysBuf[:0]
+	if n := len(m.Headers); n > cap(keysBuf) {
+		keys = make([]string, 0, n)
+	}
+	for k := range m.Headers {
+		if k == "CSeq" || k == "Content-Length" {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		for _, v := range m.Headers[k] {
+			pos += copy(buf[pos:], k)
+			buf[pos] = ':'; buf[pos+1] = ' '; pos += 2
+			pos += copy(buf[pos:], v)
+			buf[pos] = '\r'; buf[pos+1] = '\n'; pos += 2
+		}
+	}
+
+	pos += copy(buf[pos:], "CSeq: ")
+	pos += len(strconv.AppendInt(buf[pos:pos], int64(m.CSeq.Seq), 10))
+	buf[pos] = ' '; pos++
+	pos += copy(buf[pos:], string(m.CSeq.Method))
+	buf[pos] = '\r'; buf[pos+1] = '\n'; pos += 2
+
+	pos += copy(buf[pos:], "Content-Length: ")
+	pos += len(strconv.AppendInt(buf[pos:pos], int64(len(m.Body)), 10))
+	buf[pos] = '\r'; buf[pos+1] = '\n'; pos += 2
+
+	buf[pos] = '\r'; buf[pos+1] = '\n'
+	pos += 2
+
+	pos += copy(buf[pos:], m.Body)
+	return pos
+}
+
+// MarshalTo serializes m into buf using MarshalSize for the length
+// calculation. The Content-Length and CSeq header values in the Headers
+// map are ignored; Content-Length is computed from len(m.Body) and CSeq
+// is taken from the m.CSeq struct field.
+func (m *SIPMessage) MarshalTo(buf []byte) (int, error) {
+	sz := m.MarshalSize()
+	if len(buf) < sz {
+		return 0, fmt.Errorf("sip: buffer too small for marshal")
+	}
+	return m.marshalTo(buf), nil
+}
+
+// Marshal serializes m to a wire-format byte slice.
+func (m *SIPMessage) Marshal() ([]byte, error) {
+	sz := m.MarshalSize()
+	buf := make([]byte, sz)
+	m.marshalTo(buf)
+	return buf, nil
+}
+
+// String returns the wire-format representation of m.
+func (m *SIPMessage) String() string {
+	sz := m.MarshalSize()
+	buf := make([]byte, sz)
+	m.marshalTo(buf)
+	return string(buf)
 }

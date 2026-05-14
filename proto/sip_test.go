@@ -1152,3 +1152,1026 @@ func TestParseHeaders_EmptyHeaders(t *testing.T) {
 		assert.Len(t, msg.Headers, 0)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Marshal / MarshalSize / MarshalTo / String
+// ---------------------------------------------------------------------------
+
+func TestSIPMarshal_RequestRoundTrip(t *testing.T) {
+	input := "INVITE sip:bob@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK776\r\n" +
+		"Max-Forwards: 70\r\n" +
+		"To: Bob <sip:bob@example.com>\r\n" +
+		"From: Alice <sip:alice@atlanta.com>;tag=1928301774\r\n" +
+		"Call-ID: a84b4c76e66710@pc33.atlanta.com\r\n" +
+		"CSeq: 314159 INVITE\r\n" +
+		"Content-Length: 4\r\n" +
+		"\r\n" +
+		"body"
+
+	msg, err := ParseSIP(newTestReader(input))
+	if !assert.NoError(t, err) {
+		return
+	}
+
+	got, err := msg.Marshal()
+	if !assert.NoError(t, err) {
+		return
+	}
+
+	// Re-parse to verify round-trip semantic equivalence
+	// (header order is normalized during marshal)
+	msg2, err := ParseSIP(newTestReader(string(got)))
+	if assert.NoError(t, err) {
+		assert.Equal(t, msg.StartLine(), msg2.StartLine())
+		assert.Equal(t, msg.Headers.Get("Via"), msg2.Headers.Get("Via"))
+		assert.Equal(t, msg.Headers.GetFirst("Max-Forwards"), msg2.Headers.GetFirst("Max-Forwards"))
+		assert.Equal(t, msg.Headers.GetFirst("To"), msg2.Headers.GetFirst("To"))
+		assert.Equal(t, msg.Headers.GetFirst("From"), msg2.Headers.GetFirst("From"))
+		assert.Equal(t, msg.Headers.GetFirst("Call-ID"), msg2.Headers.GetFirst("Call-ID"))
+		assert.Equal(t, msg.CSeq, msg2.CSeq)
+		assert.Equal(t, msg.Body, msg2.Body)
+	}
+
+	buf := make([]byte, msg.MarshalSize())
+	n, err := msg.MarshalTo(buf)
+	if assert.NoError(t, err) {
+		assert.Equal(t, len(got), n)
+		assert.Equal(t, string(got), string(buf[:n]))
+	}
+
+	assert.Equal(t, string(got), msg.String())
+}
+
+func TestSIPMarshal_ResponseRoundTrip(t *testing.T) {
+	input := "SIP/2.0 200 OK\r\n" +
+		"Via: SIP/2.0/UDP server.example.com;branch=z9hG4bK9a8b\r\n" +
+		"From: Alice <sip:alice@example.com>;tag=abc\r\n" +
+		"To: Bob <sip:bob@example.com>;tag=def\r\n" +
+		"Call-ID: a84b4c76e66710@pc33.atlanta.com\r\n" +
+		"CSeq: 314159 INVITE\r\n" +
+		"Content-Length: 0\r\n" +
+		"\r\n"
+
+	msg, err := ParseSIP(newTestReader(input))
+	if !assert.NoError(t, err) {
+		return
+	}
+
+	got, err := msg.Marshal()
+	if !assert.NoError(t, err) {
+		return
+	}
+
+	msg2, err := ParseSIP(newTestReader(string(got)))
+	if assert.NoError(t, err) {
+		assert.Equal(t, msg.StartLine(), msg2.StartLine())
+		assert.Equal(t, msg.Headers.Get("Via"), msg2.Headers.Get("Via"))
+		assert.Equal(t, msg.Headers.GetFirst("From"), msg2.Headers.GetFirst("From"))
+		assert.Equal(t, msg.Headers.GetFirst("To"), msg2.Headers.GetFirst("To"))
+		assert.Equal(t, msg.Headers.GetFirst("Call-ID"), msg2.Headers.GetFirst("Call-ID"))
+		assert.Equal(t, msg.CSeq, msg2.CSeq)
+		assert.Equal(t, msg.Body, msg2.Body)
+	}
+}
+
+func TestSIPMarshal_IgnoreStaleCSeqInHeaders(t *testing.T) {
+	input := "INVITE sip:bob@example.com SIP/2.0\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n"
+	msg, err := ParseSIP(newTestReader(input))
+	if !assert.NoError(t, err) {
+		return
+	}
+	// mutate CSeq; Headers["CSeq"] still holds stale "1 INVITE"
+	msg.CSeq.Seq = 999
+
+	got, err := msg.Marshal()
+	if assert.NoError(t, err) {
+		assert.Contains(t, string(got), "CSeq: 999 INVITE")
+		assert.NotContains(t, string(got), "CSeq: 1 INVITE")
+	}
+}
+
+func TestSIPMarshal_IgnoreStaleContentLengthInHeaders(t *testing.T) {
+	input := "INVITE sip:bob@example.com SIP/2.0\r\nContent-Length: 4\r\n\r\nbody"
+	msg, err := ParseSIP(newTestReader(input))
+	if !assert.NoError(t, err) {
+		return
+	}
+	// mutate body; Headers["Content-Length"] still holds stale "4"
+	msg.Body = []byte("newbody")
+
+	got, err := msg.Marshal()
+	if assert.NoError(t, err) {
+		assert.Contains(t, string(got), "Content-Length: 7")
+		assert.NotContains(t, string(got), "Content-Length: 4")
+	}
+}
+
+func TestSIPMarshal_MarshalSize(t *testing.T) {
+	msg := &SIPMessage{
+		startLine: &startLine{
+			IsRequest: true,
+			Method:    "INVITE",
+			URI:       "sip:bob@example.com",
+			Version:   "SIP/2.0",
+		},
+		Headers: SIPHeaders{
+			"From":    {"<sip:alice@atlanta.com>;tag=abc"},
+			"To":      {"<sip:bob@biloxi.com>"},
+			"Call-ID": {"a84b4c76e66710@pc33.atlanta.com"},
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
+		Body: []byte("v=0\r\no=user 1"),
+	}
+	got, err := msg.Marshal()
+	if !assert.NoError(t, err) {
+		return
+	}
+
+	// re-parse and verify
+	msg2, err := ParseSIP(newTestReader(string(got)))
+	if assert.NoError(t, err) {
+		assert.Equal(t, "INVITE sip:bob@example.com SIP/2.0", msg2.StartLine())
+		assert.Equal(t, "<sip:alice@atlanta.com>;tag=abc", msg2.Headers.GetFirst("From"))
+		assert.Equal(t, 1, msg2.CSeq.Seq)
+		assert.Equal(t, "INVITE", string(msg2.CSeq.Method))
+		assert.Equal(t, []byte("v=0\r\no=user 1"), msg2.Body)
+	}
+}
+
+func TestSIPMarshal_NilStartLine(t *testing.T) {
+	msg := &SIPMessage{}
+	assert.Equal(t, 0, msg.MarshalSize())
+	got, err := msg.Marshal()
+	assert.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestSIPMarshal_BufferTooSmall(t *testing.T) {
+	msg := &SIPMessage{
+		startLine: &startLine{IsRequest: true, Method: "INVITE", URI: "sip:x", Version: "SIP/2.0"},
+	}
+	buf := make([]byte, 1)
+	_, err := msg.MarshalTo(buf)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "buffer too small")
+}
+
+func TestSIPMarshal_DeterministicHeaderOrder(t *testing.T) {
+	msg := &SIPMessage{
+		startLine: &startLine{IsRequest: true, Method: "INVITE", URI: "sip:x", Version: "SIP/2.0"},
+		Headers: SIPHeaders{
+			"Z-Last":  {"z"},
+			"From":    {"<sip:a>"},
+			"To":      {"<sip:b>"},
+			"Subject": {"hello"},
+			"Call-ID": {"id"},
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
+	}
+	got, err := msg.Marshal()
+	if !assert.NoError(t, err) {
+		return
+	}
+	// The output should have CSeq and Content-Length at the end,
+	// and the user headers should be in sorted order.
+	expected := "INVITE sip:x SIP/2.0\r\n" +
+		"Call-ID: id\r\n" +
+		"From: <sip:a>\r\n" +
+		"Subject: hello\r\n" +
+		"To: <sip:b>\r\n" +
+		"Z-Last: z\r\n" +
+		"CSeq: 1 INVITE\r\n" +
+		"Content-Length: 0\r\n\r\n"
+	assert.Equal(t, expected, string(got))
+}
+
+// =============================================================================
+// RFC 3261 Strict Compliance — SIP Message Marshalling
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Section 7: Request-Line = Method SP Request-URI SP SIP-Version CRLF
+// -----------------------------------------------------------------------------
+
+func TestRFC3261_Marshal_RequestLineGrammar(t *testing.T) {
+	msg := &SIPMessage{
+		startLine: &startLine{
+			IsRequest: true,
+			Method:    "INVITE",
+			URI:       "sip:bob@atlanta.com",
+			Version:   "SIP/2.0",
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
+	}
+	got, err := msg.Marshal()
+	if !assert.NoError(t, err) {
+		return
+	}
+	// INVITE sip:bob@atlanta.com SIP/2.0\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n
+	firstCRLF := strings.Index(string(got), "\r\n")
+	if assert.Greater(t, firstCRLF, 0) {
+		requestLine := string(got[:firstCRLF]) // before CRLF
+		parts := strings.Split(requestLine, " ")
+		if assert.Len(t, parts, 3) {
+			assert.Equal(t, "INVITE", parts[0], "Method token")
+			assert.Equal(t, "sip:bob@atlanta.com", parts[1], "Request-URI")
+			assert.Equal(t, "SIP/2.0", parts[2], "SIP-Version")
+		}
+	}
+	assert.Equal(t, byte('\r'), got[firstCRLF], "carriage return before linefeed")
+	assert.Equal(t, byte('\n'), got[firstCRLF+1], "linefeed")
+}
+
+func TestRFC3261_Marshal_RequestLine_MultipleMethods(t *testing.T) {
+	methods := []SIPMethod{
+		SIPMethodINVITE, SIPMethodACK, SIPMethodBYE, SIPMethodCANCEL,
+		SIPMethodREGISTER, SIPMethodOPTIONS, SIPMethodPRACK,
+		SIPMethodSUBSCRIBE, SIPMethodNOTIFY, SIPMethodPUBLISH,
+		SIPMethodINFO, SIPMethodREFER, SIPMethodMESSAGE, SIPMethodUPDATE,
+	}
+	for _, method := range methods {
+		t.Run(string(method), func(t *testing.T) {
+			msg := &SIPMessage{
+				startLine: &startLine{
+					IsRequest: true,
+					Method:    method,
+					URI:       "sip:user@host",
+					Version:   "SIP/2.0",
+				},
+				CSeq: CSeq{Seq: 1, Method: method},
+			}
+			got, err := msg.Marshal()
+			if !assert.NoError(t, err) {
+				return
+			}
+			firstCRLF := strings.Index(string(got), "\r\n")
+			requestLine := string(got[:firstCRLF])
+			parts := strings.Split(requestLine, " ")
+			if assert.Len(t, parts, 3) {
+				assert.Equal(t, string(method), parts[0])
+				assert.Equal(t, "sip:user@host", parts[1])
+				assert.Equal(t, "SIP/2.0", parts[2])
+			}
+			// CSeq method must match start-line method
+			assert.Contains(t, string(got), "CSeq: 1 "+string(method))
+		})
+	}
+}
+
+func TestRFC3261_Marshal_RequestLine_URIParameters(t *testing.T) {
+	msg := &SIPMessage{
+		startLine: &startLine{
+			IsRequest: true,
+			Method:    "INVITE",
+			URI:       "sip:bob@atlanta.com;lr;transport=tcp",
+			Version:   "SIP/2.0",
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
+	}
+	got, err := msg.Marshal()
+	if assert.NoError(t, err) {
+		assert.Contains(t, string(got), "INVITE sip:bob@atlanta.com;lr;transport=tcp SIP/2.0\r\n")
+	}
+}
+
+func TestRFC3261_Marshal_RequestLine_SIPSURI(t *testing.T) {
+	msg := &SIPMessage{
+		startLine: &startLine{
+			IsRequest: true,
+			Method:    "INVITE",
+			URI:       "sips:bob@atlanta.com",
+			Version:   "SIP/2.0",
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
+	}
+	got, err := msg.Marshal()
+	if assert.NoError(t, err) {
+		assert.Contains(t, string(got), "INVITE sips:bob@atlanta.com SIP/2.0\r\n")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Section 7: Status-Line = SIP-Version SP Status-Code SP Reason-Phrase CRLF
+// -----------------------------------------------------------------------------
+
+func TestRFC3261_Marshal_StatusLineGrammar(t *testing.T) {
+	msg := &SIPMessage{
+		startLine: &startLine{
+			IsRequest: false,
+			Version:   "SIP/2.0",
+			StatusCode: 200,
+			Status:    "200 OK",
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
+	}
+	got, err := msg.Marshal()
+	if !assert.NoError(t, err) {
+		return
+	}
+	firstCRLF := strings.Index(string(got), "\r\n")
+	if assert.Greater(t, firstCRLF, 0) {
+		statusLine := string(got[:firstCRLF])
+		parts := strings.SplitN(statusLine, " ", 3)
+		if assert.Len(t, parts, 3) {
+			assert.Equal(t, "SIP/2.0", parts[0], "SIP-Version")
+			assert.Equal(t, "200", parts[1], "Status-Code (3 DIGIT)")
+			assert.Equal(t, "OK", parts[2], "Reason-Phrase")
+			assert.Len(t, parts[1], 3, "Status-Code must be exactly 3 digits")
+		}
+	}
+}
+
+func TestRFC3261_Marshal_StatusLine_VariousCodes(t *testing.T) {
+	codes := []int{100, 180, 200, 302, 400, 404, 500, 503, 600}
+	for _, code := range codes {
+		t.Run(fmt.Sprintf("%d", code), func(t *testing.T) {
+			reason, _ := rfc3261ReasonPhrase(code)
+			msg := &SIPMessage{
+				startLine: &startLine{
+					IsRequest: false,
+					Version:   "SIP/2.0",
+					StatusCode: code,
+					Status:    fmt.Sprintf("%d %s", code, reason),
+				},
+				CSeq: CSeq{Seq: 1, Method: "INVITE"},
+			}
+			got, err := msg.Marshal()
+			if !assert.NoError(t, err) {
+				return
+			}
+			firstCRLF := strings.Index(string(got), "\r\n")
+			statusLine := string(got[:firstCRLF])
+			parts := strings.SplitN(statusLine, " ", 3)
+			if assert.Len(t, parts, 3) {
+				assert.Equal(t, fmt.Sprintf("%d", code), parts[1])
+				assert.Len(t, parts[1], 3)
+				assert.Equal(t, reason, parts[2], "Reason-Phrase for %d", code)
+			}
+		})
+	}
+}
+
+func TestRFC3261_Marshal_StatusLine_MultiWordReason(t *testing.T) {
+	msg := &SIPMessage{
+		startLine: &startLine{
+			IsRequest: false,
+			Version:   "SIP/2.0",
+			StatusCode: 181,
+			Status:    "181 Call Is Being Forwarded",
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
+	}
+	got, err := msg.Marshal()
+	if assert.NoError(t, err) {
+		firstCRLF := strings.Index(string(got), "\r\n")
+		statusLine := string(got[:firstCRLF])
+		assert.Equal(t, "SIP/2.0 181 Call Is Being Forwarded", statusLine)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Section 7.3.1: message-header = field-name ":" SP field-value CRLF
+// -----------------------------------------------------------------------------
+
+func TestRFC3261_Marshal_HeaderFormat(t *testing.T) {
+	msg := sipBenchRequest()
+	got, err := msg.Marshal()
+	if !assert.NoError(t, err) {
+		return
+	}
+	// Split headers from body at the first empty line (body separator)
+	s := string(got)
+	headerEnd := strings.Index(s, "\r\n\r\n")
+	if !assert.Greater(t, headerEnd, 0) {
+		return
+	}
+	headerSection := s[:headerEnd]
+	lines := strings.Split(headerSection, "\r\n")
+	// Line 0 = start-line, skip it
+	for _, line := range lines[1:] {
+		if line == "" {
+			continue
+		}
+		colonIdx := strings.IndexByte(line, ':')
+		if assert.Greater(t, colonIdx, 0, "header %q must contain colon", line) {
+			assert.Equal(t, byte(' '), line[colonIdx+1], "SP after colon in %q", line)
+			// Verify header name contains only token chars (alphanumeric + - _ . ! % * ` ' #)
+			fieldName := line[:colonIdx]
+			for _, c := range fieldName {
+				if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' ||
+					c >= '0' && c <= '9' || c == '-' || c == '_' ||
+					c == '.' || c == '!' || c == '%' || c == '*' ||
+					c == '\'' || c == '`' || c == '#') {
+					t.Errorf("header name %q contains invalid token char %q", fieldName, c)
+				}
+			}
+		}
+	}
+}
+
+func TestRFC3261_Marshal_Header_CanonicalForms(t *testing.T) {
+	msg := sipBenchRequest()
+	got, err := msg.Marshal()
+	if !assert.NoError(t, err) {
+		return
+	}
+	s := string(got)
+	// All registered SIP header canonical forms
+	assert.Contains(t, s, "Via: ")
+	assert.Contains(t, s, "Max-Forwards: ")
+	assert.Contains(t, s, "To: ")
+	assert.Contains(t, s, "From: ")
+	assert.Contains(t, s, "Call-ID: ")
+	assert.Contains(t, s, "CSeq: ")
+	assert.Contains(t, s, "Contact: ")
+	assert.Contains(t, s, "Content-Type: ")
+	assert.Contains(t, s, "Content-Length: ")
+
+	// No compact-form header lines (check each line's prefix)
+	headerEnd := strings.Index(s, "\r\n\r\n")
+	if headerEnd > 0 {
+		for _, line := range strings.Split(s[:headerEnd], "\r\n") {
+			if line == "" || strings.HasPrefix(line, "SIP/") || !strings.Contains(line, ":") {
+				continue
+			}
+			fieldName, _, _ := strings.Cut(line, ":")
+			fieldName = strings.TrimSpace(fieldName)
+			if compactKey, isCompact := compactHeaders[fieldName]; isCompact {
+				t.Errorf("compact header form %q found (long form is %q)", fieldName, compactKey)
+			}
+		}
+	}
+
+	// No lowercase/raw original forms in header lines
+	for _, line := range strings.Split(s[:headerEnd], "\r\n") {
+		name, _, _ := strings.Cut(line, ":")
+		name = strings.TrimSpace(name)
+		if name != "" && !strings.HasPrefix(line, "SIP/") {
+			want := canonicalHeaderKey(name)
+			if name != want {
+				t.Errorf("header name %q is not canonical (should be %q)", name, want)
+			}
+		}
+	}
+}
+
+func TestRFC3261_Marshal_CRLFOnly(t *testing.T) {
+	msg := sipBenchRequest()
+	got, err := msg.Marshal()
+	if !assert.NoError(t, err) {
+		return
+	}
+	// No bare LF (every \r must be followed by \n; every \n must be preceded by \r)
+	lfCount := 0
+	crCount := 0
+	for i := 0; i < len(got); i++ {
+		switch got[i] {
+		case '\r':
+			crCount++
+			assert.Less(t, i+1, len(got), "CR at final byte must not be bare")
+			if i+1 < len(got) {
+				assert.Equal(t, byte('\n'), got[i+1], "CR at byte %d must be followed by LF", i)
+			}
+		case '\n':
+			lfCount++
+			assert.Greater(t, i, 0, "LF at byte 0 must not be bare")
+			if i > 0 {
+				assert.Equal(t, byte('\r'), got[i-1], "LF at byte %d must be preceded by CR", i)
+			}
+		}
+	}
+	assert.Equal(t, crCount, lfCount, "CR and LF counts must match")
+}
+
+// -----------------------------------------------------------------------------
+// Section 7.5: Message body — CRLF separator, Content-Length accuracy
+// -----------------------------------------------------------------------------
+
+func TestRFC3261_Marshal_BodySeparator(t *testing.T) {
+	msg := sipBenchRequest()
+	got, err := msg.Marshal()
+	if !assert.NoError(t, err) {
+		return
+	}
+	// The body separator is a CRLF on its own after the last header
+	// Structure: ...Content-Length: 137\r\n\r\nv=0\r\n...
+	clLine := "Content-Length: 137\r\n"
+	clIdx := strings.Index(string(got), clLine)
+	if assert.Greater(t, clIdx, 0) {
+		sepStart := clIdx + len(clLine)
+		if sepStart+1 < len(got) {
+			assert.Equal(t, "\r\n", string(got[sepStart:sepStart+2]),
+				"body separator must be CRLF")
+			// The body follows the separator CRLF
+			bodyStart := sepStart + 2
+			assert.Equal(t, "v=0\r\n", string(got[bodyStart:bodyStart+5]),
+				"body follows separator")
+		}
+	}
+}
+
+func TestRFC3261_Marshal_ContentLengthAccuracy(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{"empty", nil},
+		{"empty_slice", []byte{}},
+		{"four_bytes", []byte("body")},
+		{"sdp", []byte("v=0\r\no=user 1\r\n")},
+		{"binary", []byte{0x00, 0x01, 0x02, 0xFF}},
+		{"large", []byte("x")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := &SIPMessage{
+				startLine: &startLine{
+					IsRequest: true, Method: "INVITE",
+					URI: "sip:x", Version: "SIP/2.0",
+				},
+				CSeq: CSeq{Seq: 1, Method: "INVITE"},
+				Body: tt.body,
+			}
+			if tt.name == "large" {
+				msg.Body = make([]byte, 65535)
+			}
+			got, err := msg.Marshal()
+			if !assert.NoError(t, err) {
+				return
+			}
+			s := string(got)
+			expectedCL := len(msg.Body)
+			clHeader := fmt.Sprintf("Content-Length: %d", expectedCL)
+			assert.Contains(t, s, clHeader,
+				"Content-Length header must match body length %d", expectedCL)
+			// Verify the Content-Length value is on its own line just before body separator
+			clIdx := strings.Index(s, clHeader)
+			if assert.Greater(t, clIdx, 0) {
+				lineEnd := clIdx + len(clHeader)
+				assert.Equal(t, "\r\n", s[lineEnd:lineEnd+2],
+					"Content-Length line must end with CRLF")
+				// Body separator (CRLF) follows Content-Length line
+				sepStart := lineEnd + 2
+				assert.Equal(t, "\r\n", s[sepStart:sepStart+2],
+					"body separator must be CRLF after Content-Length")
+			}
+		})
+	}
+}
+
+func TestRFC3261_Marshal_ContentLength_AfterCSeq(t *testing.T) {
+	msg := sipBenchRequest()
+	got, err := msg.Marshal()
+	if !assert.NoError(t, err) {
+		return
+	}
+	s := string(got)
+	cseqIdx := strings.Index(s, "CSeq: ")
+	clIdx := strings.Index(s, "Content-Length: ")
+	if assert.Greater(t, cseqIdx, 0) && assert.Greater(t, clIdx, 0) {
+		assert.Less(t, cseqIdx, clIdx,
+			"CSeq must appear before Content-Length in marshalled output")
+	}
+	// Content-Length is the last header before the body separator
+	afterCL := s[clIdx:]
+	contentAfterCL := afterCL[len("Content-Length: 137"):]
+	assert.True(t, strings.HasPrefix(contentAfterCL, "\r\n\r\n"),
+		"Content-Length must be the last header, followed by CRLF body separator")
+}
+
+func TestRFC3261_Marshal_NoExtraContentLength(t *testing.T) {
+	// Even if Headers map has stale Content-Length entries, marshalled output
+	// must have exactly one Content-Length, computed from the body.
+	msg := &SIPMessage{
+		startLine: &startLine{
+			IsRequest: true, Method: "INVITE",
+			URI: "sip:x", Version: "SIP/2.0",
+		},
+		Headers: SIPHeaders{
+			"Content-Length": {"999"},
+			"From":           {"<sip:a>"},
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
+		Body: []byte("hello"),
+	}
+	got, err := msg.Marshal()
+	if assert.NoError(t, err) {
+		s := string(got)
+		// Count Content-Length occurrences
+		count := strings.Count(s, "Content-Length:")
+		assert.Equal(t, 1, count, "exactly one Content-Length header")
+		assert.Contains(t, s, "Content-Length: 5")
+		assert.NotContains(t, s, "Content-Length: 999")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Section 20.16: CSeq = "CSeq" HCOLON seqno SP Method
+// -----------------------------------------------------------------------------
+
+func TestRFC3261_Marshal_CSeqFormat(t *testing.T) {
+	tests := []struct {
+		seq    int
+		method SIPMethod
+	}{
+		{1, "INVITE"},
+		{2147483647, "BYE"},
+		{0, "ACK"},
+		{999999999, "REGISTER"},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s_%d", tt.method, tt.seq), func(t *testing.T) {
+			msg := &SIPMessage{
+				startLine: &startLine{
+					IsRequest: true, Method: tt.method,
+					URI: "sip:x", Version: "SIP/2.0",
+				},
+				CSeq: CSeq{Seq: tt.seq, Method: tt.method},
+			}
+			got, err := msg.Marshal()
+			if assert.NoError(t, err) {
+				expected := fmt.Sprintf("CSeq: %d %s", tt.seq, tt.method)
+				assert.Contains(t, string(got), expected)
+			}
+		})
+	}
+}
+
+func TestRFC3261_Marshal_CSeqMethodMatches(t *testing.T) {
+	// RFC 3261 §20.16: CSeq method MUST match the request method
+	msg := &SIPMessage{
+		startLine: &startLine{
+			IsRequest: true, Method: "BYE",
+			URI: "sip:alice@example.com", Version: "SIP/2.0",
+		},
+		CSeq: CSeq{Seq: 1, Method: "BYE"},
+	}
+	got, err := msg.Marshal()
+	if assert.NoError(t, err) {
+		assert.Contains(t, string(got), "BYE sip:alice@example.com SIP/2.0\r\n")
+		assert.Contains(t, string(got), "CSeq: 1 BYE")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Section 20.14: Content-Length must appear at most once; body preserved
+// -----------------------------------------------------------------------------
+
+func TestRFC3261_Marshal_BodyPreserved(t *testing.T) {
+	body := []byte("v=0\r\no=alice 2890844526 2890844526 IN IP4 host.atlanta.com\r\ns=-\r\n")
+	msg := &SIPMessage{
+		startLine: &startLine{
+			IsRequest: true, Method: "INVITE",
+			URI: "sip:bob@example.com", Version: "SIP/2.0",
+		},
+		Headers: SIPHeaders{
+			"Content-Type": {"application/sdp"},
+			"From":         {"<sip:alice@atlanta.com>;tag=abc"},
+			"To":           {"<sip:bob@biloxi.com>"},
+			"Call-ID":      {"id123"},
+			"Via":          {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
+		Body: body,
+	}
+	got, err := msg.Marshal()
+	if !assert.NoError(t, err) {
+		return
+	}
+	// Body must appear after the CRLF separator and be byte-identical
+	// Find the body separator (last \r\n\r\n in the message)
+	lastCRLF := strings.LastIndex(string(got), "\r\n\r\n")
+	if assert.Greater(t, lastCRLF, 0) {
+		extractedBody := got[lastCRLF+4:] // skip \r\n\r\n
+		assert.Equal(t, body, extractedBody, "body must be byte-identical")
+	}
+}
+
+func TestRFC3261_Marshal_NoExtraBody(t *testing.T) {
+	msg := &SIPMessage{
+		startLine: &startLine{
+			IsRequest: true, Method: "OPTIONS",
+			URI: "sip:proxy.example.com", Version: "SIP/2.0",
+		},
+		CSeq: CSeq{Seq: 1, Method: "OPTIONS"},
+		Body: nil,
+	}
+	got, err := msg.Marshal()
+	if assert.NoError(t, err) {
+		// Empty body: Content-Length: 0, message ends with \r\n\r\n
+		assert.True(t, strings.HasSuffix(string(got), "Content-Length: 0\r\n\r\n"),
+			"marshal with nil body must end with Content-Length: 0\\r\\n\\r\\n")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Section 7.3: Multiple header values (e.g. multiple Via)
+// -----------------------------------------------------------------------------
+
+func TestRFC3261_Marshal_MultipleHeaderValues(t *testing.T) {
+	msg := &SIPMessage{
+		startLine: &startLine{
+			IsRequest: true, Method: "INVITE",
+			URI: "sip:x", Version: "SIP/2.0",
+		},
+		Headers: SIPHeaders{
+			"Via": {
+				"SIP/2.0/UDP host1;branch=z9hG4bK1",
+				"SIP/2.0/UDP host2;branch=z9hG4bK2",
+			},
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
+	}
+	got, err := msg.Marshal()
+	if !assert.NoError(t, err) {
+		return
+	}
+	s := string(got)
+	// Count Via lines — must have 2 occurrences
+	count := strings.Count(s, "Via: ")
+	assert.Equal(t, 2, count, "each Via value must be on its own header line")
+	// Each Via line must have proper format
+	lines := strings.Split(s, "\r\n")
+	viaLines := 0
+	for _, line := range lines {
+		if strings.HasPrefix(line, "Via: ") {
+			viaLines++
+		}
+	}
+	assert.Equal(t, 2, viaLines)
+}
+
+// -----------------------------------------------------------------------------
+// Section 18.3: UDP — complete message in a single datagram
+// -----------------------------------------------------------------------------
+
+func TestRFC3261_Marshal_RoundTrip_InviteSDP(t *testing.T) {
+	input := "INVITE sip:bob@biloxi.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK776asdhds\r\n" +
+		"Max-Forwards: 70\r\n" +
+		"To: Bob <sip:bob@biloxi.com>\r\n" +
+		"From: Alice <sip:alice@atlanta.com>;tag=1928301774\r\n" +
+		"Call-ID: a84b4c76e66710@pc33.atlanta.com\r\n" +
+		"CSeq: 314159 INVITE\r\n" +
+		"Contact: <sip:alice@pc33.atlanta.com>\r\n" +
+		"Content-Type: application/sdp\r\n" +
+		"Content-Length: 137\r\n" +
+		"\r\n" +
+		"v=0\r\n" +
+		"o=alice 2890844526 2890844526 IN IP4 pc33.atlanta.com\r\n" +
+		"s=-\r\n" +
+		"c=IN IP4 pc33.atlanta.com\r\n" +
+		"t=0 0\r\n" +
+		"m=audio 49172 RTP/AVP 0\r\n" +
+		"a=rtpmap:0 PCMU/8000\r\n"
+	msg, err := ParseSIP(newTestReader(input))
+	if !assert.NoError(t, err) {
+		return
+	}
+	got, err := msg.Marshal()
+	if !assert.NoError(t, err) {
+		return
+	}
+	// Re-parse and verify complete semantic round-trip
+	msg2, err := ParseSIP(newTestReader(string(got)))
+	if assert.NoError(t, err) {
+		assert.Equal(t, msg.StartLine(), msg2.StartLine())
+		assert.Equal(t, msg.Method(), msg2.Method())
+		for k, vals := range msg.Headers {
+			assert.Equal(t, vals, msg2.Headers.Get(k), "header %s mismatch", k)
+		}
+		assert.Equal(t, msg.CSeq, msg2.CSeq)
+		assert.Equal(t, msg.Body, msg2.Body, "SDP body must be byte-identical")
+	}
+}
+
+func TestRFC3261_Marshal_RoundTrip_ResponseWithBody(t *testing.T) {
+	input := "SIP/2.0 200 OK\r\n" +
+		"Via: SIP/2.0/UDP server.example.com;branch=z9hG4bK9a8b\r\n" +
+		"From: Alice <sip:alice@example.com>;tag=abc\r\n" +
+		"To: Bob <sip:bob@example.com>;tag=def\r\n" +
+		"Call-ID: a84b4c76e66710@pc33.atlanta.com\r\n" +
+		"CSeq: 314159 INVITE\r\n" +
+		"Contact: <sip:bob@biloxi.com>\r\n" +
+		"Content-Type: application/sdp\r\n" +
+		"Content-Length: 137\r\n" +
+		"\r\n" +
+		"v=0\r\n" +
+		"o=bob 2890844526 2890844526 IN IP4 biloxi.example.com\r\n" +
+		"s=-\r\n" +
+		"c=IN IP4 biloxi.example.com\r\n" +
+		"t=0 0\r\n" +
+		"m=audio 49170 RTP/AVP 0\r\n" +
+		"a=rtpmap:0 PCMU/8000\r\n"
+	msg, err := ParseSIP(newTestReader(input))
+	if !assert.NoError(t, err) {
+		return
+	}
+	got, err := msg.Marshal()
+	if !assert.NoError(t, err) {
+		return
+	}
+	msg2, err := ParseSIP(newTestReader(string(got)))
+	if assert.NoError(t, err) {
+		assert.False(t, msg2.IsRequest())
+		assert.Equal(t, 200, msg2.StatusCode())
+		assert.Equal(t, msg.Body, msg2.Body)
+	}
+}
+
+func TestRFC3261_Marshal_Response_NoBody(t *testing.T) {
+	input := "SIP/2.0 180 Ringing\r\n" +
+		"Via: SIP/2.0/UDP proxy.example.com;branch=z9hG4bK1\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:bob@example.com>;tag=def\r\n" +
+		"Call-ID: call123\r\n" +
+		"CSeq: 1 INVITE\r\n" +
+		"Content-Length: 0\r\n\r\n"
+	msg, err := ParseSIP(newTestReader(input))
+	if !assert.NoError(t, err) {
+		return
+	}
+	got, err := msg.Marshal()
+	if assert.NoError(t, err) {
+		assert.Contains(t, string(got), "SIP/2.0 180 Ringing\r\n")
+		assert.Contains(t, string(got), "Content-Length: 0\r\n\r\n")
+		assert.True(t, strings.HasSuffix(string(got), "Content-Length: 0\r\n\r\n"),
+			"empty-body response must end with Content-Length: 0\\r\\n\\r\\n")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Section 8.1.1.1: INVITE-specific Via, Max-Forwards, etc. in correct form
+// -----------------------------------------------------------------------------
+
+func TestRFC3261_Marshal_AllMethodsProduceValidWireFormat(t *testing.T) {
+	methods := []SIPMethod{
+		SIPMethodINVITE, SIPMethodACK, SIPMethodBYE, SIPMethodCANCEL,
+		SIPMethodREGISTER, SIPMethodOPTIONS,
+		SIPMethodPRACK, SIPMethodSUBSCRIBE, SIPMethodNOTIFY,
+		SIPMethodPUBLISH, SIPMethodINFO, SIPMethodREFER,
+		SIPMethodMESSAGE, SIPMethodUPDATE,
+	}
+	for _, method := range methods {
+		t.Run(string(method), func(t *testing.T) {
+			msg := &SIPMessage{
+				startLine: &startLine{
+					IsRequest: true, Method: method,
+					URI: "sip:user@host", Version: "SIP/2.0",
+				},
+				Headers: SIPHeaders{
+					"From":  {"<sip:a@a>"},
+					"To":    {"<sip:b@b>"},
+					"Via":   {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+					"Call-ID": {"call@host"},
+				},
+				CSeq: CSeq{Seq: 1, Method: method},
+			}
+			got, err := msg.Marshal()
+			if !assert.NoError(t, err) {
+				return
+			}
+			// Verify result is parseable by our own parser
+			msg2, err := ParseSIP(newTestReader(string(got)))
+			if assert.NoError(t, err) {
+				assert.Equal(t, method, msg2.Method())
+				assert.Equal(t, method, msg2.CSeq.Method)
+			}
+		})
+	}
+}
+
+func rfc3261ReasonPhrase(code int) (string, bool) {
+	m := map[int]string{
+		100: "Trying", 180: "Ringing", 181: "Call Is Being Forwarded",
+		200: "OK", 302: "Moved Temporarily",
+		400: "Bad Request", 401: "Unauthorized", 403: "Forbidden",
+		404: "Not Found", 407: "Proxy Authentication Required",
+		408: "Request Timeout", 500: "Server Internal Error",
+		503: "Service Unavailable", 600: "Busy Everywhere", 603: "Decline",
+	}
+	s, ok := m[code]
+	return s, ok
+}
+
+func sipBenchRequest() *SIPMessage {
+	input := "INVITE sip:bob@biloxi.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK776asdhds\r\n" +
+		"Max-Forwards: 70\r\n" +
+		"To: Bob <sip:bob@biloxi.com>\r\n" +
+		"From: Alice <sip:alice@atlanta.com>;tag=1928301774\r\n" +
+		"Call-ID: a84b4c76e66710@pc33.atlanta.com\r\n" +
+		"CSeq: 314159 INVITE\r\n" +
+		"Contact: <sip:alice@pc33.atlanta.com>\r\n" +
+		"Content-Type: application/sdp\r\n" +
+		"Content-Length: 137\r\n" +
+		"\r\n" +
+		"v=0\r\n" +
+		"o=alice 2890844526 2890844526 IN IP4 pc33.atlanta.com\r\n" +
+		"s=-\r\n" +
+		"c=IN IP4 pc33.atlanta.com\r\n" +
+		"t=0 0\r\n" +
+		"m=audio 49172 RTP/AVP 0\r\n" +
+		"a=rtpmap:0 PCMU/8000\r\n"
+	msg, err := ParseSIP(newTestReader(input))
+	if err != nil {
+		panic(err)
+	}
+	return msg
+}
+
+func sipBenchResponse() *SIPMessage {
+	input := "SIP/2.0 200 OK\r\n" +
+		"Via: SIP/2.0/UDP server.example.com;branch=z9hG4bK9a8b\r\n" +
+		"From: Alice <sip:alice@example.com>;tag=abc\r\n" +
+		"To: Bob <sip:bob@example.com>;tag=def\r\n" +
+		"Call-ID: a84b4c76e66710@pc33.atlanta.com\r\n" +
+		"CSeq: 314159 INVITE\r\n" +
+		"Contact: <sip:bob@biloxi.com>\r\n" +
+		"Content-Length: 0\r\n\r\n"
+	msg, err := ParseSIP(newTestReader(input))
+	if err != nil {
+		panic(err)
+	}
+	return msg
+}
+
+func sipBenchMinimal() *SIPMessage {
+	input := "BYE sip:alice@example.com SIP/2.0\r\n" +
+		"To: Alice <sip:alice@example.com>;tag=abc\r\n" +
+		"From: Bob <sip:bob@example.com>;tag=def\r\n" +
+		"CSeq: 1 BYE\r\n" +
+		"Content-Length: 0\r\n\r\n"
+	msg, err := ParseSIP(newTestReader(input))
+	if err != nil {
+		panic(err)
+	}
+	return msg
+}
+
+func BenchmarkSIPMarshal_Request(b *testing.B) {
+	msg := sipBenchRequest()
+	sz := msg.MarshalSize()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf := make([]byte, sz)
+		msg.marshalTo(buf)
+	}
+}
+
+func BenchmarkSIPMarshal_Response(b *testing.B) {
+	msg := sipBenchResponse()
+	sz := msg.MarshalSize()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf := make([]byte, sz)
+		msg.marshalTo(buf)
+	}
+}
+
+func BenchmarkSIPMarshal_Minimal(b *testing.B) {
+	msg := sipBenchMinimal()
+	sz := msg.MarshalSize()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf := make([]byte, sz)
+		msg.marshalTo(buf)
+	}
+}
+
+func BenchmarkSIPMarshalTo_Request(b *testing.B) {
+	msg := sipBenchRequest()
+	sz := msg.MarshalSize()
+	buf := make([]byte, sz)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		msg.marshalTo(buf)
+	}
+}
+
+func BenchmarkSIPMarshalTo_Response(b *testing.B) {
+	msg := sipBenchResponse()
+	sz := msg.MarshalSize()
+	buf := make([]byte, sz)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		msg.marshalTo(buf)
+	}
+}
+
+func BenchmarkSIPMarshalTo_Minimal(b *testing.B) {
+	msg := sipBenchMinimal()
+	sz := msg.MarshalSize()
+	buf := make([]byte, sz)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		msg.marshalTo(buf)
+	}
+}
