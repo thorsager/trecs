@@ -2,6 +2,7 @@ package proto
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"strconv"
@@ -462,94 +463,368 @@ func parseMedia(val string) (MediaDescription, error) {
 	return md, nil
 }
 
-// String renders the session description back to SDP text format with CRLF
-// line endings, suitable for use as a SIP body.
-func (s *SDP) String() string {
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("v=%d\r\n", s.Version))
-	b.WriteString(fmt.Sprintf("o=%s %s %s %s %s %s\r\n",
-		s.Origin.Username, s.Origin.SessionID, s.Origin.SessionVersion,
-		s.Origin.NetworkType, s.Origin.AddressType, s.Origin.Address))
-	b.WriteString(fmt.Sprintf("s=%s\r\n", s.SessionName))
+// MarshalSize returns the exact number of bytes needed to represent the
+// session description in SDP text format.
+func (s *SDP) MarshalSize() int {
+	sz := 0
+
+	// v= line
+	sz += 2 + intLen(int64(s.Version)) + 2
+
+	// o= line
+	sz += 2 + len(s.Origin.Username) + 1 + len(s.Origin.SessionID) + 1 +
+		len(s.Origin.SessionVersion) + 1 + len(s.Origin.NetworkType) + 1 +
+		len(s.Origin.AddressType) + 1 + len(s.Origin.Address) + 2
+
+	// s= line
+	sz += 2 + len(s.SessionName) + 2
+
 	if s.SessionInfo != "" {
-		b.WriteString(fmt.Sprintf("i=%s\r\n", s.SessionInfo))
+		sz += 2 + len(s.SessionInfo) + 2
 	}
 	if s.URI != "" {
-		b.WriteString(fmt.Sprintf("u=%s\r\n", s.URI))
+		sz += 2 + len(s.URI) + 2
 	}
 	for _, e := range s.Emails {
-		b.WriteString(fmt.Sprintf("e=%s\r\n", e))
+		sz += 2 + len(e) + 2
 	}
 	for _, p := range s.Phones {
-		b.WriteString(fmt.Sprintf("p=%s\r\n", p))
+		sz += 2 + len(p) + 2
 	}
 	if s.Connection != nil {
-		b.WriteString(fmt.Sprintf("c=%s %s %s\r\n",
-			s.Connection.NetworkType, s.Connection.AddressType, s.Connection.Address))
+		sz += 2 + len(s.Connection.NetworkType) + 1 +
+			len(s.Connection.AddressType) + 1 +
+			len(s.Connection.Address) + 2
 	}
 	for _, bw := range s.Bandwidths {
-		b.WriteString(fmt.Sprintf("b=%s:%d\r\n", bw.Type, bw.Value))
+		sz += 2 + len(bw.Type) + 1 + intLen(int64(bw.Value)) + 2
 	}
 	for _, td := range s.Times {
-		b.WriteString(fmt.Sprintf("t=%d %d\r\n", td.Start, td.Stop))
+		sz += 2 + intLen(td.Start) + 1 + intLen(td.Stop) + 2
 		for _, r := range td.Repeats {
-			b.WriteString(fmt.Sprintf("r=%d %d", r.Interval, r.Duration))
+			sz += 2 + intLen(r.Interval) + 1 + intLen(r.Duration)
 			for _, o := range r.Offsets {
-				b.WriteString(fmt.Sprintf(" %d", o))
+				sz += 1 + intLen(o)
 			}
-			b.WriteString("\r\n")
+			sz += 2
 		}
 	}
 	if s.TimeZone != "" {
-		b.WriteString(fmt.Sprintf("z=%s\r\n", s.TimeZone))
+		sz += 2 + len(s.TimeZone) + 2
 	}
 	if s.Encryption != nil {
+		sz += 2 + len(s.Encryption.Method) + 2
 		if s.Encryption.Key != "" {
-			b.WriteString(fmt.Sprintf("k=%s:%s\r\n", s.Encryption.Method, s.Encryption.Key))
-		} else {
-			b.WriteString(fmt.Sprintf("k=%s\r\n", s.Encryption.Method))
+			sz += 1 + len(s.Encryption.Key)
 		}
 	}
 	for _, a := range s.Attributes {
+		sz += 2 + len(a.Key) + 2
 		if a.Value != "" {
-			b.WriteString(fmt.Sprintf("a=%s:%s\r\n", a.Key, a.Value))
-		} else {
-			b.WriteString(fmt.Sprintf("a=%s\r\n", a.Key))
+			sz += 1 + len(a.Value)
 		}
 	}
 	for _, md := range s.MediaDescs {
-		portStr := strconv.Itoa(md.Port)
+		// m= line
+		sz += 2 + len(md.Type) + 1 + intLen(int64(md.Port))
 		if md.PortCount > 1 {
-			portStr += "/" + strconv.Itoa(md.PortCount)
+			sz += 1 + intLen(int64(md.PortCount))
 		}
-		b.WriteString(fmt.Sprintf("m=%s %s %s %s\r\n",
-			md.Type, portStr, md.Proto, strings.Join(md.Fmt, " ")))
+		sz += 1 + len(md.Proto) + 1 + joinLen(md.Fmt, " ") + 2
+
 		if md.Title != "" {
-			b.WriteString(fmt.Sprintf("i=%s\r\n", md.Title))
+			sz += 2 + len(md.Title) + 2
 		}
 		if md.Connection != nil {
-			b.WriteString(fmt.Sprintf("c=%s %s %s\r\n",
-				md.Connection.NetworkType, md.Connection.AddressType, md.Connection.Address))
+			sz += 2 + len(md.Connection.NetworkType) + 1 +
+				len(md.Connection.AddressType) + 1 +
+				len(md.Connection.Address) + 2
 		}
 		for _, bw := range md.Bandwidths {
-			b.WriteString(fmt.Sprintf("b=%s:%d\r\n", bw.Type, bw.Value))
+			sz += 2 + len(bw.Type) + 1 + intLen(int64(bw.Value)) + 2
 		}
 		if md.Encryption != nil {
+			sz += 2 + len(md.Encryption.Method) + 2
 			if md.Encryption.Key != "" {
-				b.WriteString(fmt.Sprintf("k=%s:%s\r\n", md.Encryption.Method, md.Encryption.Key))
-			} else {
-				b.WriteString(fmt.Sprintf("k=%s\r\n", md.Encryption.Method))
+				sz += 1 + len(md.Encryption.Key)
 			}
 		}
 		for _, a := range md.Attributes {
+			sz += 2 + len(a.Key) + 2
 			if a.Value != "" {
-				b.WriteString(fmt.Sprintf("a=%s:%s\r\n", a.Key, a.Value))
-			} else {
-				b.WriteString(fmt.Sprintf("a=%s\r\n", a.Key))
+				sz += 1 + len(a.Value)
 			}
 		}
 	}
-	return b.String()
+	return sz
+}
+
+// marshalTo is the internal implementation shared by Marshal, MarshalTo, and
+// String. sz must equal MarshalSize() and len(buf) >= sz.
+func (s *SDP) marshalTo(buf []byte, sz int) int {
+	pos := 0
+
+	// v=0\r\n
+	buf[pos] = 'v'; buf[pos+1] = '='
+	pos += 2
+	pos += len(strconv.AppendInt(buf[pos:pos], int64(s.Version), 10))
+	buf[pos] = '\r'; buf[pos+1] = '\n'
+	pos += 2
+
+	// o=...
+	buf[pos] = 'o'; buf[pos+1] = '='
+	pos += 2
+	pos += copy(buf[pos:], s.Origin.Username)
+	buf[pos] = ' '; pos++
+	pos += copy(buf[pos:], s.Origin.SessionID)
+	buf[pos] = ' '; pos++
+	pos += copy(buf[pos:], s.Origin.SessionVersion)
+	buf[pos] = ' '; pos++
+	pos += copy(buf[pos:], s.Origin.NetworkType)
+	buf[pos] = ' '; pos++
+	pos += copy(buf[pos:], s.Origin.AddressType)
+	buf[pos] = ' '; pos++
+	pos += copy(buf[pos:], s.Origin.Address)
+	buf[pos] = '\r'; buf[pos+1] = '\n'
+	pos += 2
+
+	// s=...
+	buf[pos] = 's'; buf[pos+1] = '='
+	pos += 2
+	pos += copy(buf[pos:], s.SessionName)
+	buf[pos] = '\r'; buf[pos+1] = '\n'
+	pos += 2
+
+	if s.SessionInfo != "" {
+		buf[pos] = 'i'; buf[pos+1] = '='
+		pos += 2
+		pos += copy(buf[pos:], s.SessionInfo)
+		buf[pos] = '\r'; buf[pos+1] = '\n'
+		pos += 2
+	}
+	if s.URI != "" {
+		buf[pos] = 'u'; buf[pos+1] = '='
+		pos += 2
+		pos += copy(buf[pos:], s.URI)
+		buf[pos] = '\r'; buf[pos+1] = '\n'
+		pos += 2
+	}
+	for _, e := range s.Emails {
+		buf[pos] = 'e'; buf[pos+1] = '='
+		pos += 2
+		pos += copy(buf[pos:], e)
+		buf[pos] = '\r'; buf[pos+1] = '\n'
+		pos += 2
+	}
+	for _, p := range s.Phones {
+		buf[pos] = 'p'; buf[pos+1] = '='
+		pos += 2
+		pos += copy(buf[pos:], p)
+		buf[pos] = '\r'; buf[pos+1] = '\n'
+		pos += 2
+	}
+
+	if s.Connection != nil {
+		buf[pos] = 'c'; buf[pos+1] = '='
+		pos += 2
+		pos += copy(buf[pos:], s.Connection.NetworkType)
+		buf[pos] = ' '; pos++
+		pos += copy(buf[pos:], s.Connection.AddressType)
+		buf[pos] = ' '; pos++
+		pos += copy(buf[pos:], s.Connection.Address)
+		buf[pos] = '\r'; buf[pos+1] = '\n'
+		pos += 2
+	}
+	for _, bw := range s.Bandwidths {
+		buf[pos] = 'b'; buf[pos+1] = '='
+		pos += 2
+		pos += copy(buf[pos:], bw.Type)
+		buf[pos] = ':'; pos++
+		pos += len(strconv.AppendInt(buf[pos:pos], int64(bw.Value), 10))
+		buf[pos] = '\r'; buf[pos+1] = '\n'
+		pos += 2
+	}
+	for _, td := range s.Times {
+		buf[pos] = 't'; buf[pos+1] = '='
+		pos += 2
+		pos += len(strconv.AppendInt(buf[pos:pos], td.Start, 10))
+		buf[pos] = ' '; pos++
+		pos += len(strconv.AppendInt(buf[pos:pos], td.Stop, 10))
+		buf[pos] = '\r'; buf[pos+1] = '\n'
+		pos += 2
+
+		for _, r := range td.Repeats {
+			buf[pos] = 'r'; buf[pos+1] = '='
+			pos += 2
+			pos += len(strconv.AppendInt(buf[pos:pos], r.Interval, 10))
+			buf[pos] = ' '; pos++
+			pos += len(strconv.AppendInt(buf[pos:pos], r.Duration, 10))
+			for _, o := range r.Offsets {
+				buf[pos] = ' '; pos++
+				pos += len(strconv.AppendInt(buf[pos:pos], o, 10))
+			}
+			buf[pos] = '\r'; buf[pos+1] = '\n'
+			pos += 2
+		}
+	}
+	if s.TimeZone != "" {
+		buf[pos] = 'z'; buf[pos+1] = '='
+		pos += 2
+		pos += copy(buf[pos:], s.TimeZone)
+		buf[pos] = '\r'; buf[pos+1] = '\n'
+		pos += 2
+	}
+	if s.Encryption != nil {
+		buf[pos] = 'k'; buf[pos+1] = '='
+		pos += 2
+		pos += copy(buf[pos:], s.Encryption.Method)
+		if s.Encryption.Key != "" {
+			buf[pos] = ':'; pos++
+			pos += copy(buf[pos:], s.Encryption.Key)
+		}
+		buf[pos] = '\r'; buf[pos+1] = '\n'
+		pos += 2
+	}
+	for _, a := range s.Attributes {
+		buf[pos] = 'a'; buf[pos+1] = '='
+		pos += 2
+		pos += copy(buf[pos:], a.Key)
+		if a.Value != "" {
+			buf[pos] = ':'; pos++
+			pos += copy(buf[pos:], a.Value)
+		}
+		buf[pos] = '\r'; buf[pos+1] = '\n'
+		pos += 2
+	}
+
+	for _, md := range s.MediaDescs {
+		buf[pos] = 'm'; buf[pos+1] = '='
+		pos += 2
+		pos += copy(buf[pos:], md.Type)
+		buf[pos] = ' '; pos++
+		pos += len(strconv.AppendInt(buf[pos:pos], int64(md.Port), 10))
+		if md.PortCount > 1 {
+			buf[pos] = '/'; pos++
+			pos += len(strconv.AppendInt(buf[pos:pos], int64(md.PortCount), 10))
+		}
+		buf[pos] = ' '; pos++
+		pos += copy(buf[pos:], md.Proto)
+		buf[pos] = ' '; pos++
+		for i, f := range md.Fmt {
+			if i > 0 {
+				buf[pos] = ' '; pos++
+			}
+			pos += copy(buf[pos:], f)
+		}
+		buf[pos] = '\r'; buf[pos+1] = '\n'
+		pos += 2
+
+		if md.Title != "" {
+			buf[pos] = 'i'; buf[pos+1] = '='
+			pos += 2
+			pos += copy(buf[pos:], md.Title)
+			buf[pos] = '\r'; buf[pos+1] = '\n'
+			pos += 2
+		}
+		if md.Connection != nil {
+			buf[pos] = 'c'; buf[pos+1] = '='
+			pos += 2
+			pos += copy(buf[pos:], md.Connection.NetworkType)
+			buf[pos] = ' '; pos++
+			pos += copy(buf[pos:], md.Connection.AddressType)
+			buf[pos] = ' '; pos++
+			pos += copy(buf[pos:], md.Connection.Address)
+			buf[pos] = '\r'; buf[pos+1] = '\n'
+			pos += 2
+		}
+		for _, bw := range md.Bandwidths {
+			buf[pos] = 'b'; buf[pos+1] = '='
+			pos += 2
+			pos += copy(buf[pos:], bw.Type)
+			buf[pos] = ':'; pos++
+			pos += len(strconv.AppendInt(buf[pos:pos], int64(bw.Value), 10))
+			buf[pos] = '\r'; buf[pos+1] = '\n'
+			pos += 2
+		}
+		if md.Encryption != nil {
+			buf[pos] = 'k'; buf[pos+1] = '='
+			pos += 2
+			pos += copy(buf[pos:], md.Encryption.Method)
+			if md.Encryption.Key != "" {
+				buf[pos] = ':'; pos++
+				pos += copy(buf[pos:], md.Encryption.Key)
+			}
+			buf[pos] = '\r'; buf[pos+1] = '\n'
+			pos += 2
+		}
+		for _, a := range md.Attributes {
+			buf[pos] = 'a'; buf[pos+1] = '='
+			pos += 2
+			pos += copy(buf[pos:], a.Key)
+			if a.Value != "" {
+				buf[pos] = ':'; pos++
+				pos += copy(buf[pos:], a.Value)
+			}
+			buf[pos] = '\r'; buf[pos+1] = '\n'
+			pos += 2
+		}
+	}
+
+	return pos
+}
+
+// MarshalTo serializes the session description into buf, which must be at
+// least MarshalSize() bytes. Returns the number of bytes written.
+func (s *SDP) MarshalTo(buf []byte) (int, error) {
+	sz := s.MarshalSize()
+	if len(buf) < sz {
+		return 0, fmt.Errorf("sdp: buffer too small for marshal")
+	}
+	return s.marshalTo(buf, sz), nil
+}
+
+// Marshal serializes the session description to SDP text format.
+func (s *SDP) Marshal() ([]byte, error) {
+	sz := s.MarshalSize()
+	buf := make([]byte, sz)
+	s.marshalTo(buf, sz)
+	return buf, nil
+}
+
+// String renders the session description back to SDP text format with CRLF
+// line endings, suitable for use as a SIP body.
+func (s *SDP) String() string {
+	sz := s.MarshalSize()
+	buf := make([]byte, sz)
+	s.marshalTo(buf, sz)
+	return string(buf)
+}
+
+func joinLen(strs []string, sep string) int {
+	if len(strs) == 0 {
+		return 0
+	}
+	n := len(sep) * (len(strs) - 1)
+	for _, s := range strs {
+		n += len(s)
+	}
+	return n
+}
+
+func intLen(n int64) int {
+	if n == 0 {
+		return 1
+	}
+	count := 0
+	for m := n; m > 0; m /= 10 {
+		count++
+	}
+	return count
+}
+
+// ParseSDPBytes parses a complete SDP session description from a byte slice.
+func ParseSDPBytes(data []byte) (*SDP, error) {
+	return ParseSDP(bytes.NewReader(data))
 }
 
 // StartTime returns the session start time as a Go time.Time, converting

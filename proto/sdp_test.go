@@ -523,6 +523,105 @@ func BenchmarkSDP_ManyMedia(b *testing.B) {
 	}
 }
 
+func TestSDP_MarshalRoundTrip(t *testing.T) {
+	input := "v=0\r\n" +
+		"o=jdoe 2890844526 2890844527 IN IP4 atlanta.example.com\r\n" +
+		"s=SDP Seminar\r\n" +
+		"i=A Seminar on SDP\r\n" +
+		"u=http://www.example.com/seminar/\r\n" +
+		"e=j.doe@example.com\r\n" +
+		"p=+1 617 555-6011\r\n" +
+		"c=IN IP4 224.2.17.12/127\r\n" +
+		"b=CT:1000\r\n" +
+		"t=3034423619 3042462419\r\n" +
+		"r=604800 3600 0 90000\r\n" +
+		"k=prompt\r\n" +
+		"a=recvonly\r\n" +
+		"m=audio 49170 RTP/AVP 0\r\n" +
+		"i=Phone call\r\n" +
+		"c=IN IP4 203.0.113.2\r\n" +
+		"b=AS:64\r\n" +
+		"a=rtpmap:0 PCMU/8000\r\n"
+	sdp, err := ParseSDPBytes([]byte(input))
+	if !assert.NoError(t, err) {
+		return
+	}
+	data, err := sdp.Marshal()
+	if !assert.NoError(t, err) {
+		return
+	}
+	sdp2, err := ParseSDPBytes(data)
+	if assert.NoError(t, err) {
+		assert.Equal(t, sdp.Origin, sdp2.Origin)
+		assert.Equal(t, sdp.SessionName, sdp2.SessionName)
+		assert.Equal(t, sdp.Connection, sdp2.Connection)
+		assert.Equal(t, sdp.Bandwidths, sdp2.Bandwidths)
+		assert.Equal(t, sdp.Encryption, sdp2.Encryption)
+		assert.Equal(t, sdp.Attributes, sdp2.Attributes)
+		assert.Equal(t, sdp.TimeZone, sdp2.TimeZone)
+		assert.Len(t, sdp2.MediaDescs, 1)
+		assert.Equal(t, sdp.MediaDescs[0].Type, sdp2.MediaDescs[0].Type)
+		assert.Equal(t, sdp.MediaDescs[0].Port, sdp2.MediaDescs[0].Port)
+		assert.Equal(t, sdp.MediaDescs[0].Connection, sdp2.MediaDescs[0].Connection)
+	}
+}
+
+func TestSDP_MarshalTo_BufferTooSmall(t *testing.T) {
+	sdp := &SDP{
+		Version:     0,
+		Origin:      Origin{Username: "-", SessionID: "0", SessionVersion: "0", NetworkType: "IN", AddressType: "IP4", Address: "0.0.0.0"},
+		SessionName: "Test",
+		Times:       []TimeDescription{{Start: 0, Stop: 0}},
+	}
+	_, err := sdp.MarshalTo([]byte{})
+	assert.Error(t, err)
+}
+
+func TestSDP_MarshalSize_MatchesActual(t *testing.T) {
+	input := "v=0\r\no=jdoe 2890844526 2890844527 IN IP4 atlanta.example.com\r\ns=SDP Seminar\r\nt=3034423619 3042462419\r\n"
+	sdp, err := ParseSDPBytes([]byte(input))
+	if !assert.NoError(t, err) {
+		return
+	}
+	data, err := sdp.Marshal()
+	if assert.NoError(t, err) {
+		assert.Equal(t, sdp.MarshalSize(), len(data))
+	}
+}
+
+func TestSDP_Marshal_AllSessionFields(t *testing.T) {
+	input := "v=0\r\no=jdoe 2890844526 2890844527 IN IP4 atlanta.example.com\r\n" +
+		"s=SDP Seminar\r\n" +
+		"i=A Seminar on SDP\r\n" +
+		"u=http://www.example.com/seminar/\r\n" +
+		"e=j.doe@example.com\r\n" +
+		"p=+1 617 555-6011\r\n" +
+		"c=IN IP4 224.2.17.12/127\r\n" +
+		"b=CT:1000\r\n" +
+		"t=2873397496 2873404696\r\n" +
+		"r=604800 3600 0 90000\r\n" +
+		"z=2882844526 -1h 2898848070 0\r\n" +
+		"k=prompt\r\n" +
+		"a=recvonly\r\n"
+	sdp, err := ParseSDPBytes([]byte(input))
+	if !assert.NoError(t, err) {
+		return
+	}
+	data, err := sdp.Marshal()
+	if assert.NoError(t, err) {
+		sdp2, err := ParseSDPBytes(data)
+		if assert.NoError(t, err) {
+			assert.Equal(t, sdp.SessionInfo, sdp2.SessionInfo)
+			assert.Equal(t, sdp.URI, sdp2.URI)
+			assert.Equal(t, sdp.Emails, sdp2.Emails)
+			assert.Equal(t, sdp.Phones, sdp2.Phones)
+			assert.Equal(t, sdp.TimeZone, sdp2.TimeZone)
+			assert.Equal(t, sdp.Encryption, sdp2.Encryption)
+			assert.Equal(t, sdp.Attributes, sdp2.Attributes)
+		}
+	}
+}
+
 func BenchmarkSDP_LargeAttributes(b *testing.B) {
 	var sb strings.Builder
 	sb.WriteString("v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nt=0 0\r\nm=audio 49170 RTP/AVP 8 0 18 101\r\n")
@@ -537,6 +636,73 @@ func BenchmarkSDP_LargeAttributes(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, err := ParseSDP(strings.NewReader(input))
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkSDP_Marshal_Minimal(b *testing.B) {
+	input := "v=0\r\no=jdoe 2890844526 2890844527 IN IP4 atlanta.example.com\r\ns=SDP Seminar\r\nt=3034423619 3042462419\r\n"
+	sdp, err := ParseSDPBytes([]byte(input))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := sdp.Marshal()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkSDP_Marshal_FullFeatured(b *testing.B) {
+	input := "v=0\r\n" +
+		"o=jdoe 2890844526 2890844527 IN IP4 atlanta.example.com\r\n" +
+		"s=SDP Seminar\r\n" +
+		"i=A Seminar on SDP\r\n" +
+		"u=http://www.example.com/seminar/\r\n" +
+		"e=j.doe@example.com\r\n" +
+		"p=+1 617 555-6011\r\n" +
+		"c=IN IP4 224.2.17.12/127\r\n" +
+		"b=CT:1000\r\n" +
+		"t=3034423619 3042462419\r\n" +
+		"r=604800 3600 0 90000\r\n" +
+		"z=2882844526 -1h 2898848070 0\r\n" +
+		"k=prompt\r\n" +
+		"a=recvonly\r\n" +
+		"m=audio 49170 RTP/AVP 0\r\n" +
+		"i=Phone call\r\n" +
+		"c=IN IP4 203.0.113.2\r\n" +
+		"b=AS:64\r\n" +
+		"a=rtpmap:0 PCMU/8000\r\n"
+	sdp, err := ParseSDPBytes([]byte(input))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := sdp.Marshal()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkSDP_MarshalTo_Minimal(b *testing.B) {
+	input := "v=0\r\no=jdoe 2890844526 2890844527 IN IP4 atlanta.example.com\r\ns=SDP Seminar\r\nt=3034423619 3042462419\r\n"
+	sdp, err := ParseSDPBytes([]byte(input))
+	if err != nil {
+		b.Fatal(err)
+	}
+	buf := make([]byte, sdp.MarshalSize())
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := sdp.MarshalTo(buf)
 		if err != nil {
 			b.Fatal(err)
 		}
