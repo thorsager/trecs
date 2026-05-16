@@ -40,11 +40,22 @@ fmt.Println(to.URI, to.DisplayName)
 
 via := msg.Headers.GetFirst("Via")
 cseq := msg.Headers.Get("CSeq")   // []string
+
+branch := msg.ViaBranch()                   // branch from topmost Via
+reliable := msg.IsReliableTransport()        // true for TCP/TLS/SCTP, false for UDP
 ```
 
 ### Writing
 
-SIPMessage wraps an unexported start-line. The primary write workflow is read-modify-write:
+SIPMessage wraps an unexported start-line. The primary write workflow is read-modify-write.
+
+A response can be derived from an existing request; it copies Via, From, To, Call-ID, and CSeq:
+
+```go
+trying := proto.NewResponse(req, 100, "Trying")
+ok := proto.NewResponse(req, 200, "OK")
+ok.Headers["Allow"] = []string{"INVITE, ACK, BYE, CANCEL, OPTIONS, REGISTER"}
+```
 
 ```go
 // Parse an existing message, modify it, and serialize it back.
@@ -58,9 +69,13 @@ data, err := msg.Marshal()
 // Compact form (uses single-char header keys like "v" for "Via").
 compact, err := msg.MarshalCompact()
 
-// Pre-allocated buffer.
+// Pre-allocated buffer (standard or compact form).
 buf := make([]byte, msg.MarshalSize())
 n, err := msg.MarshalTo(buf)
+
+compactSz := msg.MarshalCompactSize()
+compactBuf := make([]byte, compactSz)
+n, err = msg.MarshalCompactTo(compactBuf)
 ```
 
 Headers with struct fields (`CSeq`, `Content-Length`) are emitted from their

@@ -2824,3 +2824,381 @@ func BenchmarkSIPMarshalTo_Minimal(b *testing.B) {
 		msg.marshalTo(buf)
 	}
 }
+
+// --- IsReliableTransport tests ---
+
+func sipMsgFromReader(t *testing.T, input string) *SIPMessage {
+	t.Helper()
+	msg, err := UnmarshalSIPDatagram([]byte(input))
+	if err != nil {
+		t.Fatalf("UnmarshalSIPDatagram: %v", err)
+	}
+	return msg
+}
+
+func TestIsReliableTransport_UDP(t *testing.T) {
+	msg := sipMsgFromReader(t, "OPTIONS sip:host SIP/2.0\r\nVia: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKabc\r\nContent-Length: 0\r\n\r\n")
+	assert.False(t, msg.IsReliableTransport(), "UDP must be unreliable")
+}
+
+func TestIsReliableTransport_TCP(t *testing.T) {
+	msg := sipMsgFromReader(t, "OPTIONS sip:host SIP/2.0\r\nVia: SIP/2.0/TCP 192.0.2.1:5060;branch=z9hG4bKabc\r\nContent-Length: 0\r\n\r\n")
+	assert.True(t, msg.IsReliableTransport(), "TCP must be reliable")
+}
+
+func TestIsReliableTransport_TLS(t *testing.T) {
+	msg := sipMsgFromReader(t, "OPTIONS sip:host SIP/2.0\r\nVia: SIP/2.0/TLS 192.0.2.1:5061;branch=z9hG4bKabc\r\nContent-Length: 0\r\n\r\n")
+	assert.True(t, msg.IsReliableTransport(), "TLS must be reliable")
+}
+
+func TestIsReliableTransport_SCTP(t *testing.T) {
+	msg := sipMsgFromReader(t, "OPTIONS sip:host SIP/2.0\r\nVia: SIP/2.0/SCTP 192.0.2.1:5060;branch=z9hG4bKabc\r\nContent-Length: 0\r\n\r\n")
+	assert.True(t, msg.IsReliableTransport(), "SCTP must be reliable")
+}
+
+func TestIsReliableTransport_WS(t *testing.T) {
+	msg := sipMsgFromReader(t, "OPTIONS sip:host SIP/2.0\r\nVia: SIP/2.0/WS 192.0.2.1:80;branch=z9hG4bKabc\r\nContent-Length: 0\r\n\r\n")
+	assert.True(t, msg.IsReliableTransport(), "WS (WebSocket) must be reliable")
+}
+
+func TestIsReliableTransport_WSS(t *testing.T) {
+	msg := sipMsgFromReader(t, "OPTIONS sip:host SIP/2.0\r\nVia: SIP/2.0/WSS 192.0.2.1:443;branch=z9hG4bKabc\r\nContent-Length: 0\r\n\r\n")
+	assert.True(t, msg.IsReliableTransport(), "WSS (WebSocket Secure) must be reliable")
+}
+
+func TestIsReliableTransport_UppercaseTransport(t *testing.T) {
+	msg := sipMsgFromReader(t, "OPTIONS sip:host SIP/2.0\r\nVia: SIP/2.0/udp 192.0.2.1:5060;branch=z9hG4bKabc\r\nContent-Length: 0\r\n\r\n")
+	assert.False(t, msg.IsReliableTransport(), "lowercase 'udp' must still be unreliable")
+}
+
+func TestIsReliableTransport_MultipleViaUsesTopmost(t *testing.T) {
+	input := "OPTIONS sip:host SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKtop\r\n" +
+		"Via: SIP/2.0/TCP 10.0.0.1:5060;branch=z9hG4bKsecond\r\n" +
+		"Content-Length: 0\r\n\r\n"
+	msg := sipMsgFromReader(t, input)
+	// Topmost Via is UDP, so the transport is unreliable.
+	assert.False(t, msg.IsReliableTransport(), "must use topmost Via header (UDP)")
+}
+
+func TestIsReliableTransport_NoVia(t *testing.T) {
+	// A SIP message must always have Via, but handle gracefully.
+	msg := sipMsgFromReader(t, "OPTIONS sip:host SIP/2.0\r\nContent-Length: 0\r\n\r\n")
+	assert.False(t, msg.IsReliableTransport(), "no Via should default to false (unreliable)")
+}
+
+func TestIsReliableTransport_MalformedVia(t *testing.T) {
+	msg := sipMsgFromReader(t, "OPTIONS sip:host SIP/2.0\r\nVia: this is not a valid via;branch=z9hG4bKx\r\nContent-Length: 0\r\n\r\n")
+	assert.False(t, msg.IsReliableTransport(), "malformed Via should default to false")
+}
+
+func TestIsReliableTransport_ExtraSpaces(t *testing.T) {
+	msg := sipMsgFromReader(t, "OPTIONS sip:host SIP/2.0\r\nVia:  SIP/2.0/TCP   192.0.2.1:5060 ;branch=z9hG4bKabc\r\nContent-Length: 0\r\n\r\n")
+	assert.True(t, msg.IsReliableTransport(), "extra spaces must not break parsing")
+}
+
+func TestIsReliableTransport_Caching(t *testing.T) {
+	msg := sipMsgFromReader(t, "OPTIONS sip:host SIP/2.0\r\nVia: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKabc\r\nContent-Length: 0\r\n\r\n")
+
+	// First call computes and caches.
+	first := msg.IsReliableTransport()
+	assert.False(t, first)
+
+	// Mutate the underlying header to prove caching works.
+	msg.Headers.Set("Via", []string{"SIP/2.0/TCP 1.2.3.4:5060;branch=z9hG4bKdef"})
+
+	// Second call must return the cached value (UDP), not the new one.
+	assert.False(t, msg.IsReliableTransport(), "must return cached value, not recompute")
+}
+
+func TestIsReliableTransport_ResponseMessage(t *testing.T) {
+	msg := sipMsgFromReader(t, "SIP/2.0 200 OK\r\nVia: SIP/2.0/TCP 192.0.2.1:5060;branch=z9hG4bKabc\r\nContent-Length: 0\r\n\r\n")
+	assert.True(t, msg.IsReliableTransport(), "must work on responses too")
+}
+
+func TestIsReliableTransport_RFCExample(t *testing.T) {
+	// Via header from RFC 3261 §20.42 example.
+	msg := sipMsgFromReader(t, "INVITE sip:user@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP erlang.bell-tower.com:5060;branch=z9hG4bK87asdks7\r\n"+
+		"Content-Length: 0\r\n\r\n")
+	assert.False(t, msg.IsReliableTransport(), "RFC example Via with UDP must be unreliable")
+}
+
+func TestViaBranch_RFCExample(t *testing.T) {
+	msg := sipMsgFromReader(t, "OPTIONS sip:host SIP/2.0\r\nVia: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKabc123\r\nContent-Length: 0\r\n\r\n")
+	assert.Equal(t, "z9hG4bKabc123", msg.ViaBranch())
+}
+
+func TestViaBranch_NoBranch(t *testing.T) {
+	msg := sipMsgFromReader(t, "OPTIONS sip:host SIP/2.0\r\nVia: SIP/2.0/UDP 192.0.2.1:5060\r\nContent-Length: 0\r\n\r\n")
+	assert.Empty(t, msg.ViaBranch())
+}
+
+func TestViaBranch_NoVia(t *testing.T) {
+	msg := sipMsgFromReader(t, "OPTIONS sip:host SIP/2.0\r\nContent-Length: 0\r\n\r\n")
+	assert.Empty(t, msg.ViaBranch())
+}
+
+func TestViaBranch_MultipleParams(t *testing.T) {
+	msg := sipMsgFromReader(t, "OPTIONS sip:host SIP/2.0\r\nVia: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKabc;rport=5060\r\nContent-Length: 0\r\n\r\n")
+	assert.Equal(t, "z9hG4bKabc", msg.ViaBranch())
+}
+
+func TestViaBranch_HostContainsBranch(t *testing.T) {
+	// "branch=" in the host portion must not trigger a match without a preceding ";".
+	msg := sipMsgFromReader(t, "OPTIONS sip:host SIP/2.0\r\nVia: SIP/2.0/UDP branch.example.com:5060;branch=z9hG4bKabc\r\nContent-Length: 0\r\n\r\n")
+	assert.Equal(t, "z9hG4bKabc", msg.ViaBranch())
+}
+
+func TestViaBranch_MultipleVia(t *testing.T) {
+	msg := sipMsgFromReader(t, "OPTIONS sip:host SIP/2.0\r\nVia: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKtop\r\nVia: SIP/2.0/TCP 10.0.0.1:5060;branch=z9hG4bKsecond\r\nContent-Length: 0\r\n\r\n")
+	assert.Equal(t, "z9hG4bKtop", msg.ViaBranch())
+}
+
+// --- unmarshalViaBranch tests (RFC 3261 §20.42 compliance) ---
+
+func TestUnmarshalViaBranch_Standard(t *testing.T) {
+	b := unmarshalViaBranch("SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKabc123")
+	assert.Equal(t, "z9hG4bKabc123", b)
+}
+
+func TestUnmarshalViaBranch_NoBranch(t *testing.T) {
+	assert.Empty(t, unmarshalViaBranch("SIP/2.0/UDP 192.0.2.1:5060"))
+}
+
+func TestUnmarshalViaBranch_Empty(t *testing.T) {
+	assert.Empty(t, unmarshalViaBranch(""))
+}
+
+func TestUnmarshalViaBranch_TrailingParams(t *testing.T) {
+	// Branch followed by via-ttl and via-received.
+	b := unmarshalViaBranch("SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKabc;rport;received=1.2.3.4")
+	assert.Equal(t, "z9hG4bKabc", b)
+}
+
+func TestUnmarshalViaBranch_LastParam(t *testing.T) {
+	b := unmarshalViaBranch("SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKabc")
+	assert.Equal(t, "z9hG4bKabc", b)
+}
+
+func TestUnmarshalViaBranch_TrailingSpaces(t *testing.T) {
+	// Via header may have trailing spaces from loose formatting.
+	b := unmarshalViaBranch("SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKabc  ")
+	assert.Equal(t, "z9hG4bKabc", b)
+}
+
+func TestUnmarshalViaBranch_BranchContainsDash(t *testing.T) {
+	// Token allows "-" per RFC 3261 §6.1 token production.
+	b := unmarshalViaBranch("SIP/2.0/UDP host;branch=z9hG4bK-abc-123")
+	assert.Equal(t, "z9hG4bK-abc-123", b)
+}
+
+func TestUnmarshalViaBranch_BranchContainsUnderscore(t *testing.T) {
+	// Token allows "_".
+	b := unmarshalViaBranch("SIP/2.0/UDP host;branch=z9hG4bK_abc_123")
+	assert.Equal(t, "z9hG4bK_abc_123", b)
+}
+
+func TestUnmarshalViaBranch_BranchContainsDot(t *testing.T) {
+	// Token allows ".".
+	b := unmarshalViaBranch("SIP/2.0/UDP host;branch=z9hG4bK.abc.123")
+	assert.Equal(t, "z9hG4bK.abc.123", b)
+}
+
+func TestUnmarshalViaBranch_MultipleBranches(t *testing.T) {
+	// Only the first ";branch=" should match.
+	b := unmarshalViaBranch("SIP/2.0/UDP host;branch=z9hG4bKfirst;branch=z9hG4bKsecond")
+	assert.Equal(t, "z9hG4bKfirst", b)
+}
+
+func TestUnmarshalViaBranch_BranchInHostNotMatched(t *testing.T) {
+	// "branch=" in the host portion has no preceding ";", must not match.
+	b := unmarshalViaBranch("SIP/2.0/UDP branch.example.com:5060;branch=z9hG4bKabc")
+	assert.Equal(t, "z9hG4bKabc", b)
+}
+
+func TestUnmarshalViaBranch_UpperCaseParameterName(t *testing.T) {
+	b := unmarshalViaBranch("SIP/2.0/UDP host;Branch=z9hG4bKabc")
+	assert.Equal(t, "z9hG4bKabc", b)
+}
+
+func TestUnmarshalViaBranch_MixedCaseParameterName(t *testing.T) {
+	b := unmarshalViaBranch("SIP/2.0/UDP host;BRanch=z9hG4bKabc")
+	assert.Equal(t, "z9hG4bKabc", b)
+}
+
+func TestUnmarshalViaBranch_ViaOnlyBranchParam(t *testing.T) {
+	// Branch as the sole content after the host: no trailing parameters, no whitespace.
+	b := unmarshalViaBranch("SIP/2.0/UDP host;branch=z9hG4bKxyz")
+	assert.Equal(t, "z9hG4bKxyz", b)
+}
+
+func TestUnmarshalViaBranch_ViaEndsWithSemicolon(t *testing.T) {
+	// Trailing semicolon with no param following (malformed, but must not crash).
+	b := unmarshalViaBranch("SIP/2.0/UDP host;branch=z9hG4bKabc;")
+	assert.Equal(t, "z9hG4bKabc", b)
+}
+
+// --- unmarshalProto tests ---
+
+func TestUnmarshalProto_UDP(t *testing.T) {
+	assert.Equal(t, "UDP", unmarshalProto("SIP/2.0/UDP 192.0.2.1:5060;branch=abc"))
+}
+
+func TestUnmarshalProto_TCP(t *testing.T) {
+	assert.Equal(t, "TCP", unmarshalProto("SIP/2.0/TCP 192.0.2.1:5060;branch=abc"))
+}
+
+func TestUnmarshalProto_TLS(t *testing.T) {
+	assert.Equal(t, "TLS", unmarshalProto("SIP/2.0/TLS 192.0.2.1:5061;branch=abc"))
+}
+
+func TestUnmarshalProto_SCTP(t *testing.T) {
+	assert.Equal(t, "SCTP", unmarshalProto("SIP/2.0/SCTP 192.0.2.1:5060;branch=abc"))
+}
+
+func TestUnmarshalProto_WS(t *testing.T) {
+	assert.Equal(t, "WS", unmarshalProto("SIP/2.0/WS 192.0.2.1:80;branch=abc"))
+}
+
+func TestUnmarshalProto_WSS(t *testing.T) {
+	assert.Equal(t, "WSS", unmarshalProto("SIP/2.0/WSS 192.0.2.1:443;branch=abc"))
+}
+
+func TestUnmarshalProto_RFCExample(t *testing.T) {
+	assert.Equal(t, "UDP", unmarshalProto("SIP/2.0/UDP erlang.bell-tower.com:5060;branch=z9hG4bK87asdks7"))
+}
+
+func TestUnmarshalProto_ExtraSpaces(t *testing.T) {
+	assert.Equal(t, "TCP", unmarshalProto("SIP/2.0/TCP   192.0.2.1:5060  ;branch=abc"))
+}
+
+func TestUnmarshalProto_Empty(t *testing.T) {
+	assert.Empty(t, unmarshalProto(""))
+}
+
+func TestUnmarshalProto_NoHost(t *testing.T) {
+	// The protocol is parseable even without a host (RFC 3261 §20.42).
+	assert.Equal(t, "UDP", unmarshalProto("SIP/2.0/UDP"))
+}
+
+func TestUnmarshalProto_NoSlash(t *testing.T) {
+	assert.Empty(t, unmarshalProto("UDP 192.0.2.1:5060;branch=abc"))
+}
+
+func TestUnmarshalProto_Garbage(t *testing.T) {
+	assert.Empty(t, unmarshalProto("not a valid via header"))
+}
+
+func TestUnmarshalProto_DoubleColon(t *testing.T) {
+	assert.Equal(t, "TCP", unmarshalProto("SIP/2.0/TCP host.example.com:5060"))
+}
+
+func BenchmarkUnmarshalProto_UDP(b *testing.B) {
+	via := "SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKabc"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		unmarshalProto(via)
+	}
+}
+
+func BenchmarkUnmarshalProto_TCP(b *testing.B) {
+	via := "SIP/2.0/TCP 192.0.2.1:5060;branch=z9hG4bKabc"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		unmarshalProto(via)
+	}
+}
+
+func BenchmarkUnmarshalProto_Malformed(b *testing.B) {
+	via := "not a valid via"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		unmarshalProto(via)
+	}
+}
+
+func BenchmarkIsReliableTransport(b *testing.B) {
+	msg, _ := UnmarshalSIPDatagram([]byte("OPTIONS sip:host SIP/2.0\r\nVia: SIP/2.0/TCP 192.0.2.1:5060;branch=z9hG4bKabc\r\nContent-Length: 0\r\n\r\n"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		msg.IsReliableTransport()
+	}
+}
+
+func BenchmarkIsReliableTransport_Cached(b *testing.B) {
+	msg, _ := UnmarshalSIPDatagram([]byte("OPTIONS sip:host SIP/2.0\r\nVia: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKabc\r\nContent-Length: 0\r\n\r\n"))
+	msg.IsReliableTransport() // warm cache
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		msg.IsReliableTransport()
+	}
+}
+
+func BenchmarkIsReliableTransport_NoVia(b *testing.B) {
+	msg, _ := UnmarshalSIPDatagram([]byte("OPTIONS sip:host SIP/2.0\r\nContent-Length: 0\r\n\r\n"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		msg.IsReliableTransport()
+	}
+}
+
+func BenchmarkUnmarshalViaBranch_Standard(b *testing.B) {
+	via := "SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKabc123"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		unmarshalViaBranch(via)
+	}
+}
+
+func BenchmarkUnmarshalViaBranch_NoBranch(b *testing.B) {
+	via := "SIP/2.0/UDP 192.0.2.1:5060"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		unmarshalViaBranch(via)
+	}
+}
+
+func BenchmarkUnmarshalViaBranch_TrailingParams(b *testing.B) {
+	via := "SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKabc;rport;received=1.2.3.4"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		unmarshalViaBranch(via)
+	}
+}
+
+func BenchmarkUnmarshalViaBranch_Empty(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		unmarshalViaBranch("")
+	}
+}
+
+func BenchmarkUnmarshalViaBranch_UpperCaseParam(b *testing.B) {
+	// Case-insensitive path: ToLower + Index + slice.
+	via := "SIP/2.0/UDP 192.0.2.1:5060;Branch=z9hG4bKabc123"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		unmarshalViaBranch(via)
+	}
+}
+
+func BenchmarkViaBranch(b *testing.B) {
+	msg, _ := UnmarshalSIPDatagram([]byte("OPTIONS sip:host SIP/2.0\r\nVia: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKabc\r\nContent-Length: 0\r\n\r\n"))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		msg.ViaBranch()
+	}
+}

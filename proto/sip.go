@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const (
@@ -30,6 +31,7 @@ const (
 	SIPMethodMESSAGE   SIPMethod = "MESSAGE"   // RFC 3428
 	SIPMethodUPDATE    SIPMethod = "UPDATE"    // RFC 3311
 
+	// SIPIndicator is the prefix used in SIP version strings (e.g. "SIP/2.0").
 	SIPIndicator = "SIP/"
 	// SIPVersion is the SIP protocol version string used in start lines.
 	SIPVersion = SIPIndicator + "2.0"
@@ -253,6 +255,7 @@ type CSeq struct {
 	Seq    int
 }
 
+// String returns the CSeq header formatted as "<seq> <method>".
 func (c *CSeq) String() string {
 	return fmt.Sprintf("%d %s", c.Seq, c.Method)
 }
@@ -263,6 +266,88 @@ type SIPMessage struct {
 	CSeq      CSeq
 	Headers   SIPHeaders
 	Body      []byte
+
+	reliableOnce sync.Once
+	reliable     bool
+	branchOnce sync.Once
+	branch     string
+}
+
+// IsReliableTransport returns true if the message arrived over a reliable
+// transport (TCP, TLS, SCTP, WS, WSS). The result is computed lazily from
+// the top Via header and cached for subsequent calls.
+// The transport protocol is compared case-insensitively per RFC 3261 §20.42.
+func (m *SIPMessage) IsReliableTransport() bool {
+	m.reliableOnce.Do(func() {
+		proto := unmarshalProto(m.Headers.GetFirst("Via"))
+		m.reliable = proto != "" && !strings.EqualFold(proto, "UDP")
+	})
+	return m.reliable
+}
+
+func unmarshalProto(via string) string {
+	const prefix = "SIP/2.0/"
+	if !strings.HasPrefix(via, prefix) {
+		return ""
+	}
+	proto, _, _ := strings.Cut(via[len(prefix):], " ")
+	return proto
+}
+
+// ViaBranch returns the branch parameter from the topmost Via header.
+// The value is computed lazily and cached for subsequent calls.
+func (m *SIPMessage) ViaBranch() string {
+	m.branchOnce.Do(func(){
+		m.branch = unmarshalViaBranch(m.Headers.GetFirst("Via"))
+	})
+	return m.branch
+}
+
+func unmarshalViaBranch(via string) string {
+	idx := strings.Index(via, ";branch=")
+	if idx < 0 {
+		// Case-insensitive fallback per RFC 3261 §7.3.1.
+		lower := strings.ToLower(via)
+		idx = strings.Index(lower, ";branch=")
+		if idx < 0 {
+			return ""
+		}
+	}
+	rest := via[idx+8:]
+	if branch, _, found := strings.Cut(rest, ";"); found {
+		return branch
+	}
+	// Strip trailing whitespace that may appear before CRLF.
+	end := len(rest)
+	for end > 0 && (rest[end-1] == ' ' || rest[end-1] == '\r') {
+		end--
+	}
+	return rest[:end]
+}
+
+// NewResponse creates a new SIP response message derived from req.
+// It copies Via, From, To, Call-ID, and CSeq from the request, and
+// sets the response status line to statusCode/reason. The returned
+// message has an empty body with Content-Length: 0.
+func NewResponse(req *SIPMessage, statusCode int, reason string) *SIPMessage {
+	msg := &SIPMessage{
+		startLine: &startLine{
+			IsRequest:  false,
+			Version:    SIPVersion,
+			StatusCode: statusCode,
+			Status:     fmt.Sprintf("%d %s", statusCode, reason),
+		},
+		Headers: make(SIPHeaders, 8),
+		CSeq:    req.CSeq,
+	}
+	for _, h := range []string{"Via", "From", "To", "Call-ID", "CSeq"} {
+		if vals := req.Headers[h]; len(vals) > 0 {
+			msg.Headers[h] = append([]string{}, vals...)
+		}
+	}
+	// Recompute Content-Length from empty body.
+	msg.Body = nil
+	return msg
 }
 
 // StartLine returns the raw start-line (request-line or status-line).
