@@ -89,20 +89,27 @@ func (tx *NonInviteTransaction) Respond(res *proto.SIPMessage) {
 		log.Printf("NIST %s → Completed (%d) [from %s]", tx.branch, sc, prev)
 		tx.doSend(res)
 
-		d := time.Duration(0)
 		if !tx.reliable {
-			d = 64 * T1
-		}
-		tx.timerJ = time.AfterFunc(d, func() {
-			tx.mu.Lock()
-			tx.state = NISTTerminated
-			tx.mu.Unlock()
+			tx.timerJ = time.AfterFunc(64*T1, func() {
+				tx.mu.Lock()
+				tx.state = NISTTerminated
+				tx.mu.Unlock()
 
-			tx.manager.mu.Lock()
-			delete(tx.manager.serverTxs, tx.branch)
-			tx.manager.mu.Unlock()
-			log.Printf("NIST %s terminated (Timer J)", tx.branch)
-		})
+				tx.manager.mu.Lock()
+				delete(tx.manager.serverTxs, tx.branch)
+				tx.manager.mu.Unlock()
+				log.Printf("NIST %s terminated (Timer J)", tx.branch)
+			})
+		} else {
+			tx.timerJ = time.AfterFunc(0, func() {
+				tx.mu.Lock()
+				tx.state = NISTTerminated
+				tx.mu.Unlock()
+				tx.manager.mu.Lock()
+				delete(tx.manager.serverTxs, tx.branch)
+				tx.manager.mu.Unlock()
+			})
+		}
 	}
 }
 
@@ -232,20 +239,23 @@ func (tx *InviteTransaction) ackReceived() {
 	tx.stopTimers()
 	log.Printf("IST %s → Confirmed (ACK)", tx.branch)
 
-	d := T4
-	if tx.reliable {
-		d = 0
-	}
-	tx.timerI = time.AfterFunc(d, func() {
-		tx.mu.Lock()
-		tx.state = ISTTerminated
-		tx.mu.Unlock()
+	if !tx.reliable {
+		tx.timerI = time.AfterFunc(T4, func() {
+			tx.mu.Lock()
+			tx.state = ISTTerminated
+			tx.mu.Unlock()
 
+			tx.manager.mu.Lock()
+			delete(tx.manager.serverTxs, tx.branch)
+			tx.manager.mu.Unlock()
+			log.Printf("IST %s terminated (Timer I)", tx.branch)
+		})
+	} else {
+		tx.state = ISTTerminated
 		tx.manager.mu.Lock()
 		delete(tx.manager.serverTxs, tx.branch)
 		tx.manager.mu.Unlock()
-		log.Printf("IST %s terminated (Timer I)", tx.branch)
-	})
+	}
 }
 
 func (tx *InviteTransaction) stopTimers() {

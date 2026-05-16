@@ -42,7 +42,6 @@ func TestSynctestNISTTimerJReliable(t *testing.T) {
 
 		tx.Respond(proto.NewResponse(req, 200, "OK"))
 
-		time.Sleep(0)
 		synctest.Wait()
 
 		if got := stateNIST(t, tx); got != NISTTerminated {
@@ -206,17 +205,16 @@ func TestSynctestISTAckPreventsTimerH(t *testing.T) {
 		tx.Respond(proto.NewResponse(req, 404, "Not Found"))
 		tx.ackReceived()
 
-		if got := stateIST(t, tx); got != ISTConfirmed {
-			t.Fatalf("expected Confirmed, got %s", got)
+		if got := stateIST(t, tx); got != ISTTerminated {
+			t.Fatalf("expected Terminated after ACK (reliable), got %s", got)
 		}
 
-		// Advance past Timer H window — should not fire.
+		// Advance past Timer H window — should be a no-op.
 		time.Sleep(64 * T1)
 		synctest.Wait()
 
-		// Timer I (0s for reliable) fires → Terminated.
 		if got := stateIST(t, tx); got != ISTTerminated {
-			t.Fatalf("expected Terminated via Timer I, got %s", got)
+			t.Fatalf("expected Terminated, got %s", got)
 		}
 	})
 }

@@ -40,7 +40,7 @@ func (m *mockTransport) lastSent() *proto.SIPMessage {
 }
 
 // testRequest builds a SIP request with the given method and Via branch.
-func testRequest(t *testing.T, method proto.SIPMethod, branch string, reliable bool) *proto.SIPMessage {
+func testRequest(t testing.TB, method proto.SIPMethod, branch string, reliable bool) *proto.SIPMessage {
 	t.Helper()
 	protoVal := "UDP"
 	if reliable {
@@ -61,7 +61,7 @@ func testRequest(t *testing.T, method proto.SIPMethod, branch string, reliable b
 }
 
 // testEvent creates a MessageEvent from a SIP request for HandleRequest.
-func testEvent(t *testing.T, method proto.SIPMethod, branch string, reliable bool) MessageEvent {
+func testEvent(t testing.TB, method proto.SIPMethod, branch string, reliable bool) MessageEvent {
 	t.Helper()
 	msg := testRequest(t, method, branch, reliable)
 	return MessageEvent{Msg: msg, Target: Target{}}
@@ -206,7 +206,7 @@ func TestNISTFinalResponseToCompleted(t *testing.T) {
 	tx.Respond(proto.NewResponse(req, 200, "OK"))
 
 	if tx.state != NISTCompleted {
-		t.Fatalf("expected Completed after 200, got %s", tx.state)
+		t.Fatalf("expected Completed after 200 for reliable transport, got %s", tx.state)
 	}
 	if trans.lastSent().StatusCode() != 200 {
 		t.Fatalf("expected sent 200, got %d", trans.lastSent().StatusCode())
@@ -310,7 +310,7 @@ func TestNISTCompletedFromProceeding(t *testing.T) {
 }
 
 func TestNISTStatusCode300Plus(t *testing.T) {
-	req := testRequest(t, proto.SIPMethodOPTIONS, "nist-300", true)
+	req := testRequest(t, proto.SIPMethodOPTIONS, "nist-300", false)
 	trans := &mockTransport{}
 	tx := &NonInviteTransaction{
 		branch:    "nist-300",
@@ -318,7 +318,7 @@ func TestNISTStatusCode300Plus(t *testing.T) {
 		state:     NISTTrying,
 		transport: trans,
 		manager:   NewTransactionManager(),
-		reliable:  true,
+		reliable:  false,
 	}
 
 	for _, code := range []int{300, 404, 500, 603} {
@@ -327,6 +327,12 @@ func TestNISTStatusCode300Plus(t *testing.T) {
 			t.Fatalf("expected Completed after %d, got %s", code, tx.state)
 		}
 	}
+	// Stop Timer J (32s) to avoid spurious log output after the test.
+	tx.mu.Lock()
+	if tx.timerJ != nil {
+		tx.timerJ.Stop()
+	}
+	tx.mu.Unlock()
 }
 
 func TestNISTTimerJReliable(t *testing.T) {
@@ -595,12 +601,11 @@ func TestISTAckInCompletedToConfirmed(t *testing.T) {
 	// ACK.
 	tx.ackReceived()
 
-	if tx.state != ISTConfirmed {
-		t.Fatalf("expected Confirmed after ACK, got %s", tx.state)
+	if tx.state != ISTTerminated {
+		t.Fatalf("expected Terminated after ACK for reliable transport, got %s", tx.state)
 	}
 
-	// Timer I = 0 for reliable → terminates asynchronously.
-	awaitISTTerminated(t, tx, 500*time.Millisecond)
+	// Timer I = 0 for reliable → terminates synchronously.
 
 	tm.mu.Lock()
 	_, exists := tm.serverTxs["ist-ack-good"]
@@ -971,17 +976,12 @@ func TestManagerHandleACKMatchesIST(t *testing.T) {
 
 	tm.HandleACK(ackEv, trans)
 
-	// IST should now be Confirmed.
+	// Timer I = 0 for reliable → terminates synchronously.
 	tm.mu.Lock()
-	existing, exists := tm.serverTxs["mgr-ack-ist"]
+	_, exists := tm.serverTxs["mgr-ack-ist"]
 	tm.mu.Unlock()
-	if !exists {
-		t.Fatal("expected IST to exist after ACK (timer I = 0 for reliable)")
-	}
-
-	ist := existing.(*InviteTransaction)
-	if ist.state != ISTConfirmed {
-		t.Fatalf("expected Confirmed after ACK, got %s", ist.state)
+	if exists {
+		t.Fatal("expected IST removed from manager after ACK for reliable transport")
 	}
 }
 
