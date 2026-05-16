@@ -1,7 +1,22 @@
+BIN    := trecd
+GO     := go
+LDFLAGS:=
+
+build: $(BIN)
+
+$(BIN): cmd/trecd/main.go
+	$(GO) build -o $@ $(LDFLAGS) ./cmd/trecd
+
+install:
+	$(GO) install $(LDFLAGS) ./cmd/trecd
+
+clean:
+	rm -f $(BIN)
+
 test:
-	go test -count=1 ./...
+	$(GO) test -count=1 ./...
 
 bench:
-	go test ./... -bench=. -benchmem -benchtime=1000ms
+	$(GO) test ./... -bench=. -benchmem -benchtime=1000ms
 
-.PHONY: test bench
+.PHONY: build install clean test bench
