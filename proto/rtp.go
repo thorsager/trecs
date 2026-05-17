@@ -13,6 +13,11 @@ const (
 	ExtensionProfileOneByte uint16 = 0xBEDE
 	// ExtensionProfileTwoByte is the RTP Two Byte Header Extension Profile, defined in RFC 8285.
 	ExtensionProfileTwoByte uint16 = 0x1000
+
+	// Payload type constants for common audio codecs (RFC 3551).
+	PCMU             = 0
+	PCMA             = 8
+	TelephoneEvent   = 101
 )
 
 // RTPExtension represents a single RTP header extension element.

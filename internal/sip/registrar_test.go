@@ -346,6 +346,29 @@ func TestRegistrar_BadRequestURIMismatch(t *testing.T) {
 	}
 }
 
+// RFC 3261 §10.2: The Request-URI may include a port; the host portion must
+// still match the To header AOR. This covers the case where a UA registers
+// against "sip:host:port" (common when using a non-default registrar port).
+func TestRegistrar_RequestURIWithPort(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:127.0.0.1:5063 SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:caller@127.0.0.1>;tag=abc\r\n" +
+		"To: <sip:caller@127.0.0.1>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:caller@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	if tx.last().StatusCode() != 200 {
+		t.Fatalf("expected 200 for Request-URI with port matching To host, got %d", tx.last().StatusCode())
+	}
+}
+
 // RFC 3261 §10.2: The Request-URI is the domain of the registrar (no user).
 // A request with a domain-only Request-URI and a full AOR in To is valid.
 func TestRegistrar_RequestURIDomainOnly(t *testing.T) {

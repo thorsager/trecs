@@ -7,6 +7,9 @@ import (
 	"gitub.com/thorsager/trec/proto"
 )
 
+// AckCallback is invoked for every incoming ACK after transaction handling.
+type AckCallback func(msg *proto.SIPMessage, target Target, transport Transport)
+
 // Server is a SIP server that listens on UDP and TCP, manages transactions,
 // and dispatches requests to registered method handlers.
 type Server struct {
@@ -14,6 +17,7 @@ type Server struct {
 	tcpTransport *TCPTransport
 	txMgr        *TransactionManager
 	handlers     map[proto.SIPMethod]RequestHandler
+	ackCallback  AckCallback
 	mu           sync.Mutex
 	wg           sync.WaitGroup
 	started      bool
@@ -43,6 +47,14 @@ func (s *Server) On(method proto.SIPMethod, fn RequestHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.handlers[method] = fn
+}
+
+// OnAck registers a callback for incoming ACK requests. The callback is
+// invoked after the transaction manager has handled non-2xx acknowledgments.
+func (s *Server) OnAck(fn AckCallback) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ackCallback = fn
 }
 
 // Start begins listening on both transports and starts the dispatch loop.
@@ -82,8 +94,12 @@ func (s *Server) route(ev MessageEvent, transport Transport) {
 	method := ev.Msg.Method()
 
 	// ACK for non-2xx is routed to the matching INVITE transaction.
+	// The AckCallback (if set) receives every ACK including 2xx variants.
 	if method == proto.SIPMethodACK {
 		s.txMgr.HandleACK(ev, transport)
+		if s.ackCallback != nil {
+			s.ackCallback(ev.Msg, ev.Target, transport)
+		}
 		return
 	}
 

@@ -58,6 +58,11 @@ func NewUDPTransport(addr string) (*UDPTransport, error) {
 	return t, nil
 }
 
+// LocalAddr returns the bound UDP address.
+func (t *UDPTransport) LocalAddr() net.Addr {
+	return t.conn.LocalAddr()
+}
+
 // Start begins reading UDP datagrams in a background goroutine.
 func (t *UDPTransport) Start() {
 	go t.readLoop()

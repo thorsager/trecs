@@ -68,7 +68,7 @@ func (r *Registrar) HandleRegister(req *proto.SIPMessage, tx Transaction) {
 	// Per RFC 3261 §10.2 the Request-URI is the registrar domain (no user),
 	// while the To header is the full AOR (sip:user@domain). We check that
 	// the host[:port] parts match.
-	if reqURI := req.RequestURI(); reqURI != "" && uriHost(reqURI) != uriHost(aor) {
+	if reqURI := req.RequestURI(); reqURI != "" && uriHostname(reqURI) != uriHostname(aor) {
 		log.Printf("REGISTER: Request-URI %q domain != To %q domain", reqURI, aor)
 		tx.Respond(proto.NewResponse(req, 400, "Bad Request"))
 		return
@@ -298,6 +298,16 @@ func uriHost(uri string) string {
 		uri = uri[:semi]
 	}
 	return uri
+}
+
+// uriHostname extracts just the host (without port) from a SIP URI.
+// Per RFC 3261 §10.2, the registrar domain comparison uses only the host portion.
+func uriHostname(uri string) string {
+	h := uriHost(uri)
+	if colon := strings.IndexByte(h, ':'); colon >= 0 {
+		h = h[:colon]
+	}
+	return h
 }
 
 func removeBinding(bindings []*Binding, contactURI string) []*Binding {
