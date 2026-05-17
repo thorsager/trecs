@@ -1,0 +1,928 @@
+package sip
+
+import (
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"gitub.com/thorsager/trec/proto"
+)
+
+type mockTx struct {
+	responses []*proto.SIPMessage
+}
+
+func (tx *mockTx) Respond(res *proto.SIPMessage) {
+	tx.responses = append(tx.responses, res)
+}
+
+func (tx *mockTx) last() *proto.SIPMessage {
+	if len(tx.responses) == 0 {
+		return nil
+	}
+	return tx.responses[len(tx.responses)-1]
+}
+
+func sipMessage(raw string) *proto.SIPMessage {
+	msg, err := proto.UnmarshalSIPDatagram([]byte(raw))
+	if err != nil {
+		panic(err)
+	}
+	return msg
+}
+
+func TestRegistrar_RegisterSingleContact(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	res := tx.last()
+	if res == nil || res.StatusCode() != 200 {
+		t.Fatalf("expected 200 OK, got %v", statusOrNil(res))
+	}
+
+	contacts := res.Headers.Get("Contact")
+	if len(contacts) != 1 {
+		t.Fatalf("expected 1 Contact, got %d", len(contacts))
+	}
+	if !strings.Contains(contacts[0], "sip:alice@192.168.1.5") {
+		t.Fatalf("expected Contact with sip:alice@192.168.1.5, got %q", contacts[0])
+	}
+	if !strings.Contains(contacts[0], "expires=3600") {
+		t.Fatalf("expected expires=3600 in Contact, got %q", contacts[0])
+	}
+
+	if res.Headers.GetFirst("Date") == "" {
+		t.Fatal("missing Date header")
+	}
+	if res.Headers.GetFirst("Allow") == "" {
+		t.Fatal("missing Allow header")
+	}
+}
+
+func TestRegistrar_QueryBindings(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
+		"Content-Length: 0\r\n\r\n"), &mockTx{})
+
+	query := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKquery\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 2 REGISTER\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(query, tx)
+
+	res := tx.last()
+	if res == nil || res.StatusCode() != 200 {
+		t.Fatalf("expected 200 OK, got %v", statusOrNil(res))
+	}
+
+	contacts := res.Headers.Get("Contact")
+	if len(contacts) != 1 {
+		t.Fatalf("expected 1 Contact in query response, got %d: %v", len(contacts), contacts)
+	}
+	if !strings.Contains(contacts[0], "sip:alice@192.168.1.5") {
+		t.Fatalf("expected Contact with sip:alice@192.168.1.5, got %q", contacts[0])
+	}
+}
+
+func TestRegistrar_Unregister(t *testing.T) {
+	reg := NewRegistrar()
+
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
+		"Content-Length: 0\r\n\r\n"), &mockTx{})
+
+	tx := &mockTx{}
+	unreg := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKunreg\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 2 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=0\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(unreg, tx)
+
+	res := tx.last()
+	if res == nil || res.StatusCode() != 200 {
+		t.Fatalf("expected 200 OK, got %v", statusOrNil(res))
+	}
+
+	contacts := res.Headers.Get("Contact")
+	if len(contacts) != 0 {
+		t.Fatalf("expected 0 Contacts after unregister, got %d: %v", len(contacts), contacts)
+	}
+}
+
+func TestRegistrar_UnregisterAll(t *testing.T) {
+	reg := NewRegistrar()
+
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg1\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>\r\n"+
+		"Content-Length: 0\r\n\r\n"), &mockTx{})
+
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg2\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 2 REGISTER\r\n"+
+		"Contact: <sip:alice@10.0.0.1>\r\n"+
+		"Content-Length: 0\r\n\r\n"), &mockTx{})
+
+	tx := &mockTx{}
+	unreg := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKstar\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 3 REGISTER\r\n" +
+		"Contact: *\r\n" +
+		"Expires: 0\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(unreg, tx)
+
+	res := tx.last()
+	if res == nil || res.StatusCode() != 200 {
+		t.Fatalf("expected 200 OK, got %v", statusOrNil(res))
+	}
+	if len(res.Headers.Get("Contact")) != 0 {
+		t.Fatalf("expected no Contacts after star unregister, got %v", res.Headers.Get("Contact"))
+	}
+}
+
+func TestRegistrar_StarWithoutExpiresZero(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: *\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	if tx.last().StatusCode() != 400 {
+		t.Fatalf("expected 400 for star without Expires: 0, got %d", tx.last().StatusCode())
+	}
+}
+
+func TestRegistrar_CSeqMonotonic(t *testing.T) {
+	reg := NewRegistrar()
+
+	tx1 := &mockTx{}
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKone\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
+		"Content-Length: 0\r\n\r\n"), tx1)
+
+	if tx1.last().StatusCode() != 200 {
+		t.Fatalf("expected 200 for first REGISTER, got %d", tx1.last().StatusCode())
+	}
+
+	tx2 := &mockTx{}
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtwo\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
+		"Content-Length: 0\r\n\r\n"), tx2)
+
+	if tx2.last().StatusCode() != 400 {
+		t.Fatalf("expected 400 for repeated CSeq, got %d", tx2.last().StatusCode())
+	}
+}
+
+func TestRegistrar_DefaultExpiry(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5>\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	res := tx.last()
+	if res.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d", res.StatusCode())
+	}
+	if !strings.Contains(res.Headers.GetFirst("Contact"), "expires=3600") {
+		t.Fatalf("expected default expires=3600, got %q", res.Headers.GetFirst("Contact"))
+	}
+}
+
+func TestRegistrar_MultipleContacts(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Contact: <sip:alice@10.0.0.1>;expires=1800\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	res := tx.last()
+	if res.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d", res.StatusCode())
+	}
+	contacts := res.Headers.Get("Contact")
+	if len(contacts) != 2 {
+		t.Fatalf("expected 2 Contacts, got %d: %v", len(contacts), contacts)
+	}
+
+	exp := res.Headers.GetFirst("Expires")
+	if exp != "1800" {
+		t.Fatalf("expected Expires=1800 (minimum), got %s", exp)
+	}
+}
+
+func TestRegistrar_RefreshBinding(t *testing.T) {
+	reg := NewRegistrar()
+
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
+		"Content-Length: 0\r\n\r\n"), &mockTx{})
+
+	tx := &mockTx{}
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKrefresh\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 2 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=7200\r\n"+
+		"Content-Length: 0\r\n\r\n"), tx)
+
+	res := tx.last()
+	if res.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d", res.StatusCode())
+	}
+	if !strings.Contains(res.Headers.GetFirst("Contact"), "expires=7200") {
+		t.Fatalf("expected expires=7200 in refresh, got %q", res.Headers.GetFirst("Contact"))
+	}
+}
+
+func TestRegistrar_BadRequestURIMismatch(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	// Per RFC 3261 §10.2 the Request-URI is the registrar domain (no user)
+	// and MUST match the host portion of the To AOR. Different domains = 400.
+	req := sipMessage("REGISTER sip:different.example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	if tx.last().StatusCode() != 400 {
+		t.Fatalf("expected 400 for Request-URI domain mismatch, got %d", tx.last().StatusCode())
+	}
+}
+
+// RFC 3261 §10.2: The Request-URI is the domain of the registrar (no user).
+// A request with a domain-only Request-URI and a full AOR in To is valid.
+func TestRegistrar_RequestURIDomainOnly(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	if tx.last().StatusCode() != 200 {
+		t.Fatalf("expected 200 for domain-only Request-URI, got %d", tx.last().StatusCode())
+	}
+}
+
+func TestRegistrar_MissingCallID(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	if tx.last().StatusCode() != 400 {
+		t.Fatalf("expected 400 for missing Call-ID, got %d", tx.last().StatusCode())
+	}
+}
+
+func TestRegistrar_Sweep(t *testing.T) {
+	reg := NewRegistrar()
+
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=1\r\n"+
+		"Content-Length: 0\r\n\r\n"), &mockTx{})
+
+	time.Sleep(1100 * time.Millisecond)
+
+	reg.sweep()
+
+	tx := &mockTx{}
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKquery\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-2\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Content-Length: 0\r\n\r\n"), tx)
+
+	res := tx.last()
+	if res.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d", res.StatusCode())
+	}
+	if len(res.Headers.Get("Contact")) != 0 {
+		t.Fatalf("expected 0 Contacts after sweep, got %d: %v", len(res.Headers.Get("Contact")), res.Headers.Get("Contact"))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RFC 3261 §10 compliance tests
+// ---------------------------------------------------------------------------
+
+// RFC 3261 §10.3: Global Expires header is used as default when a Contact
+// has no per-contact expires parameter.
+func TestRegistrar_GlobalExpiresHeader(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5>\r\n" +
+		"Expires: 1800\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	res := tx.last()
+	if res.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d", res.StatusCode())
+	}
+	if !strings.Contains(res.Headers.GetFirst("Contact"), "expires=1800") {
+		t.Fatalf("expected expires=1800 from global Expires header, got %q",
+			res.Headers.GetFirst("Contact"))
+	}
+	if got := res.Headers.GetFirst("Expires"); got != "1800" {
+		t.Fatalf("expected Expires header = 1800, got %q", got)
+	}
+}
+
+// RFC 3261 §10.3: Per-contact expires parameter overrides the global Expires
+// header for that specific Contact.
+func TestRegistrar_PerContactOverridesGlobal(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Expires: 7200\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	res := tx.last()
+	if res.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d", res.StatusCode())
+	}
+	if !strings.Contains(res.Headers.GetFirst("Contact"), "expires=3600") {
+		t.Fatalf("expected per-contact expires=3600, got %q",
+			res.Headers.GetFirst("Contact"))
+	}
+}
+
+// RFC 3261 §10.2: Comma-separated contacts in a single Contact header line
+// are each processed independently.
+func TestRegistrar_CommaSeparatedContacts(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600, <sip:alice@10.0.0.1>;expires=1800\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	res := tx.last()
+	if res.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d", res.StatusCode())
+	}
+	contacts := res.Headers.Get("Contact")
+	if len(contacts) != 2 {
+		t.Fatalf("expected 2 Contacts from comma-separated line, got %d: %v",
+			len(contacts), contacts)
+	}
+}
+
+// RFC 3261 §10.2: Contact headers in addr-spec form (without angle brackets)
+// are accepted per RFC 3261 §20.10 grammar.
+func TestRegistrar_AddrSpecContact(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: sip:alice@192.168.1.5;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	res := tx.last()
+	if res.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d", res.StatusCode())
+	}
+	contacts := res.Headers.Get("Contact")
+	if len(contacts) != 1 {
+		t.Fatalf("expected 1 Contact, got %d: %v", len(contacts), contacts)
+	}
+	if !strings.Contains(contacts[0], "sip:alice@192.168.1.5") {
+		t.Fatalf("expected Contact with sip:alice@192.168.1.5, got %q", contacts[0])
+	}
+	if !strings.Contains(contacts[0], "expires=3600") {
+		t.Fatalf("expected expires=3600 in Contact, got %q", contacts[0])
+	}
+}
+
+// RFC 3261 §10: URI parameters in Contact URIs (e.g. ;lr, ;transport=tcp)
+// are part of the SIP URI and MUST be preserved in the binding and response.
+func TestRegistrar_ContactURIParamsPreserved(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5;lr;transport=tcp>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	res := tx.last()
+	if res.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d", res.StatusCode())
+	}
+	contact := res.Headers.GetFirst("Contact")
+	if !strings.Contains(contact, ";lr") {
+		t.Fatalf("expected URI param ';lr' preserved in Contact, got %q", contact)
+	}
+	if !strings.Contains(contact, ";transport=tcp") {
+		t.Fatalf("expected URI param ';transport=tcp' preserved in Contact, got %q", contact)
+	}
+}
+
+// RFC 3261 §10.3: Unregistering a non-existent contact is a no-op — returns
+// 200 OK with the remaining (unchanged) bindings.
+func TestRegistrar_UnregisterNonExistent(t *testing.T) {
+	reg := NewRegistrar()
+
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
+		"Content-Length: 0\r\n\r\n"), &mockTx{})
+
+	tx := &mockTx{}
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKunreg\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 2 REGISTER\r\n" +
+		"Contact: <sip:alice@10.0.0.1>;expires=0\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	res := tx.last()
+	if res.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d", res.StatusCode())
+	}
+	contacts := res.Headers.Get("Contact")
+	if len(contacts) != 1 {
+		t.Fatalf("expected 1 remaining Contact (non-existent unregister is no-op), got %d: %v",
+			len(contacts), contacts)
+	}
+}
+
+// RFC 3261 §10.3: CSeq tracking is per Call-ID. Two different Call-IDs for
+// the same AOR maintain independent CSeq counters.
+func TestRegistrar_IndependentCSeqPerCallID(t *testing.T) {
+	reg := NewRegistrar()
+
+	// Register via Call-ID "call-a" with CSeq 1
+	tx1 := &mockTx{}
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKa\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-a\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
+		"Content-Length: 0\r\n\r\n"), tx1)
+	if tx1.last().StatusCode() != 200 {
+		t.Fatalf("call-a CSeq 1: expected 200, got %d", tx1.last().StatusCode())
+	}
+
+	// Register via Call-ID "call-b" with CSeq 1 — should succeed (different
+	// Call-ID, independent counter).
+	tx2 := &mockTx{}
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKb\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-b\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@10.0.0.1>;expires=7200\r\n"+
+		"Content-Length: 0\r\n\r\n"), tx2)
+	if tx2.last().StatusCode() != 200 {
+		t.Fatalf("call-b CSeq 1: expected 200, got %d", tx2.last().StatusCode())
+	}
+
+	// Both bindings should exist
+	tx3 := &mockTx{}
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKq\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-c\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Content-Length: 0\r\n\r\n"), tx3)
+	if tx3.last().StatusCode() != 200 {
+		t.Fatalf("query: expected 200, got %d", tx3.last().StatusCode())
+	}
+	if len(tx3.last().Headers.Get("Contact")) != 2 {
+		t.Fatalf("expected 2 Contacts from two Call-IDs, got %d: %v",
+			len(tx3.last().Headers.Get("Contact")), tx3.last().Headers.Get("Contact"))
+	}
+
+	// call-a CSeq 1 again (not greater) ← the transaction layer normally
+	// suppresses retransmissions, but the registrar's own CSeq check MUST
+	// also reject it.
+	tx4 := &mockTx{}
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKa2\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-a\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
+		"Content-Length: 0\r\n\r\n"), tx4)
+	if tx4.last().StatusCode() != 400 {
+		t.Fatalf("call-a CSeq 1 replay: expected 400, got %d", tx4.last().StatusCode())
+	}
+
+	// call-a CSeq 5 (already skipped 2,3,4; should work as long as > 1)
+	tx5 := &mockTx{}
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKa3\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-a\r\n"+
+		"CSeq: 5 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
+		"Content-Length: 0\r\n\r\n"), tx5)
+	if tx5.last().StatusCode() != 200 {
+		t.Fatalf("call-a CSeq 5: expected 200, got %d", tx5.last().StatusCode())
+	}
+}
+
+// RFC 3261 §10.3: The response MUST include an Allow header listing
+// REGISTER among the supported methods.
+func TestRegistrar_ResponseAllowIncludesREGISTER(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	res := tx.last()
+	allow := res.Headers.GetFirst("Allow")
+	if allow == "" {
+		t.Fatal("missing Allow header")
+	}
+	if !strings.Contains(allow, "REGISTER") {
+		t.Fatalf("Allow header %q does not list REGISTER", allow)
+	}
+	if !strings.Contains(allow, "INVITE") || !strings.Contains(allow, "OPTIONS") {
+		t.Fatalf("Allow header %q should include INVITE and OPTIONS", allow)
+	}
+}
+
+// RFC 3261 §10.3: The response SHOULD include a Date header in RFC 1123
+// format (e.g. "Mon, 02 Jan 2006 15:04:05 GMT").
+func TestRegistrar_ResponseDateIsRFC1123(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	res := tx.last()
+	date := res.Headers.GetFirst("Date")
+	if date == "" {
+		t.Fatal("missing Date header")
+	}
+	_, err := time.Parse(time.RFC1123, date)
+	if err != nil {
+		t.Fatalf("Date header %q is not valid RFC 1123: %v", date, err)
+	}
+}
+
+// RFC 3261 §8.2.6 (general response construction) + §10.3: The response's
+// Via header MUST match the request's Via header (branch and transport
+// protocol are echoed back).
+func TestRegistrar_ResponseViaEchoRequest(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	const via = "SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKmybranch"
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: " + via + "\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	res := tx.last()
+	if got := res.Headers.GetFirst("Via"); got != via {
+		t.Fatalf("Via header: got %q, want %q", got, via)
+	}
+}
+
+// RFC 3261 §8.2.6 + §10.3: The response's CSeq MUST match the request's
+// CSeq (same sequence number and method).
+func TestRegistrar_ResponseCSeqMatchesRequest(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 42 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	res := tx.last()
+	if res.CSeq.Seq != 42 || res.CSeq.Method != proto.SIPMethodREGISTER {
+		t.Fatalf("CSeq: got %d %s, want 42 REGISTER", res.CSeq.Seq, res.CSeq.Method)
+	}
+}
+
+// RFC 3261 §20.28 + §10.3: When multiple Contacts are in the response, the
+// Expires header value MUST be the minimum of all per-Contact expires
+// values.
+func TestRegistrar_MinimumExpiresInResponse(t *testing.T) {
+	reg := NewRegistrar()
+
+	// Register two contacts with different expires values.
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK1\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
+		"Contact: <sip:alice@10.0.0.1>;expires=7200\r\n"+
+		"Content-Length: 0\r\n\r\n"), &mockTx{})
+
+	tx := &mockTx{}
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKq\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-2\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Content-Length: 0\r\n\r\n"), tx)
+
+	res := tx.last()
+	if res.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d", res.StatusCode())
+	}
+	contacts := res.Headers.Get("Contact")
+	if len(contacts) != 2 {
+		t.Fatalf("expected 2 Contacts, got %d", len(contacts))
+	}
+	exp := res.Headers.GetFirst("Expires")
+	if exp == "" {
+		t.Fatal("missing Expires header in multi-contact query response")
+	}
+	secs, _ := strconv.Atoi(exp)
+	if secs < 3595 || secs > 3605 {
+		t.Fatalf("expected Expires ~3600 (minimum of 3600,7200), got %d", secs)
+	}
+}
+
+// RFC 3261 §10.3: Expires: 0 with no Contact and no star is a query, not
+// an unregister-all. The bindings are returned.
+func TestRegistrar_ExpiresZeroWithoutStarIsQuery(t *testing.T) {
+	reg := NewRegistrar()
+
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
+		"Content-Length: 0\r\n\r\n"), &mockTx{})
+
+	tx := &mockTx{}
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKq\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-2\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Expires: 0\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	res := tx.last()
+	if res.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d", res.StatusCode())
+	}
+	contacts := res.Headers.Get("Contact")
+	if len(contacts) != 1 {
+		t.Fatalf("expected 1 Contact (query with Expires: 0 without star), got %d: %v",
+			len(contacts), contacts)
+	}
+}
+
+// RFC 3261 §10.3: After removing one of multiple bindings (expires=0), the
+// response Contact count reflects only the remaining active bindings.
+func TestRegistrar_PartialUnregisterPreservesOthers(t *testing.T) {
+	reg := NewRegistrar()
+
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK1\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
+		"Contact: <sip:alice@10.0.0.1>;expires=3600\r\n"+
+		"Content-Length: 0\r\n\r\n"), &mockTx{})
+
+	tx := &mockTx{}
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK2\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 2 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=0\r\n"+
+		"Content-Length: 0\r\n\r\n"), tx)
+
+	res := tx.last()
+	if res.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d", res.StatusCode())
+	}
+	contacts := res.Headers.Get("Contact")
+	if len(contacts) != 1 {
+		t.Fatalf("expected 1 remaining Contact after partial unregister, got %d: %v",
+			len(contacts), contacts)
+	}
+	if !strings.Contains(contacts[0], "sip:alice@10.0.0.1") {
+		t.Fatalf("expected remaining Contact to be sip:alice@10.0.0.1, got %q", contacts[0])
+	}
+}
+
+func statusOrNil(msg *proto.SIPMessage) string {
+	if msg == nil {
+		return "nil"
+	}
+	return msg.Status()
+}

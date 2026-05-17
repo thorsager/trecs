@@ -27,6 +27,65 @@ func TestParseSIP_ValidRequest(t *testing.T) {
 	}
 }
 
+func TestSIPMessage_RequestURI_Request(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			"INVITE with host",
+			"INVITE sip:bob@example.com SIP/2.0\r\nContent-Length: 0\r\n\r\n",
+			"sip:bob@example.com",
+		},
+		{
+			"REGISTER with AOR",
+			"REGISTER sip:alice@example.com SIP/2.0\r\nContent-Length: 0\r\n\r\n",
+			"sip:alice@example.com",
+		},
+		{
+			"OPTIONS with domain only",
+			"OPTIONS sip:example.com SIP/2.0\r\nContent-Length: 0\r\n\r\n",
+			"sip:example.com",
+		},
+		{
+			"request with URI params",
+			"INVITE sip:bob@example.com;transport=tcp;lr SIP/2.0\r\nContent-Length: 0\r\n\r\n",
+			"sip:bob@example.com;transport=tcp;lr",
+		},
+		{
+			"request with port",
+			"BYE sip:alice@10.0.0.1:5060 SIP/2.0\r\nContent-Length: 0\r\n\r\n",
+			"sip:alice@10.0.0.1:5060",
+		},
+		{
+			"SIPS URI",
+			"INVITE sips:secure@example.com SIP/2.0\r\nContent-Length: 0\r\n\r\n",
+			"sips:secure@example.com",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg, err := UnmarshalSIP(newTestReader(tt.raw))
+			if assert.NoError(t, err) {
+				assert.Equal(t, tt.want, msg.RequestURI())
+			}
+		})
+	}
+}
+
+func TestSIPMessage_RequestURI_Response(t *testing.T) {
+	msg, err := UnmarshalSIP(newTestReader("SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n"))
+	if assert.NoError(t, err) {
+		assert.Empty(t, msg.RequestURI())
+	}
+}
+
+func TestSIPMessage_RequestURI_NilStartLine(t *testing.T) {
+	msg := &SIPMessage{Headers: make(SIPHeaders)}
+	assert.Empty(t, msg.RequestURI())
+}
+
 func TestParseSIP_ValidResponse(t *testing.T) {
 	input := "SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n"
 	msg, err := UnmarshalSIP(newTestReader(input))

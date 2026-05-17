@@ -390,6 +390,15 @@ func (m *SIPMessage) Status() string {
 	return m.startLine.Status
 }
 
+// RequestURI returns the request URI from the start-line, or "" if this is
+// a response or the message is nil.
+func (m *SIPMessage) RequestURI() string {
+	if m.startLine == nil || !m.startLine.IsRequest {
+		return ""
+	}
+	return m.startLine.URI
+}
+
 // Method returns the request method, or "" for responses or nil messages.
 func (m *SIPMessage) Method() SIPMethod {
 	if m.startLine == nil {
