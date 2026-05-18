@@ -303,6 +303,26 @@ func (m *SIPMessage) ViaBranch() string {
 	return m.branch
 }
 
+// ViaSentBy returns the sent-by (host:port) from the topmost Via header.
+func (m *SIPMessage) ViaSentBy() string {
+	return unmarshalViaSentBy(m.Headers.GetFirst("Via"))
+}
+
+func unmarshalViaSentBy(via string) string {
+	// Via: SIP/2.0/UDP host:port;branch=...
+	// Skip "SIP/2.0/"
+	afterProto := strings.Index(via, " ")
+	if afterProto < 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(via[afterProto+1:])
+	// Extract host:port part before first semicolon
+	if semi := strings.IndexByte(rest, ';'); semi >= 0 {
+		rest = rest[:semi]
+	}
+	return rest
+}
+
 func unmarshalViaBranch(via string) string {
 	idx := strings.Index(via, ";branch=")
 	if idx < 0 {
@@ -323,6 +343,22 @@ func unmarshalViaBranch(via string) string {
 		end--
 	}
 	return rest[:end]
+}
+
+// NewRequest creates a new SIP request with the given method and request URI.
+// The caller must set Via, From, To, Call-ID, CSeq, and Content-Length headers
+// before marshaling. The returned message has an empty body.
+func NewRequest(method SIPMethod, requestURI string) *SIPMessage {
+	return &SIPMessage{
+		startLine: &startLine{
+			IsRequest: true,
+			Method:    method,
+			Version:   SIPVersion,
+			URI:       requestURI,
+		},
+		Headers: make(SIPHeaders, 8),
+		CSeq:    CSeq{Method: method, Seq: 1},
+	}
 }
 
 // NewResponse creates a new SIP response message derived from req.

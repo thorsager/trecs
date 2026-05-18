@@ -1,6 +1,7 @@
 package sip
 
 import (
+	"net"
 	"strconv"
 	"strings"
 	"testing"
@@ -11,10 +12,22 @@ import (
 
 type mockTx struct {
 	responses []*proto.SIPMessage
+	conn      net.Conn
 }
 
 func (tx *mockTx) Respond(res *proto.SIPMessage) {
 	tx.responses = append(tx.responses, res)
+}
+
+func (tx *mockTx) Target() Target {
+	if tx.conn != nil {
+		return Target{Conn: tx.conn, Addr: tx.conn.RemoteAddr()}
+	}
+	return Target{}
+}
+
+func (tx *mockTx) Transport() Transport {
+	return nil
 }
 
 func (tx *mockTx) last() *proto.SIPMessage {
@@ -940,6 +953,246 @@ func TestRegistrar_PartialUnregisterPreservesOthers(t *testing.T) {
 	}
 	if !strings.Contains(contacts[0], "sip:alice@10.0.0.1") {
 		t.Fatalf("expected remaining Contact to be sip:alice@10.0.0.1, got %q", contacts[0])
+	}
+}
+
+// --- RFC 5626 Outbound Tests ---
+
+func TestRegistrar_GetBindings(t *testing.T) {
+	reg := NewRegistrar()
+
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
+		"Content-Length: 0\r\n\r\n"), &mockTx{})
+
+	bindings := reg.GetBindings("sip:alice@example.com")
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 binding, got %d", len(bindings))
+	}
+	if bindings[0].ContactURI != "sip:alice@192.168.1.5" {
+		t.Fatalf("expected ContactURI sip:alice@192.168.1.5, got %q", bindings[0].ContactURI)
+	}
+}
+
+func TestRegistrar_GetBindingsNonexistentAOR(t *testing.T) {
+	reg := NewRegistrar()
+	bindings := reg.GetBindings("sip:nobody@example.com")
+	if len(bindings) != 0 {
+		t.Fatalf("expected 0 bindings, got %d", len(bindings))
+	}
+}
+
+func TestRegistrar_GetBindingsCopySemantics(t *testing.T) {
+	reg := NewRegistrar()
+
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
+		"Content-Length: 0\r\n\r\n"), &mockTx{})
+
+	bindings := reg.GetBindings("sip:alice@example.com")
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 binding, got %d", len(bindings))
+	}
+
+	bindings[0].ContactURI = "sip:alice@modified"
+
+	original := reg.GetBindings("sip:alice@example.com")
+	if original[0].ContactURI == "sip:alice@modified" {
+		t.Fatal("GetBindings must return a copy; modifying the result should not affect internal state")
+	}
+}
+
+func TestRegistrar_ContactWithOB(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5;transport=tcp>;ob;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	bindings := reg.GetBindings("sip:alice@example.com")
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 binding, got %d", len(bindings))
+	}
+	if !bindings[0].OB {
+		t.Fatal("expected OB=true on binding")
+	}
+	if bindings[0].RegID != -1 {
+		t.Fatalf("expected RegID=-1 (not specified), got %d", bindings[0].RegID)
+	}
+
+	res := tx.last()
+	if res.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d", res.StatusCode())
+	}
+	contact := res.Headers.GetFirst("Contact")
+	if !strings.Contains(contact, ";ob") {
+		t.Fatalf("expected ;ob in response Contact, got %q", contact)
+	}
+}
+
+func TestRegistrar_ContactWithOBAndRegID(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5;transport=tcp>;ob;reg-id=2;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	bindings := reg.GetBindings("sip:alice@example.com")
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 binding, got %d", len(bindings))
+	}
+	if !bindings[0].OB {
+		t.Fatal("expected OB=true on binding")
+	}
+	if bindings[0].RegID != 2 {
+		t.Fatalf("expected RegID=2, got %d", bindings[0].RegID)
+	}
+
+	res := tx.last()
+	contact := res.Headers.GetFirst("Contact")
+	if !strings.Contains(contact, ";ob") {
+		t.Fatalf("expected ;ob in response Contact, got %q", contact)
+	}
+	if !strings.Contains(contact, ";reg-id=2") {
+		t.Fatalf("expected ;reg-id=2 in response Contact, got %q", contact)
+	}
+}
+
+func TestRegistrar_RemoveBindingsByFlowID(t *testing.T) {
+	reg := NewRegistrar()
+
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK1\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
+		"Content-Length: 0\r\n\r\n"), &mockTx{})
+
+	reg.HandleRegister(sipMessage("REGISTER sip:bob@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK2\r\n"+
+		"From: <sip:bob@example.com>;tag=def\r\n"+
+		"To: <sip:bob@example.com>\r\n"+
+		"Call-ID: call-2\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:bob@10.0.0.1>;expires=3600\r\n"+
+		"Content-Length: 0\r\n\r\n"), &mockTx{})
+
+	if len(reg.GetBindings("sip:alice@example.com")) != 1 {
+		t.Fatal("expected 1 binding for alice")
+	}
+	if len(reg.GetBindings("sip:bob@example.com")) != 1 {
+		t.Fatal("expected 1 binding for bob")
+	}
+
+	reg.RemoveBindingsByFlowID("some-flow-id")
+
+	if len(reg.GetBindings("sip:alice@example.com")) != 1 {
+		t.Fatal("alice binding should remain after unrelated flow removal")
+	}
+	if len(reg.GetBindings("sip:bob@example.com")) != 1 {
+		t.Fatal("bob binding should remain after unrelated flow removal")
+	}
+}
+
+func TestRegistrar_FlowIDSetOnTCPRegistration(t *testing.T) {
+	reg := NewRegistrar()
+	mockConn := &mockTCPAddrConn{
+		local:  &net.TCPAddr{IP: net.ParseIP("10.0.0.1"), Port: 5060},
+		remote: &net.TCPAddr{IP: net.ParseIP("192.168.1.5"), Port: 54321},
+	}
+	tx := &mockTx{conn: mockConn}
+
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5;transport=tcp>;expires=3600\r\n"+
+		"Content-Length: 0\r\n\r\n"), tx)
+
+	bindings := reg.GetBindings("sip:alice@example.com")
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 binding, got %d", len(bindings))
+	}
+	if bindings[0].FlowID == "" {
+		t.Fatal("expected non-empty FlowID for TCP registration")
+	}
+	t.Logf("FlowID: %s", bindings[0].FlowID)
+}
+
+func TestRegistrar_FlowIDEmptyForUDP(t *testing.T) {
+	reg := NewRegistrar()
+
+	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n"+
+		"From: <sip:alice@example.com>;tag=abc\r\n"+
+		"To: <sip:alice@example.com>\r\n"+
+		"Call-ID: call-1\r\n"+
+		"CSeq: 1 REGISTER\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
+		"Content-Length: 0\r\n\r\n"), &mockTx{})
+
+	bindings := reg.GetBindings("sip:alice@example.com")
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 binding, got %d", len(bindings))
+	}
+	if bindings[0].FlowID != "" {
+		t.Fatalf("expected empty FlowID for UDP registration, got %q", bindings[0].FlowID)
+	}
+}
+
+func TestRegistrar_OBOnlyWithAngleBracket(t *testing.T) {
+	// RFC 5626 §4: ob and reg-id MUST use name-addr form.
+	// Address-spec form should not parse ob/reg-id.
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: sip:alice@192.168.1.5;ob;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	bindings := reg.GetBindings("sip:alice@example.com")
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 binding, got %d", len(bindings))
+	}
+	if bindings[0].OB {
+		t.Fatal("OB should not be parsed from addr-spec form (RFC 5626 §4)")
 	}
 }
 

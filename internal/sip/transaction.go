@@ -8,7 +8,7 @@ import (
 	"gitub.com/thorsager/trec/proto"
 )
 
-const (
+var (
 	T1 = 500 * time.Millisecond
 	T2 = 4 * time.Second
 	T4 = 5 * time.Second
@@ -17,10 +17,23 @@ const (
 // Transaction is the common interface for server transaction state machines.
 type Transaction interface {
 	Respond(res *proto.SIPMessage)
+	Target() Target
+	Transport() Transport
 }
 
 // RequestHandler processes a SIP request within a transaction.
 type RequestHandler func(req *proto.SIPMessage, tx Transaction)
+
+func transportName(t Transport) string {
+	switch t.(type) {
+	case *TCPTransport:
+		return "TCP"
+	case *UDPTransport:
+		return "UDP"
+	default:
+		return "?"
+	}
+}
 
 // ---- NIST (Non-INVITE Server Transaction, RFC 3261 §17.2.3) ----
 
@@ -78,7 +91,7 @@ func (tx *NonInviteTransaction) Respond(res *proto.SIPMessage) {
 	case sc >= 100 && sc < 200:
 		if tx.state == NISTTrying {
 			tx.state = NISTProceeding
-			log.Printf("NIST %s → Proceeding (1xx)", tx.branch)
+			log.Printf("[%s] NIST %s → Proceeding (1xx)", transportName(tx.transport), tx.branch)
 		}
 		tx.doSend(res)
 
@@ -86,7 +99,7 @@ func (tx *NonInviteTransaction) Respond(res *proto.SIPMessage) {
 		tx.lastResp = res
 		prev := tx.state
 		tx.state = NISTCompleted
-		log.Printf("NIST %s → Completed (%d) [from %s]", tx.branch, sc, prev)
+		log.Printf("[%s] NIST %s → Completed (%d) [from %s]", transportName(tx.transport), tx.branch, sc, prev)
 		tx.doSend(res)
 
 		if !tx.reliable {
@@ -98,7 +111,7 @@ func (tx *NonInviteTransaction) Respond(res *proto.SIPMessage) {
 				tx.manager.mu.Lock()
 				delete(tx.manager.serverTxs, tx.branch)
 				tx.manager.mu.Unlock()
-				log.Printf("NIST %s terminated (Timer J)", tx.branch)
+				log.Printf("[%s] NIST %s terminated (Timer J)", transportName(tx.transport), tx.branch)
 			})
 		} else {
 			tx.timerJ = time.AfterFunc(0, func() {
@@ -115,8 +128,18 @@ func (tx *NonInviteTransaction) Respond(res *proto.SIPMessage) {
 
 func (tx *NonInviteTransaction) doSend(res *proto.SIPMessage) {
 	if err := tx.transport.Send(res, &tx.target); err != nil {
-		log.Printf("Send error on %s: %v", tx.branch, err)
+		log.Printf("[%s] Send error on %s: %v", transportName(tx.transport), tx.branch, err)
 	}
+}
+
+func (tx *NonInviteTransaction) Target() Target {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+	return tx.target
+}
+
+func (tx *NonInviteTransaction) Transport() Transport {
+	return tx.transport
 }
 
 // ---- IST (INVITE Server Transaction, RFC 3261 §17.2.1) ----
@@ -186,13 +209,13 @@ func (tx *InviteTransaction) Respond(res *proto.SIPMessage) {
 		}
 		if tx.state == ISTTrying || tx.state == ISTProceeding {
 			tx.state = ISTProceeding
-			log.Printf("IST %s → Proceeding (1xx)", tx.branch)
+			log.Printf("[%s] IST %s → Proceeding (1xx)", transportName(tx.transport), tx.branch)
 			tx.doSend(res)
 		}
 
 	case sc >= 200 && sc < 300:
 		tx.state = ISTTerminated
-		log.Printf("IST %s → Terminated (2xx)", tx.branch)
+		log.Printf("[%s] IST %s → Terminated (2xx)", transportName(tx.transport), tx.branch)
 		tx.doSend(res)
 
 		tx.manager.mu.Lock()
@@ -203,7 +226,7 @@ func (tx *InviteTransaction) Respond(res *proto.SIPMessage) {
 		tx.lastResp = res
 		if tx.state != ISTCompleted {
 			tx.state = ISTCompleted
-			log.Printf("IST %s → Completed (%d)", tx.branch, sc)
+			log.Printf("[%s] IST %s → Completed (%d)", transportName(tx.transport), tx.branch, sc)
 			tx.doSend(res)
 
 			tx.timerH = time.AfterFunc(64*T1, func() {
@@ -215,7 +238,7 @@ func (tx *InviteTransaction) Respond(res *proto.SIPMessage) {
 				tx.manager.mu.Lock()
 				delete(tx.manager.serverTxs, tx.branch)
 				tx.manager.mu.Unlock()
-				log.Printf("IST %s terminated (Timer H)", tx.branch)
+				log.Printf("[%s] IST %s terminated (Timer H)", transportName(tx.transport), tx.branch)
 			})
 
 			if !tx.reliable {
@@ -237,7 +260,7 @@ func (tx *InviteTransaction) ackReceived() {
 
 	tx.state = ISTConfirmed
 	tx.stopTimers()
-	log.Printf("IST %s → Confirmed (ACK)", tx.branch)
+		log.Printf("[%s] IST %s → Confirmed (ACK)", transportName(tx.transport), tx.branch)
 
 	if !tx.reliable {
 		tx.timerI = time.AfterFunc(T4, func() {
@@ -248,7 +271,7 @@ func (tx *InviteTransaction) ackReceived() {
 			tx.manager.mu.Lock()
 			delete(tx.manager.serverTxs, tx.branch)
 			tx.manager.mu.Unlock()
-			log.Printf("IST %s terminated (Timer I)", tx.branch)
+			log.Printf("[%s] IST %s terminated (Timer I)", transportName(tx.transport), tx.branch)
 		})
 	} else {
 		tx.state = ISTTerminated
@@ -295,8 +318,18 @@ func (tx *InviteTransaction) scheduleTimerG() {
 
 func (tx *InviteTransaction) doSend(res *proto.SIPMessage) {
 	if err := tx.transport.Send(res, &tx.target); err != nil {
-		log.Printf("Send error on %s: %v", tx.branch, err)
+		log.Printf("[%s] Send error on %s: %v", transportName(tx.transport), tx.branch, err)
 	}
+}
+
+func (tx *InviteTransaction) Target() Target {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+	return tx.target
+}
+
+func (tx *InviteTransaction) Transport() Transport {
+	return tx.transport
 }
 
 // ---- TransactionManager ----
@@ -346,7 +379,7 @@ func (tm *TransactionManager) HandleRequest(ev MessageEvent, transport Transport
 			state:     ISTTrying,
 			reliable:  reliable,
 		}
-		log.Printf("New INVITE transaction [%s] → Trying", branch)
+		log.Printf("[%s] New INVITE transaction [%s] → Trying", transportName(transport), branch)
 	default:
 		tx = &NonInviteTransaction{
 			branch:    branch,
@@ -357,7 +390,7 @@ func (tm *TransactionManager) HandleRequest(ev MessageEvent, transport Transport
 			state:     NISTTrying,
 			reliable:  reliable,
 		}
-		log.Printf("New %s transaction [%s] → Trying", ev.Msg.Method(), branch)
+		log.Printf("[%s] New %s transaction [%s] → Trying", transportName(transport), ev.Msg.Method(), branch)
 	}
 
 	tm.mu.Lock()
@@ -375,14 +408,14 @@ func (tm *TransactionManager) handleRetransmission(tx Transaction) {
 		t.mu.Lock()
 		defer t.mu.Unlock()
 		if t.state == NISTCompleted && t.lastResp != nil {
-			log.Printf("Retransmission of %s, re-sending final response", t.method)
+			log.Printf("[%s] Retransmission of %s, re-sending final response", transportName(t.transport), t.method)
 			t.transport.Send(t.lastResp, &t.target)
 		}
 	case *InviteTransaction:
 		t.mu.Lock()
 		defer t.mu.Unlock()
 		if t.state == ISTCompleted && t.lastResp != nil {
-			log.Printf("Retransmission of INVITE, re-sending final response")
+			log.Printf("[%s] Retransmission of INVITE, re-sending final response", transportName(t.transport))
 			t.transport.Send(t.lastResp, &t.target)
 		}
 	}

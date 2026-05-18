@@ -2,6 +2,7 @@ package sip
 
 import (
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -441,6 +442,133 @@ func TestTCPConcurrentConnections(t *testing.T) {
 
 	if n := received.Load(); n == 0 {
 		t.Fatal("expected at least one received message")
+	}
+}
+
+// --- TargetFromContact ---
+
+func TestTargetFromContactUDP(t *testing.T) {
+	target, transport, err := TargetFromContact("sip:alice@192.168.1.5:5060")
+	if err != nil {
+		t.Fatalf("TargetFromContact: %v", err)
+	}
+	if transport != "UDP" {
+		t.Fatalf("expected UDP transport, got %s", transport)
+	}
+	if target.Addr == nil {
+		t.Fatal("expected non-nil Addr for UDP")
+	}
+	if target.Conn != nil {
+		t.Fatal("expected nil Conn for UDP")
+	}
+}
+
+func TestTargetFromContactUDPDefaultPort(t *testing.T) {
+	target, transport, err := TargetFromContact("sip:alice@192.168.1.5")
+	if err != nil {
+		t.Fatalf("TargetFromContact: %v", err)
+	}
+	if transport != "UDP" {
+		t.Fatalf("expected UDP transport, got %s", transport)
+	}
+	udpAddr := target.Addr.(*net.UDPAddr)
+	if udpAddr.Port != 5060 {
+		t.Fatalf("expected default port 5060, got %d", udpAddr.Port)
+	}
+}
+
+func TestTargetFromContactUDPNoDialNeeded(t *testing.T) {
+	target, transport, err := TargetFromContact("sip:alice@192.168.1.5:5060")
+	if err != nil {
+		t.Fatalf("TargetFromContact: %v", err)
+	}
+	if transport != "UDP" {
+		t.Fatalf("expected UDP transport, got %s", transport)
+	}
+	if target.Addr == nil {
+		t.Fatal("expected non-nil Addr for UDP")
+	}
+}
+
+func TestTargetFromContactTCPWithListener(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer listener.Close()
+
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		conn.Close()
+	}()
+
+	_, port, _ := net.SplitHostPort(listener.Addr().String())
+	target, transport, err := TargetFromContact("sip:alice@127.0.0.1:" + port + ";transport=tcp")
+	if err != nil {
+		t.Fatalf("TargetFromContact: %v", err)
+	}
+	if transport != "TCP" {
+		t.Fatalf("expected TCP transport, got %s", transport)
+	}
+	if target.Conn == nil {
+		t.Fatal("expected non-nil Conn for TCP")
+	}
+	target.Conn.Close()
+}
+
+func TestTargetFromContactTCPDialRefused(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	listener.Close()
+
+	_, _, err = TargetFromContact("sip:alice@127.0.0.1:" + strconv.Itoa(port) + ";transport=tcp")
+	if err == nil {
+		t.Fatal("expected error dialing closed TCP port")
+	}
+}
+
+func TestTargetFromContactPreservesTransportParam(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer listener.Close()
+
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		conn.Close()
+	}()
+
+	_, port, _ := net.SplitHostPort(listener.Addr().String())
+	target, transport, err := TargetFromContact("sip:alice@127.0.0.1:" + port + ";transport=tcp;ob;lr")
+	if err != nil {
+		t.Fatalf("TargetFromContact: %v", err)
+	}
+	if transport != "TCP" {
+		t.Fatalf("expected TCP transport, got %s", transport)
+	}
+	if target.Conn == nil {
+		t.Fatal("expected non-nil Conn for TCP")
+	}
+	target.Conn.Close()
+}
+
+func TestTargetFromContactDefaultTransportUDP(t *testing.T) {
+	_, transport, err := TargetFromContact("sip:alice@192.168.1.5:5060;ob;lr")
+	if err != nil {
+		t.Fatalf("TargetFromContact: %v", err)
+	}
+	if transport != "UDP" {
+		t.Fatalf("expected default UDP transport, got %s", transport)
 	}
 }
 

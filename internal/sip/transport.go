@@ -2,7 +2,12 @@ package sip
 
 import (
 	"bufio"
+	"context"
+	"errors"
+	"log"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,8 +22,21 @@ const (
 
 // Target identifies where to send a SIP response.
 type Target struct {
-	Addr net.Addr
-	Conn net.Conn
+	Addr   net.Addr
+	Conn   net.Conn
+	FlowID string
+}
+
+// syncWriteConn wraps a net.Conn with a mutex to serialize concurrent writes.
+type syncWriteConn struct {
+	net.Conn
+	mu sync.Mutex
+}
+
+func (c *syncWriteConn) Write(b []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Conn.Write(b)
 }
 
 // MessageEvent carries a parsed SIP message with source info.
@@ -116,12 +134,16 @@ const tcpReadTimeout = 1 * time.Second
 
 // TCPTransport implements Transport over TCP.
 type TCPTransport struct {
-	listener  *net.TCPListener
-	messages  chan MessageEvent
-	wg        sync.WaitGroup
-	closeOnce sync.Once
-	done      chan struct{}
-	connSem   chan struct{}
+	listener           *net.TCPListener
+	messages           chan MessageEvent
+	wg                 sync.WaitGroup
+	closeOnce          sync.Once
+	done               chan struct{}
+	connSem            chan struct{}
+	pool               *FlowPool
+	keepaliveInterval  time.Duration
+	keepaliveCtx       context.Context
+	keepaliveCancel    context.CancelFunc
 }
 
 // NewTCPTransport resolves addr and starts a TCP listener.
@@ -134,13 +156,26 @@ func NewTCPTransport(addr string) (*TCPTransport, error) {
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	t := &TCPTransport{
-		listener: listener,
-		messages: make(chan MessageEvent, 100),
-		done:     make(chan struct{}),
-		connSem:  make(chan struct{}, tcpMaxConns),
+		listener:          listener,
+		messages:          make(chan MessageEvent, 100),
+		done:              make(chan struct{}),
+		connSem:           make(chan struct{}, tcpMaxConns),
+		pool:              NewFlowPool(nil),
+		keepaliveInterval: DefaultKeepaliveInterval,
+		keepaliveCtx:      ctx,
+		keepaliveCancel:   cancel,
 	}
 	return t, nil
+}
+
+func (t *TCPTransport) Pool() *FlowPool {
+	return t.pool
+}
+
+func (t *TCPTransport) SetOnDead(fn func(string)) {
+	t.pool.SetOnDead(fn)
 }
 
 // Start begins accepting TCP connections in a background goroutine.
@@ -174,26 +209,140 @@ func (t *TCPTransport) handleConnection(conn net.Conn) {
 	defer conn.Close()
 	<-t.connSem
 
+	swc := &syncWriteConn{Conn: conn}
+	fc := t.pool.Register(swc)
+	flowID := fc.Key.String()
+
+	t.startReader(conn, swc, fc, flowID)
+}
+
+// HandleOutbound registers a client-dialed TCP connection with the flow pool
+// and starts reader/keepalive goroutines so that responses are routed through
+// the transport's Receive channel. The wrapped connection is returned so the
+// caller can update its Target.Conn.
+func (t *TCPTransport) HandleOutbound(conn net.Conn) (net.Conn, error) {
+	swc := &syncWriteConn{Conn: conn}
+	fc := t.pool.Register(swc)
+	flowID := fc.Key.String()
+
+	t.wg.Add(1)
+	go func() {
+		defer t.wg.Done()
+		t.startReader(conn, swc, fc, flowID)
+	}()
+
+	return swc, nil
+}
+
+// startReader runs the SIP read loop for a TCP connection in the caller's
+// goroutine. It returns when the connection dies or is shut down. Used by
+// both inbound (handleConnection) and outbound (HandleOutbound) paths.
+func (t *TCPTransport) startReader(conn net.Conn, swc *syncWriteConn, fc *FlowConn, flowID string) {
+	ctx, cancel := context.WithCancel(t.keepaliveCtx)
+	fc.cancel = cancel
+
+	kt := NewKeepaliveTracker(t.keepaliveInterval)
+	go kt.Run(ctx, swc, flowID)
+
+	defer cancel()
+	defer t.pool.RemoveDead(flowID)
+	defer conn.Close()
+
 	br := bufio.NewReaderSize(conn, readBufSize)
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.done:
+			return
+		default:
+		}
+
+		drained, err := t.drainCRLFKeepalive(br, conn, kt)
+		if err != nil {
+			log.Printf("TCP flow %s read error: %v", flowID, err)
+			return
+		}
+		if drained {
+			continue
+		}
+
 		conn.SetReadDeadline(time.Now().Add(tcpReadTimeout))
 		msg, err := proto.UnmarshalSIP(br)
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				select {
-				case <-t.done:
-					return
-				default:
-					continue
-				}
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				continue
 			}
 			return
 		}
+		kt.UpdateActivity()
+		fc.LastUsed = time.Now()
+
 		select {
-		case t.messages <- MessageEvent{Msg: msg, Target: Target{Addr: conn.RemoteAddr(), Conn: conn}}:
+		case t.messages <- MessageEvent{Msg: msg, Target: Target{Addr: swc.RemoteAddr(), Conn: swc, FlowID: flowID}}:
 		case <-t.done:
 			return
+		case <-ctx.Done():
+			return
 		}
+	}
+}
+
+func (t *TCPTransport) drainCRLFKeepalive(br *bufio.Reader, conn net.Conn, kt *KeepaliveTracker) (bool, error) {
+	conn.SetReadDeadline(time.Now().Add(tcpReadTimeout))
+	for {
+		b, err := br.ReadByte()
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				return false, nil
+			}
+			return false, err
+		}
+		if b != '\r' {
+			br.UnreadByte()
+			return false, nil
+		}
+		next, err := br.ReadByte()
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				br.UnreadByte()
+				return false, nil
+			}
+			return false, err
+		}
+		if next != '\n' {
+			return false, nil
+		}
+		// Read second \r to distinguish keepalive (\r\n\r\n) from stray CRLF (\r\n).
+		b, err = br.ReadByte()
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				br.UnreadByte() // unread the \n
+				return false, nil
+			}
+			return false, err
+		}
+		if b != '\r' {
+			br.UnreadByte()
+			return false, nil
+		}
+		next, err = br.ReadByte()
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				br.UnreadByte() // unread the \r
+				return false, nil
+			}
+			return false, err
+		}
+		if next != '\n' {
+			return false, nil
+		}
+		// Full double-CRLF keepalive. Per RFC 5626 §5.4, respond with pong.
+		conn.SetWriteDeadline(time.Now().Add(tcpReadTimeout))
+		conn.Write([]byte("\r\n"))
+		conn.SetWriteDeadline(time.Time{})
+		kt.UpdateActivity()
 	}
 }
 
@@ -221,8 +370,72 @@ func (t *TCPTransport) Close() error {
 	var err error
 	t.closeOnce.Do(func() {
 		close(t.done)
+		t.keepaliveCancel()
 		err = t.listener.Close()
 	})
 	t.wg.Wait()
 	return err
+}
+
+func extractSIPURI(contactURI string) (host string, port int, transport string) {
+	transport = "UDP"
+	port = 5060
+
+	uri := contactURI
+	if strings.HasPrefix(strings.ToLower(uri), "sip:") {
+		uri = uri[4:]
+	}
+
+	var params string
+	if semi := strings.IndexByte(uri, ';'); semi >= 0 {
+		params = uri[semi+1:]
+		uri = uri[:semi]
+	}
+
+	if params != "" {
+		for _, p := range strings.Split(params, ";") {
+			p = strings.TrimSpace(p)
+			k, v, ok := strings.Cut(p, "=")
+			if ok && strings.EqualFold(k, "transport") {
+				transport = strings.ToUpper(v)
+			}
+		}
+	}
+
+	if at := strings.IndexByte(uri, '@'); at >= 0 {
+		uri = uri[at+1:]
+	}
+
+	h, p, err := net.SplitHostPort(uri)
+	if err != nil {
+		host = uri
+	} else {
+		host = h
+		if pn, err := strconv.Atoi(p); err == nil {
+			port = pn
+		}
+	}
+
+	return
+}
+
+func TargetFromContact(contactURI string) (*Target, string, error) {
+	host, port, transport := extractSIPURI(contactURI)
+
+	if transport == "TCP" {
+		addr := net.JoinHostPort(host, strconv.Itoa(port))
+		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		if err != nil {
+			return nil, "", err
+		}
+		log.Printf("Outbound TCP connection to %s", addr)
+		return &Target{Conn: conn}, "TCP", nil
+	}
+
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return nil, "", err
+	}
+	return &Target{Addr: udpAddr}, "UDP", nil
 }

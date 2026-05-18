@@ -16,11 +16,15 @@ import (
 // Binding represents a single AOR → Contact URI registration binding
 // as defined in RFC 3261 §10.
 type Binding struct {
-	ContactURI string
-	CallID     string
-	CSeq       int
-	Expires    time.Time
-	LastUpdate time.Time
+	ContactURI  string
+	CallID      string
+	CSeq        int
+	Expires     time.Time
+	LastUpdate  time.Time
+	FlowID      string
+	RegID       int
+	OB          bool
+	SIPInstance string
 }
 
 // Registrar manages SIP registration bindings per RFC 3261 §10.
@@ -54,6 +58,39 @@ func (r *Registrar) Start(ctx context.Context) {
 	}
 }
 
+// GetBindings returns a copy of all active bindings for an AOR.
+func (r *Registrar) GetBindings(aor string) []*Binding {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	bindings := r.bindings[aor]
+	result := make([]*Binding, len(bindings))
+	for i, b := range bindings {
+		cp := *b
+		result[i] = &cp
+	}
+	return result
+}
+
+// RemoveBindingsByFlowID removes all bindings associated with the given flow.
+// Called when a TCP connection dies.
+func (r *Registrar) RemoveBindingsByFlowID(flowID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for aor, bindings := range r.bindings {
+		var filtered []*Binding
+		for _, b := range bindings {
+			if b.FlowID != flowID {
+				filtered = append(filtered, b)
+			}
+		}
+		if len(filtered) == 0 {
+			delete(r.bindings, aor)
+		} else {
+			r.bindings[aor] = filtered
+		}
+	}
+}
+
 // HandleRegister implements the REGISTER request handler per RFC 3261 §10.
 // It can be registered directly with Server.On.
 func (r *Registrar) HandleRegister(req *proto.SIPMessage, tx Transaction) {
@@ -63,6 +100,13 @@ func (r *Registrar) HandleRegister(req *proto.SIPMessage, tx Transaction) {
 		tx.Respond(proto.NewResponse(req, 400, "Bad Request"))
 		return
 	}
+
+	log.Printf("REGISTER <<< raw Contact: %q, Expires: %q, Require: %q, Supported: %q",
+		req.Headers.GetFirst("Contact"),
+		req.Headers.GetFirst("Expires"),
+		req.Headers.GetFirst("Require"),
+		req.Headers.GetFirst("Supported"))
+
 	aor := to.URI
 
 	// Per RFC 3261 §10.2 the Request-URI is the registrar domain (no user),
@@ -120,6 +164,11 @@ func (r *Registrar) HandleRegister(req *proto.SIPMessage, tx Transaction) {
 		return
 	}
 
+	var flowID string
+	if target := tx.Target(); target.Conn != nil {
+		flowID = FlowKeyFromConn(target.Conn).String()
+	}
+
 	bindings := r.bindings[aor]
 	for _, c := range contacts {
 		expires := defaultExpires
@@ -129,7 +178,7 @@ func (r *Registrar) HandleRegister(req *proto.SIPMessage, tx Transaction) {
 		if expires == 0 {
 			bindings = removeBinding(bindings, c.uri)
 		} else {
-			bindings = upsertBinding(bindings, c.uri, callID, req.CSeq.Seq, expires)
+			bindings = upsertBinding(bindings, c.uri, callID, req.CSeq.Seq, expires, flowID, c.ob, c.regID, c.sipInstance)
 		}
 	}
 
@@ -149,7 +198,7 @@ func sendRegisterResponse(req *proto.SIPMessage, tx Transaction, bindings []*Bin
 	res.Headers.Add("Date", time.Now().UTC().Format(time.RFC1123))
 	res.Headers.Add("Allow", "INVITE, ACK, BYE, CANCEL, OPTIONS, REGISTER")
 
-	minExpires := -1
+	var minExpires int = -1
 	for _, b := range bindings {
 		remaining := time.Until(b.Expires)
 		if remaining <= 0 {
@@ -159,19 +208,77 @@ func sendRegisterResponse(req *proto.SIPMessage, tx Transaction, bindings []*Bin
 		if minExpires < 0 || secs < minExpires {
 			minExpires = secs
 		}
-		res.Headers.Add("Contact", fmt.Sprintf("<%s>;expires=%d", b.ContactURI, secs))
+		contact := fmt.Sprintf("<%s>;expires=%d", b.ContactURI, secs)
+		if b.OB {
+			contact += ";ob"
+		}
+		if b.RegID > 0 {
+			contact += fmt.Sprintf(";reg-id=%d", b.RegID)
+		}
+		if b.SIPInstance != "" {
+			contact += fmt.Sprintf(";+sip.instance=%s", b.SIPInstance)
+		}
+		res.Headers.Add("Contact", contact)
 	}
 
 	if minExpires >= 0 {
 		res.Headers.Add("Expires", strconv.Itoa(minExpires))
 	}
 
+	// Per RFC 5626 §6: include Require: outbound when the UAC requested it.
+	if containsIgnoreCase(req.Headers.GetFirst("Supported"), "outbound") {
+		res.Headers.Add("Require", "outbound")
+	}
+
+	log.Printf("REGISTER response >>> %s", res)
 	tx.Respond(res)
 }
 
+func containsIgnoreCase(s, substr string) bool {
+	s = strings.ToLower(s)
+	substr = strings.ToLower(substr)
+	for _, part := range strings.Split(s, ",") {
+		if strings.TrimSpace(part) == substr {
+			return true
+		}
+	}
+	return false
+}
+
 type parsedContact struct {
-	uri     string
-	expires int // -1 = not specified
+	uri         string
+	expires     int    // -1 = not specified
+	ob          bool
+	regID       int    // -1 = not specified
+	sipInstance string
+}
+
+func (pc *parsedContact) addHeaderParam(param string) {
+	param = strings.TrimSpace(param)
+	if strings.EqualFold(param, "ob") {
+		pc.ob = true
+		return
+	}
+	k, v, ok := strings.Cut(param, "=")
+	if !ok {
+		return
+	}
+	if strings.EqualFold(k, "reg-id") {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			pc.regID = n
+		}
+		return
+	}
+	if strings.EqualFold(k, "expires") {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			pc.expires = n
+		}
+		return
+	}
+	if strings.EqualFold(k, "+sip.instance") {
+		pc.sipInstance = v
+		return
+	}
 }
 
 func extractContacts(raw []string) (contacts []parsedContact, hasStar bool) {
@@ -232,7 +339,7 @@ func parseContactURI(raw string) (parsedContact, error) {
 		return parsedContact{}, fmt.Errorf("invalid contact: %s", raw)
 	}
 
-	c := parsedContact{expires: -1}
+	c := parsedContact{expires: -1, regID: -1}
 
 	if open := strings.IndexByte(raw, '<'); open >= 0 {
 		close := strings.IndexByte(raw[open+1:], '>')
@@ -243,30 +350,22 @@ func parseContactURI(raw string) (parsedContact, error) {
 		c.uri = strings.TrimSpace(raw[open+1 : close])
 		rest := strings.TrimSpace(raw[close+1:])
 		if rest != "" {
-			c.expires = parseExpiresParam(rest)
+			for _, p := range strings.Split(rest, ";") {
+				c.addHeaderParam(p)
+			}
 		}
 	} else {
 		uri, expires := splitAddrSpecContact(raw)
 		c.uri = uri
-		c.expires = expires
+		if expires >= 0 {
+			c.expires = expires
+		}
 	}
 
 	if c.uri == "" {
 		return parsedContact{}, fmt.Errorf("empty contact URI: %s", raw)
 	}
 	return c, nil
-}
-
-func parseExpiresParam(params string) int {
-	for _, p := range strings.Split(params, ";") {
-		p = strings.TrimSpace(p)
-		if k, v, ok := strings.Cut(p, "="); ok && strings.EqualFold(k, "expires") {
-			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-				return n
-			}
-		}
-	}
-	return -1
 }
 
 func splitAddrSpecContact(raw string) (uri string, expires int) {
@@ -319,7 +418,7 @@ func removeBinding(bindings []*Binding, contactURI string) []*Binding {
 	return bindings
 }
 
-func upsertBinding(bindings []*Binding, contactURI, callID string, cseq int, expiresSec int) []*Binding {
+func upsertBinding(bindings []*Binding, contactURI, callID string, cseq int, expiresSec int, flowID string, ob bool, regID int, sipInstance string) []*Binding {
 	now := time.Now()
 	for _, b := range bindings {
 		if b.ContactURI == contactURI {
@@ -327,15 +426,27 @@ func upsertBinding(bindings []*Binding, contactURI, callID string, cseq int, exp
 			b.CSeq = cseq
 			b.Expires = now.Add(time.Duration(expiresSec) * time.Second)
 			b.LastUpdate = now
+			b.FlowID = flowID
+			b.OB = ob
+			if regID >= 0 {
+				b.RegID = regID
+			}
+			if sipInstance != "" {
+				b.SIPInstance = sipInstance
+			}
 			return bindings
 		}
 	}
 	return append(bindings, &Binding{
-		ContactURI: contactURI,
-		CallID:     callID,
-		CSeq:       cseq,
-		Expires:    now.Add(time.Duration(expiresSec) * time.Second),
-		LastUpdate: now,
+		ContactURI:  contactURI,
+		CallID:      callID,
+		CSeq:        cseq,
+		Expires:     now.Add(time.Duration(expiresSec) * time.Second),
+		LastUpdate:  now,
+		FlowID:      flowID,
+		OB:          ob,
+		RegID:       regID,
+		SIPInstance: sipInstance,
 	})
 }
 

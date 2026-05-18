@@ -10,17 +10,22 @@ import (
 // AckCallback is invoked for every incoming ACK after transaction handling.
 type AckCallback func(msg *proto.SIPMessage, target Target, transport Transport)
 
+// ResponseHandler is invoked for incoming SIP responses that don't match
+// an existing server transaction.
+type ResponseHandler func(msg *proto.SIPMessage, target Target, transport Transport)
+
 // Server is a SIP server that listens on UDP and TCP, manages transactions,
 // and dispatches requests to registered method handlers.
 type Server struct {
-	udpTransport *UDPTransport
-	tcpTransport *TCPTransport
-	txMgr        *TransactionManager
-	handlers     map[proto.SIPMethod]RequestHandler
-	ackCallback  AckCallback
-	mu           sync.Mutex
-	wg           sync.WaitGroup
-	started      bool
+	udpTransport     *UDPTransport
+	tcpTransport     *TCPTransport
+	txMgr            *TransactionManager
+	handlers         map[proto.SIPMethod]RequestHandler
+	ackCallback      AckCallback
+	responseHandler  ResponseHandler
+	mu               sync.Mutex
+	wg               sync.WaitGroup
+	started          bool
 }
 
 // NewServer creates a SIP server listening on addr for both UDP and TCP.
@@ -57,6 +62,33 @@ func (s *Server) OnAck(fn AckCallback) {
 	s.ackCallback = fn
 }
 
+// OnResponse registers a handler for incoming SIP responses.
+func (s *Server) OnResponse(fn ResponseHandler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.responseHandler = fn
+}
+
+// SetFlowDeadCallback sets the callback for when a TCP flow dies.
+func (s *Server) SetFlowDeadCallback(fn func(string)) {
+	s.tcpTransport.SetOnDead(fn)
+}
+
+// Pool returns the TCP flow pool.
+func (s *Server) Pool() *FlowPool {
+	return s.tcpTransport.Pool()
+}
+
+// UDPTransport returns the UDP transport.
+func (s *Server) UDPTransport() *UDPTransport {
+	return s.udpTransport
+}
+
+// TCPTransport returns the TCP transport.
+func (s *Server) TCPTransport() *TCPTransport {
+	return s.tcpTransport
+}
+
 // Start begins listening on both transports and starts the dispatch loop.
 func (s *Server) Start() {
 	s.mu.Lock()
@@ -88,6 +120,9 @@ func (s *Server) dispatch(transport Transport) {
 // route processes one incoming message.
 func (s *Server) route(ev MessageEvent, transport Transport) {
 	if !ev.Msg.IsRequest() {
+		if s.responseHandler != nil {
+			s.responseHandler(ev.Msg, ev.Target, transport)
+		}
 		return
 	}
 
