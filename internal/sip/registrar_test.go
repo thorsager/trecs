@@ -1163,6 +1163,89 @@ func TestRegistrar_OBOnlyWithAngleBracket(t *testing.T) {
 	}
 }
 
+func TestRegistrar_FlowTimer_TCP(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/TCP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Supported: outbound\r\n" +
+		"Contact: <sip:alice@192.168.1.5;transport=tcp>;ob;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	res := tx.last()
+	if res == nil || res.StatusCode() != 200 {
+		t.Fatalf("expected 200 OK, got %v", statusOrNil(res))
+	}
+	if res.Headers.GetFirst("Require") != "outbound" {
+		t.Fatalf("expected Require: outbound, got %q", res.Headers.GetFirst("Require"))
+	}
+	if res.Headers.GetFirst("Flow-Timer") != "120" {
+		t.Fatalf("expected Flow-Timer: 120, got %q", res.Headers.GetFirst("Flow-Timer"))
+	}
+}
+
+func TestRegistrar_FlowTimer_UDP(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Supported: outbound\r\n" +
+		"Contact: <sip:alice@192.168.1.5;transport=tcp>;ob;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	res := tx.last()
+	if res == nil || res.StatusCode() != 200 {
+		t.Fatalf("expected 200 OK, got %v", statusOrNil(res))
+	}
+	if res.Headers.GetFirst("Require") != "outbound" {
+		t.Fatalf("expected Require: outbound, got %q", res.Headers.GetFirst("Require"))
+	}
+	if res.Headers.GetFirst("Flow-Timer") != "" {
+		t.Fatalf("expected no Flow-Timer for UDP, got %q", res.Headers.GetFirst("Flow-Timer"))
+	}
+}
+
+func TestRegistrar_FlowTimer_NoSupportedOutbound(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/TCP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5;transport=tcp>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(req, tx)
+
+	res := tx.last()
+	if res == nil || res.StatusCode() != 200 {
+		t.Fatalf("expected 200 OK, got %v", statusOrNil(res))
+	}
+	if res.Headers.GetFirst("Require") == "outbound" {
+		t.Fatal("expected no Require: outbound when Supported: outbound not present")
+	}
+	if res.Headers.GetFirst("Flow-Timer") != "" {
+		t.Fatalf("expected no Flow-Timer when outbound not negotiated, got %q", res.Headers.GetFirst("Flow-Timer"))
+	}
+}
+
 func statusOrNil(msg *proto.SIPMessage) string {
 	if msg == nil {
 		return "nil"

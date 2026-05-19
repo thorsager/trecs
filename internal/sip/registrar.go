@@ -13,6 +13,8 @@ import (
 	"gitub.com/thorsager/trec/proto"
 )
 
+const defaultFlowTimer = 120 // RFC 5626 §5.4: default keepalive interval for reliable transports
+
 // Binding represents a single AOR → Contact URI registration binding
 // as defined in RFC 3261 §10.
 type Binding struct {
@@ -225,8 +227,12 @@ func sendRegisterResponse(req *proto.SIPMessage, tx Transaction, bindings []*Bin
 	}
 
 	// Per RFC 5626 §6: include Require: outbound when the UAC requested it.
+	// Per RFC 5626 §5.4: include Flow-Timer with default 120s for reliable transports.
 	if containsIgnoreCase(req.Headers.GetFirst("Supported"), "outbound") {
 		res.Headers.Add("Require", "outbound")
+		if req.IsReliableTransport() {
+			res.Headers.Add("Flow-Timer", strconv.Itoa(defaultFlowTimer))
+		}
 	}
 
 	log.Printf("REGISTER response >>> %s", res)
