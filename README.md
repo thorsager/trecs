@@ -55,3 +55,32 @@ For a fully manual walkthrough (what the script automates), see the
 ```bash
 go test ./...
 ```
+
+## B2BUA (Back-to-Back User Agent)
+
+T-REC can bridge two SIP legs together. A typical flow: Alice calls a
+registered user (Bob), and T-REC forwards the call to Bob's registered
+contact. Registration is handled by the built-in registrar.
+
+### Register Bob with pjsua
+
+This registers Bob via TCP and auto-answers incoming calls with a
+greeting, then hangs up after the file finishes (or 30s timeout):
+
+```bash
+pjsua --id "sip:bob@example.com" \
+      --registrar "sip:127.0.0.1:5061" \
+      --local-port 5062 --no-udp \
+      --realm "*" --username bob --password secret \
+      --auto-answer 200 --duration 30 \
+      --play-file greeting.wav --auto-play --auto-play-hangup
+```
+
+Breakdown:
+- `--registrar` — points at T-REC's SIP address
+- `--local-port 5062` — avoids conflicting with T-REC on 5061
+- `--no-udp` — forces TCP transport only
+- `--auto-answer 200` — automatically answers inbound calls
+- `--duration 30` — hangs up after 30s (safety net)
+- `--play-file / --auto-play / --auto-play-hangup` — plays a WAV to the
+  caller and hangs up when it ends
