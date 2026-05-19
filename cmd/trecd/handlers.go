@@ -34,9 +34,11 @@ type B2BUACall struct {
 	AliceFromTag   string
 	AliceServerTag string
 	AliceContactURI string
+	AliceTarget    *sip.Target
 
-	AliceDialog *session.Dialog
-	BobDialog   *session.Dialog
+	AliceDialog    *session.Dialog
+	BobDialog      *session.Dialog
+	AliceTransport sip.Transport
 }
 
 type ServerHandlers struct {
@@ -240,38 +242,53 @@ func (h *ServerHandlers) handleB2BUAInvite(req *proto.SIPMessage, tx sip.Transac
 		return
 	}
 
-	binding := bindings[0]
-
+	var binding *sip.Binding
 	var target *sip.Target
 	var transport string
 
-	if binding.OB && binding.FlowID != "" {
-		fc := h.server.Pool().GetByFlowID(binding.FlowID)
-		if fc != nil {
-			target = &sip.Target{Conn: fc.Conn, FlowID: fc.Key.String()}
-			transport = "TCP"
-			log.Printf("B2BUA: reusing existing TCP flow %s to %s", binding.FlowID, binding.ContactURI)
+	// Prefer bindings with live TCP flows, then newest bindings.
+	// Bindings without a live connection (stale UDP, dead TCP) are skipped.
+	for i := len(bindings) - 1; i >= 0; i-- {
+		b := bindings[i]
+
+		if b.OB && b.FlowID != "" {
+			if fc := h.server.Pool().GetByFlowID(b.FlowID); fc != nil {
+				binding = b
+				target = &sip.Target{Conn: fc.Conn, FlowID: fc.Key.String()}
+				transport = "TCP"
+				log.Printf("B2BUA: reusing TCP flow %s for %s", b.FlowID, b.ContactURI)
+				break
+			}
 		}
+
+		tgt, tr, err := sip.TargetFromContact(b.ContactURI)
+		if err != nil {
+			log.Printf("B2BUA: %q unresolvable (%v)", b.ContactURI, err)
+			continue
+		}
+
+		if tr == "TCP" && tgt.Conn != nil {
+			wrapped, werr := h.server.TCPTransport().HandleOutbound(tgt.Conn)
+			if werr != nil {
+				log.Printf("HandleOutbound(%q): %v", b.ContactURI, werr)
+				tgt.Conn.Close()
+				continue
+			}
+			tgt.Conn = wrapped
+			log.Printf("B2BUA: registered outbound TCP flow to %s", b.ContactURI)
+		}
+
+		binding = b
+		target = tgt
+		transport = tr
+		break
 	}
 
 	if target == nil {
-		var err error
-		target, transport, err = sip.TargetFromContact(binding.ContactURI)
-		if err != nil {
-			log.Printf("TargetFromContact(%q): %v", binding.ContactURI, err)
-			res := proto.NewResponse(req, 502, "Bad Gateway")
-			tx.Respond(res)
-			return
-		}
-		if transport == "TCP" && target.Conn != nil {
-			wrapped, err := h.server.TCPTransport().HandleOutbound(target.Conn)
-			if err != nil {
-				log.Printf("HandleOutbound: %v", err)
-			} else {
-				target.Conn = wrapped
-				log.Printf("B2BUA: registered outbound TCP flow to %s", binding.ContactURI)
-			}
-		}
+		log.Printf("B2BUA: no reachable binding for %q", aor)
+		res := proto.NewResponse(req, 502, "Bad Gateway")
+		tx.Respond(res)
+		return
 	}
 
 	from, err := req.From()
@@ -339,7 +356,7 @@ func (h *ServerHandlers) handleB2BUAInvite(req *proto.SIPMessage, tx sip.Transac
 		serverPort = "5060"
 	}
 	recordRoute := fmt.Sprintf("<sip:trec@%s:%s;lr>", h.serverIP, serverPort)
-	contactHeader := fmt.Sprintf("<sip:trec@%s:%s>", h.serverIP, serverPort)
+	contactHeader := fmt.Sprintf("<sip:trec@%s:%s;transport=%s>", h.serverIP, serverPort, transport)
 
 	var transportImpl sip.Transport
 	switch transport {
@@ -489,6 +506,8 @@ func (h *ServerHandlers) handleBob200OK(
 	alice200.Headers.Set("Content-Type", []string{"application/sdp"})
 	alice200.Headers["Allow"] = []string{"INVITE, ACK, BYE, CANCEL, OPTIONS, REGISTER"}
 	alice200.Headers.Add("Record-Route", recordRoute)
+	aliceContactHeader := fmt.Sprintf("<sip:trec@%s:%s;transport=%s>", h.serverIP, serverPort, transportName(tx.Transport()))
+	alice200.Headers.Add("Contact", aliceContactHeader)
 	tx.Respond(alice200)
 	log.Printf("B2BUA: sent 200 OK to Alice [%s]", callID)
 
@@ -535,23 +554,26 @@ func (h *ServerHandlers) handleBob200OK(
 	bobDialog := session.NewDialog(bobDialogID, serverContact, to.URI, binding.ContactURI)
 	bobDialog.SetState(session.DialogStateConfirmed)
 
+	aliceTarget := tx.Target()
 	call := &B2BUACall{
-		AliceCallID:    callID,
-		BobCallID:      bobCallID,
-		Bridge:         bridge,
-		AliceSess:      aliceSess,
-		BobSess:        bobSess,
-		BobRTPAddr:     bobRTPAddr,
-		BobContactURI:  binding.ContactURI,
-		BobTransport:   transportImpl,
-		BobTarget:      target,
-		BobCalleeTag:   calleeTag,
-		BobRemoteTag:   bobTo.Tag,
-		AliceFromTag:   aliceFromTag,
-		AliceServerTag: serverTag,
+		AliceCallID:     callID,
+		BobCallID:       bobCallID,
+		Bridge:          bridge,
+		AliceSess:       aliceSess,
+		BobSess:         bobSess,
+		BobRTPAddr:      bobRTPAddr,
+		BobContactURI:   binding.ContactURI,
+		BobTransport:    transportImpl,
+		BobTarget:       target,
+		BobCalleeTag:    calleeTag,
+		BobRemoteTag:    bobTo.Tag,
+		AliceFromTag:    aliceFromTag,
+		AliceServerTag:  serverTag,
 		AliceContactURI: aliceContact,
-		AliceDialog:    aliceDialog,
-		BobDialog:      bobDialog,
+		AliceTarget:     &aliceTarget,
+		AliceDialog:     aliceDialog,
+		BobDialog:       bobDialog,
+		AliceTransport:  tx.Transport(),
 	}
 
 	if hasEarlyOffer {
@@ -695,14 +717,17 @@ func (h *ServerHandlers) handleBye(req *proto.SIPMessage, tx sip.Transaction) {
 		} else {
 			dlg = call.AliceDialog
 			fwdRequestURI = stripBrackets(call.AliceContactURI)
-			var err error
-			fwdTargetObj, _, err = sip.TargetFromContact(fwdRequestURI)
-			if err != nil {
-				log.Printf("B2BUA: failed to resolve Alice Contact %q: %v", fwdRequestURI, err)
-				fwdTargetObj = &sip.Target{}
+			fwdTargetObj = call.AliceTarget
+			if fwdTargetObj == nil {
+				var err error
+				fwdTargetObj, _, err = sip.TargetFromContact(fwdRequestURI)
+				if err != nil {
+					log.Printf("B2BUA: failed to resolve Alice Contact %q: %v", fwdRequestURI, err)
+					fwdTargetObj = &sip.Target{}
+				}
 			}
-			fwdTransport = h.server.UDPTransport()
-			viaTransport = "UDP"
+			fwdTransport = call.AliceTransport
+			viaTransport = transportName(fwdTransport)
 		}
 
 		fwdBye := proto.NewRequest(proto.SIPMethodBYE, fwdRequestURI)

@@ -341,7 +341,9 @@ func parseContactURI(raw string) (parsedContact, error) {
 
 	c := parsedContact{expires: -1, regID: -1}
 
-	if open := strings.IndexByte(raw, '<'); open >= 0 {
+	open := -1
+	if idx := strings.IndexByte(raw, '<'); idx >= 0 {
+		open = idx
 		close := strings.IndexByte(raw[open+1:], '>')
 		if close < 0 {
 			return parsedContact{}, fmt.Errorf("unmatched '<' in contact: %s", raw)
@@ -359,6 +361,22 @@ func parseContactURI(raw string) (parsedContact, error) {
 		c.uri = uri
 		if expires >= 0 {
 			c.expires = expires
+		}
+	}
+
+	// Check for ;ob in URI params when name-addr form is used. Some
+	// UAs (e.g. pjsua) place ;ob inside the angle brackets rather than
+	// as a header-level parameter as RFC 5626 §4 requires.
+	if !c.ob && open >= 0 {
+		cp := c.uri
+		if semi := strings.IndexByte(cp, ';'); semi >= 0 {
+			for _, p := range strings.Split(cp[semi+1:], ";") {
+				p = strings.TrimSpace(p)
+				if strings.EqualFold(p, "ob") {
+					c.ob = true
+					break
+				}
+			}
 		}
 	}
 

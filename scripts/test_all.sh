@@ -43,19 +43,31 @@ trap cleanup EXIT
 
 echo ""
 echo "=================================================================="
-echo " 1/2 — REGISTER validation"
+echo " 1/4 — REGISTER validation via UDP"
 echo "=================================================================="
-"$ROOT/scripts/test_register.sh" -t "$TARGET" || ((EXIT++))
+"$ROOT/scripts/test_register.sh" -t "$TARGET" -p udp || ((EXIT++))
 
 echo ""
 echo "=================================================================="
-echo " 2/2 — OPTIONS validation (5 requests, 2s interval)"
+echo " 2/4 — REGISTER validation via TCP"
 echo "=================================================================="
-"$ROOT/scripts/test_options.sh" -t "$TARGET" -c 5 -i 2 || ((EXIT++))
+"$ROOT/scripts/test_register.sh" -t "$TARGET" -p tcp || ((EXIT++))
 
 echo ""
 echo "=================================================================="
-echo " 3/3 — B2BUA edge-case tests"
+echo " 3/4 — OPTIONS validation via UDP (5 requests, 2s interval)"
+echo "=================================================================="
+"$ROOT/scripts/test_options.sh" -t "$TARGET" -c 5 -i 2 -p udp || ((EXIT++))
+
+echo ""
+echo "=================================================================="
+echo " 4/4 — OPTIONS validation via TCP (5 requests, 2s interval)"
+echo "=================================================================="
+"$ROOT/scripts/test_options.sh" -t "$TARGET" -c 5 -i 2 -p tcp || ((EXIT++))
+
+echo ""
+echo "=================================================================="
+echo "     — B2BUA edge-case tests"
 echo "=================================================================="
 "$ROOT/scripts/test_b2bua_full.sh" -t "$TARGET" || ((EXIT++))
 
