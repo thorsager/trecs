@@ -44,6 +44,20 @@ FAIL=0
 pass() { echo "  ✓ $1"; ((PASS++)); }
 fail() { echo "  ✗ $1"; ((FAIL++)); }
 
+check_audio() {
+    local label="$1" file="$2" direction="$3"
+    if [ -f "$file" ]; then
+        local data=$(( $(stat -f%z "$file") - 44 ))
+        if [ "$data" -gt 0 ]; then
+            pass "[${label}] ${direction} received audio ($data bytes)"
+        else
+            fail "[${label}] ${direction} received no audio"
+        fi
+    else
+        fail "[${label}] ${direction} recording not found"
+    fi
+}
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Use a temp dir for all test artifacts
@@ -77,16 +91,24 @@ if [ "$AUTO_START" = 1 ]; then
     pass "trecd started on $TARGET"
 fi
 
-# ── Generate test tone ────────────────────────────────────────────
+# ── Generate test tones ───────────────────────────────────────────
 
 echo ""
-echo "=== generating 440Hz test tone ==="
-TONE_FILE="$TMPDIR/tone.wav"
-sox -n -b 16 -r 8000 -c 1 "$TONE_FILE" synth 4 sine 440 2>&1
+echo "=== generating test tones ==="
+TONE_FILE="$TMPDIR/tone.wav"     # 440Hz — played by Alice
+TONE_FILE2="$TMPDIR/tone2.wav"   # 880Hz — played by Bob
+sox -n -b 16 -r 8000 -c 1 "$TONE_FILE"  synth 4 sine 440 2>&1
+sox -n -b 16 -r 8000 -c 1 "$TONE_FILE2" synth 4 sine 880 2>&1
 if [ -f "$TONE_FILE" ] && [ "$(stat -f%z "$TONE_FILE")" -gt 44 ]; then
-    pass "tone file created ($(stat -f%z "$TONE_FILE") bytes)"
+    pass "tone file (440Hz) created ($(stat -f%z "$TONE_FILE") bytes)"
 else
-    fail "tone file missing"
+    fail "tone file (440Hz) missing"
+    exit 1
+fi
+if [ -f "$TONE_FILE2" ] && [ "$(stat -f%z "$TONE_FILE2")" -gt 44 ]; then
+    pass "tone file (880Hz) created ($(stat -f%z "$TONE_FILE2") bytes)"
+else
+    fail "tone file (880Hz) missing"
     exit 1
 fi
 
@@ -106,6 +128,7 @@ echo "════════════════════════�
 BOB_LOG1="$TMPDIR/bob1.log"
 ALICE_LOG1="$TMPDIR/alice1.log"
 BOB_RECV1="$TMPDIR/bob1_recv.wav"
+ALICE_RECV1="$TMPDIR/alice1_recv.wav"
 
 # Bob (callee) — keep alive for 10s via pipe
 (sleep 10) | pjsua \
@@ -117,6 +140,8 @@ BOB_RECV1="$TMPDIR/bob1_recv.wav"
     --null-audio \
     --rec-file "$BOB_RECV1" \
     --auto-rec \
+    --play-file "$TONE_FILE2" \
+    --auto-play \
     > "$BOB_LOG1" 2>&1 &
 BOB_PID1=$!
 sleep 3
@@ -135,6 +160,8 @@ else
         --null-audio \
         --play-file "$TONE_FILE" \
         --auto-play \
+        --rec-file "$ALICE_RECV1" \
+        --auto-rec \
         "sip:bob@${TARGET}" \
         > "$ALICE_LOG1" 2>&1 &
     ALICE_PID1=$!
@@ -153,16 +180,8 @@ else
         fi
     done
 
-    if [ -f "$BOB_RECV1" ]; then
-        BOB_DATA=$(( $(stat -f%z "$BOB_RECV1") - 44 ))
-        if [ "$BOB_DATA" -gt 0 ]; then
-            pass "[S1] Bob received audio ($BOB_DATA bytes)"
-        else
-            fail "[S1] Bob received no audio"
-        fi
-    else
-        fail "[S1] Bob recording not found"
-    fi
+    check_audio "S1" "$BOB_RECV1"   "Bob"
+    check_audio "S1" "$ALICE_RECV1" "Alice"
 fi
 
 sleep 2
@@ -295,6 +314,7 @@ echo "════════════════════════�
 BOB_LOG4="$TMPDIR/bob4.log"
 ALICE_LOG4="$TMPDIR/alice4.log"
 BOB_RECV4="$TMPDIR/bob4_recv.wav"
+ALICE_RECV4="$TMPDIR/alice4_recv.wav"
 
 (sleep 10) | pjsua \
     --local-port "$BOB_PORT" \
@@ -306,6 +326,8 @@ BOB_RECV4="$TMPDIR/bob4_recv.wav"
     --null-audio \
     --rec-file "$BOB_RECV4" \
     --auto-rec \
+    --play-file "$TONE_FILE2" \
+    --auto-play \
     > "$BOB_LOG4" 2>&1 &
 BOB_PID4=$!
 sleep 3
@@ -324,6 +346,8 @@ else
         --null-audio \
         --play-file "$TONE_FILE" \
         --auto-play \
+        --rec-file "$ALICE_RECV4" \
+        --auto-rec \
         "sip:bob@${TARGET};transport=tcp" \
         > "$ALICE_LOG4" 2>&1 &
     ALICE_PID4=$!
@@ -342,16 +366,8 @@ else
         fi
     done
 
-    if [ -f "$BOB_RECV4" ]; then
-        BOB_DATA=$(( $(stat -f%z "$BOB_RECV4") - 44 ))
-        if [ "$BOB_DATA" -gt 0 ]; then
-            pass "[S4] Bob received audio ($BOB_DATA bytes, TCP)"
-        else
-            fail "[S4] Bob received no audio"
-        fi
-    else
-        fail "[S4] Bob recording not found"
-    fi
+    check_audio "S4" "$BOB_RECV4"   "Bob"
+    check_audio "S4" "$ALICE_RECV4" "Alice"
 fi
 
 sleep 2
@@ -368,6 +384,7 @@ echo "════════════════════════�
 BOB_LOG5="$TMPDIR/bob5.log"
 ALICE_LOG5="$TMPDIR/alice5.log"
 BOB_RECV5="$TMPDIR/bob5_recv.wav"
+ALICE_RECV5="$TMPDIR/alice5_recv.wav"
 
 # Bob (UDP)
 (sleep 10) | pjsua \
@@ -379,6 +396,8 @@ BOB_RECV5="$TMPDIR/bob5_recv.wav"
     --null-audio \
     --rec-file "$BOB_RECV5" \
     --auto-rec \
+    --play-file "$TONE_FILE2" \
+    --auto-play \
     > "$BOB_LOG5" 2>&1 &
 BOB_PID5=$!
 sleep 3
@@ -398,6 +417,8 @@ else
         --null-audio \
         --play-file "$TONE_FILE" \
         --auto-play \
+        --rec-file "$ALICE_RECV5" \
+        --auto-rec \
         "sip:bob@${TARGET};transport=tcp" \
         > "$ALICE_LOG5" 2>&1 &
     ALICE_PID5=$!
@@ -416,16 +437,8 @@ else
         fi
     done
 
-    if [ -f "$BOB_RECV5" ]; then
-        BOB_DATA=$(( $(stat -f%z "$BOB_RECV5") - 44 ))
-        if [ "$BOB_DATA" -gt 0 ]; then
-            pass "[S5] Bob received audio ($BOB_DATA bytes, Alice TCP)"
-        else
-            fail "[S5] Bob received no audio"
-        fi
-    else
-        fail "[S5] Bob recording not found"
-    fi
+    check_audio "S5" "$BOB_RECV5"   "Bob"
+    check_audio "S5" "$ALICE_RECV5" "Alice"
 fi
 
 sleep 2
@@ -442,6 +455,7 @@ echo "════════════════════════�
 BOB_LOG6="$TMPDIR/bob6.log"
 ALICE_LOG6="$TMPDIR/alice6.log"
 BOB_RECV6="$TMPDIR/bob6_recv.wav"
+ALICE_RECV6="$TMPDIR/alice6_recv.wav"
 
 # Bob (TCP)
 (sleep 10) | pjsua \
@@ -454,6 +468,8 @@ BOB_RECV6="$TMPDIR/bob6_recv.wav"
     --null-audio \
     --rec-file "$BOB_RECV6" \
     --auto-rec \
+    --play-file "$TONE_FILE2" \
+    --auto-play \
     > "$BOB_LOG6" 2>&1 &
 BOB_PID6=$!
 sleep 3
@@ -472,6 +488,8 @@ else
         --null-audio \
         --play-file "$TONE_FILE" \
         --auto-play \
+        --rec-file "$ALICE_RECV6" \
+        --auto-rec \
         "sip:bob@${TARGET}" \
         > "$ALICE_LOG6" 2>&1 &
     ALICE_PID6=$!
@@ -490,16 +508,8 @@ else
         fi
     done
 
-    if [ -f "$BOB_RECV6" ]; then
-        BOB_DATA=$(( $(stat -f%z "$BOB_RECV6") - 44 ))
-        if [ "$BOB_DATA" -gt 0 ]; then
-            pass "[S6] Bob received audio ($BOB_DATA bytes, Bob TCP)"
-        else
-            fail "[S6] Bob received no audio"
-        fi
-    else
-        fail "[S6] Bob recording not found"
-    fi
+    check_audio "S6" "$BOB_RECV6"   "Bob"
+    check_audio "S6" "$ALICE_RECV6" "Alice"
 fi
 
 # ==================================================================
