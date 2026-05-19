@@ -77,6 +77,10 @@ func (b *Bridge) Stop() {
 func (b *Bridge) forward(src, dst *RTPConn, remote net.Addr, ssrc uint32, dir string) {
 	var seq uint16
 	var timestamp uint32
+	out := &proto.RTPPacket{
+		Header: proto.RTPHeader{Version: 2, SSRC: ssrc},
+	}
+	marshalBuf := make([]byte, 1500)
 
 	for {
 		if err := src.SetReadDeadline(time.Now().Add(bridgeReadTimeout)); err != nil {
@@ -93,20 +97,22 @@ func (b *Bridge) forward(src, dst *RTPConn, remote net.Addr, ssrc uint32, dir st
 			}
 		}
 
-		out := &proto.RTPPacket{
-			Header: proto.RTPHeader{
-				Version:        2,
-				Padding:        pkt.Header.Padding,
-				Marker:         pkt.Header.Marker,
-				PayloadType:    pkt.Header.PayloadType,
-				SequenceNumber: seq,
-				Timestamp:      timestamp,
-				SSRC:           ssrc,
-			},
-			Payload: pkt.Payload,
-		}
+		out.Header.Padding = pkt.Header.Padding
+		out.Header.Marker = pkt.Header.Marker
+		out.Header.PayloadType = pkt.Header.PayloadType
+		out.Header.SequenceNumber = seq
+		out.Header.Timestamp = timestamp
+		out.Payload = pkt.Payload
 
-		if err := dst.WriteRTP(out, remote); err != nil {
+		sz := out.MarshalSize()
+		if sz > len(marshalBuf) {
+			marshalBuf = make([]byte, sz)
+		}
+		n, err := out.MarshalTo(marshalBuf)
+		if err != nil {
+			return
+		}
+		if _, err := dst.conn.WriteTo(marshalBuf[:n], remote); err != nil {
 			return
 		}
 		seq++

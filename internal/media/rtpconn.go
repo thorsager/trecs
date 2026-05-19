@@ -3,10 +3,17 @@ package media
 import (
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"gitub.com/thorsager/trec/proto"
 )
+
+var rtpBufPool = sync.Pool{
+		New: func() any {
+			return make([]byte, 4096)
+		},
+}
 
 // RTPConn wraps a UDP socket for reading and writing RTP packets.
 type RTPConn struct {
@@ -51,15 +58,21 @@ func (c *RTPConn) LocalAddr() net.Addr {
 
 // ReadRTP reads one RTP packet from the socket.
 func (c *RTPConn) ReadRTP() (*proto.RTPPacket, net.Addr, error) {
-	buf := make([]byte, 4096)
+	buf := rtpBufPool.Get().([]byte)
 	n, addr, err := c.conn.ReadFromUDP(buf)
 	if err != nil {
+		rtpBufPool.Put(buf)
 		return nil, nil, err
 	}
 	pkt, err := proto.UnmarshalRTP(buf[:n])
 	if err != nil {
+		rtpBufPool.Put(buf)
 		return nil, nil, err
 	}
+	payload := make([]byte, len(pkt.Payload))
+	copy(payload, pkt.Payload)
+	pkt.Payload = payload
+	rtpBufPool.Put(buf)
 	return &pkt, addr, nil
 }
 
