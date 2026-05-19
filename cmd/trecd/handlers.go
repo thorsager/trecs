@@ -130,7 +130,7 @@ func (h *ServerHandlers) handleOptions(req *proto.SIPMessage, tx sip.Transaction
 	tx.Respond(trying)
 
 	res := proto.NewResponse(req, 200, "OK")
-	res.Headers["Allow"] = []string{"INVITE, ACK, BYE, CANCEL, OPTIONS, REGISTER"}
+	res.Headers["Allow"] = []string{h.server.AllowMethods()}
 	res.Headers["Accept"] = []string{"application/sdp"}
 	res.Headers["Supported"] = []string{"timer"}
 	tx.Respond(res)
@@ -216,7 +216,7 @@ func (h *ServerHandlers) handleEchoInvite(req *proto.SIPMessage, tx sip.Transact
 	sdpBytes, _ := sdpBody.Marshal()
 	res.Body = sdpBytes
 	res.Headers.Set("Content-Type", []string{"application/sdp"})
-	res.Headers["Allow"] = []string{"INVITE, ACK, BYE, CANCEL, OPTIONS, REGISTER"}
+	res.Headers["Allow"] = []string{h.server.AllowMethods()}
 
 	tx.Respond(res)
 
@@ -789,7 +789,7 @@ func (h *ServerHandlers) handleBye(req *proto.SIPMessage, tx sip.Transaction) {
 	}
 
 	res := proto.NewResponse(req, 200, "OK")
-	res.Headers["Allow"] = []string{"INVITE, ACK, BYE, CANCEL, OPTIONS, REGISTER"}
+	res.Headers["Allow"] = []string{h.server.AllowMethods()}
 	tx.Respond(res)
 }
 

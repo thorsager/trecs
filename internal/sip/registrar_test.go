@@ -79,9 +79,6 @@ func TestRegistrar_RegisterSingleContact(t *testing.T) {
 	if res.Headers.GetFirst("Date") == "" {
 		t.Fatal("missing Date header")
 	}
-	if res.Headers.GetFirst("Allow") == "" {
-		t.Fatal("missing Allow header")
-	}
 }
 
 func TestRegistrar_QueryBindings(t *testing.T) {
@@ -727,36 +724,6 @@ func TestRegistrar_IndependentCSeqPerCallID(t *testing.T) {
 		"Content-Length: 0\r\n\r\n"), tx5)
 	if tx5.last().StatusCode() != 200 {
 		t.Fatalf("call-a CSeq 5: expected 200, got %d", tx5.last().StatusCode())
-	}
-}
-
-// RFC 3261 §10.3: The response MUST include an Allow header listing
-// REGISTER among the supported methods.
-func TestRegistrar_ResponseAllowIncludesREGISTER(t *testing.T) {
-	reg := NewRegistrar()
-	tx := &mockTx{}
-
-	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
-		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
-		"From: <sip:alice@example.com>;tag=abc\r\n" +
-		"To: <sip:alice@example.com>\r\n" +
-		"Call-ID: call-1\r\n" +
-		"CSeq: 1 REGISTER\r\n" +
-		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
-		"Content-Length: 0\r\n\r\n")
-
-	reg.HandleRegister(req, tx)
-
-	res := tx.last()
-	allow := res.Headers.GetFirst("Allow")
-	if allow == "" {
-		t.Fatal("missing Allow header")
-	}
-	if !strings.Contains(allow, "REGISTER") {
-		t.Fatalf("Allow header %q does not list REGISTER", allow)
-	}
-	if !strings.Contains(allow, "INVITE") || !strings.Contains(allow, "OPTIONS") {
-		t.Fatalf("Allow header %q should include INVITE and OPTIONS", allow)
 	}
 }
 

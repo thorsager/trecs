@@ -196,7 +196,6 @@ func (r *Registrar) HandleRegister(req *proto.SIPMessage, tx Transaction) {
 func sendRegisterResponse(req *proto.SIPMessage, tx Transaction, bindings []*Binding) {
 	res := proto.NewResponse(req, 200, "OK")
 	res.Headers.Add("Date", time.Now().UTC().Format(time.RFC1123))
-	res.Headers.Add("Allow", "INVITE, ACK, BYE, CANCEL, OPTIONS, REGISTER")
 
 	var minExpires int = -1
 	for _, b := range bindings {

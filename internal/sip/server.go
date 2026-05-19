@@ -2,6 +2,8 @@ package sip
 
 import (
 	"log"
+	"sort"
+	"strings"
 	"sync"
 
 	"gitub.com/thorsager/trec/proto"
@@ -52,6 +54,21 @@ func (s *Server) On(method proto.SIPMethod, fn RequestHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.handlers[method] = fn
+}
+
+// AllowMethods returns the comma-separated list of SIP methods that have
+// handlers registered on this server. ACK is included since it is handled
+// via OnAck. The list is sorted for deterministic output.
+func (s *Server) AllowMethods() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	methods := make([]string, 0, len(s.handlers)+1)
+	for m := range s.handlers {
+		methods = append(methods, string(m))
+	}
+	methods = append(methods, string(proto.SIPMethodACK))
+	sort.Strings(methods)
+	return strings.Join(methods, ", ")
 }
 
 // OnAck registers a callback for incoming ACK requests. The callback is
