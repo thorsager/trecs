@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"gitub.com/thorsager/trec/internal/b2bua"
 	"gitub.com/thorsager/trec/internal/media"
 	"gitub.com/thorsager/trec/internal/sip"
 	"gitub.com/thorsager/trec/proto"
@@ -33,8 +34,6 @@ func main() {
 	defer stop()
 
 	if flagRTPMin > 0 && flagRTPMax > 0 && flagRTPMax >= flagRTPMin {
-		media.RTPPortMin = flagRTPMin
-		media.RTPPortMax = flagRTPMax
 		log.Printf("RTP port range: %d-%d", flagRTPMin, flagRTPMax)
 	} else {
 		log.Printf("RTP port range: OS-assigned")
@@ -50,23 +49,23 @@ func main() {
 
 	server.SetFlowDeadCallback(reg.RemoveBindingsByFlowID)
 
-	h := &ServerHandlers{
-		reg:        reg,
-		sm:         media.NewSessionManager(),
-		server:     server,
-		serverIP:   serverIP,
-		serverAddr: flagAddr,
-		uacMgr:     sip.NewUACManager(),
-		b2buaCalls: make(map[string]*B2BUACall),
-		b2buaByBob: make(map[string]string),
-	}
+	h := b2bua.NewHandler(b2bua.Config{
+		Registrar:      reg,
+		SessionManager: media.NewSessionManager(),
+		Server:         server,
+		ServerIP:       serverIP,
+		ServerAddr:     flagAddr,
+		UACManager:     sip.NewUACManager(),
+		RTPPortMin:     flagRTPMin,
+		RTPPortMax:     flagRTPMax,
+	})
 
 	server.On(proto.SIPMethodREGISTER, reg.HandleRegister)
-	server.On(proto.SIPMethodOPTIONS, h.handleOptions)
-	server.On(proto.SIPMethodINVITE, h.handleInvite)
-	server.On(proto.SIPMethodBYE, h.handleBye)
-	server.OnAck(h.handleAck)
-	server.OnResponse(h.handleResponse)
+	server.On(proto.SIPMethodOPTIONS, h.HandleOptions)
+	server.On(proto.SIPMethodINVITE, h.HandleInvite)
+	server.On(proto.SIPMethodBYE, h.HandleBye)
+	server.OnAck(h.HandleAck)
+	server.OnResponse(h.HandleResponse)
 
 	server.Start()
 	defer server.Close()

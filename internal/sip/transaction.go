@@ -24,7 +24,7 @@ type Transaction interface {
 // RequestHandler processes a SIP request within a transaction.
 type RequestHandler func(req *proto.SIPMessage, tx Transaction)
 
-func transportName(t Transport) string {
+func TransportName(t Transport) string {
 	switch t.(type) {
 	case *TCPTransport:
 		return "TCP"
@@ -91,7 +91,7 @@ func (tx *NonInviteTransaction) Respond(res *proto.SIPMessage) {
 	case sc >= 100 && sc < 200:
 		if tx.state == NISTTrying {
 			tx.state = NISTProceeding
-			log.Printf("[%s] NIST %s → Proceeding (1xx)", transportName(tx.transport), tx.branch)
+			log.Printf("[%s] NIST %s → Proceeding (1xx)", TransportName(tx.transport), tx.branch)
 		}
 		tx.doSend(res)
 
@@ -99,7 +99,7 @@ func (tx *NonInviteTransaction) Respond(res *proto.SIPMessage) {
 		tx.lastResp = res
 		prev := tx.state
 		tx.state = NISTCompleted
-		log.Printf("[%s] NIST %s → Completed (%d) [from %s]", transportName(tx.transport), tx.branch, sc, prev)
+		log.Printf("[%s] NIST %s → Completed (%d) [from %s]", TransportName(tx.transport), tx.branch, sc, prev)
 		tx.doSend(res)
 
 		if !tx.reliable {
@@ -111,7 +111,7 @@ func (tx *NonInviteTransaction) Respond(res *proto.SIPMessage) {
 				tx.manager.mu.Lock()
 				delete(tx.manager.serverTxs, tx.branch)
 				tx.manager.mu.Unlock()
-				log.Printf("[%s] NIST %s terminated (Timer J)", transportName(tx.transport), tx.branch)
+				log.Printf("[%s] NIST %s terminated (Timer J)", TransportName(tx.transport), tx.branch)
 			})
 		} else {
 			tx.timerJ = time.AfterFunc(0, func() {
@@ -128,7 +128,7 @@ func (tx *NonInviteTransaction) Respond(res *proto.SIPMessage) {
 
 func (tx *NonInviteTransaction) doSend(res *proto.SIPMessage) {
 	if err := tx.transport.Send(res, &tx.target); err != nil {
-		log.Printf("[%s] Send error on %s: %v", transportName(tx.transport), tx.branch, err)
+		log.Printf("[%s] Send error on %s: %v", TransportName(tx.transport), tx.branch, err)
 	}
 }
 
@@ -209,13 +209,13 @@ func (tx *InviteTransaction) Respond(res *proto.SIPMessage) {
 		}
 		if tx.state == ISTTrying || tx.state == ISTProceeding {
 			tx.state = ISTProceeding
-			log.Printf("[%s] IST %s → Proceeding (1xx)", transportName(tx.transport), tx.branch)
+			log.Printf("[%s] IST %s → Proceeding (1xx)", TransportName(tx.transport), tx.branch)
 			tx.doSend(res)
 		}
 
 	case sc >= 200 && sc < 300:
 		tx.state = ISTTerminated
-		log.Printf("[%s] IST %s → Terminated (2xx)", transportName(tx.transport), tx.branch)
+		log.Printf("[%s] IST %s → Terminated (2xx)", TransportName(tx.transport), tx.branch)
 		tx.doSend(res)
 
 		tx.manager.mu.Lock()
@@ -226,7 +226,7 @@ func (tx *InviteTransaction) Respond(res *proto.SIPMessage) {
 		tx.lastResp = res
 		if tx.state != ISTCompleted {
 			tx.state = ISTCompleted
-			log.Printf("[%s] IST %s → Completed (%d)", transportName(tx.transport), tx.branch, sc)
+			log.Printf("[%s] IST %s → Completed (%d)", TransportName(tx.transport), tx.branch, sc)
 			tx.doSend(res)
 
 			tx.timerH = time.AfterFunc(64*T1, func() {
@@ -238,7 +238,7 @@ func (tx *InviteTransaction) Respond(res *proto.SIPMessage) {
 				tx.manager.mu.Lock()
 				delete(tx.manager.serverTxs, tx.branch)
 				tx.manager.mu.Unlock()
-				log.Printf("[%s] IST %s terminated (Timer H)", transportName(tx.transport), tx.branch)
+				log.Printf("[%s] IST %s terminated (Timer H)", TransportName(tx.transport), tx.branch)
 			})
 
 			if !tx.reliable {
@@ -260,7 +260,7 @@ func (tx *InviteTransaction) ackReceived() {
 
 	tx.state = ISTConfirmed
 	tx.stopTimers()
-		log.Printf("[%s] IST %s → Confirmed (ACK)", transportName(tx.transport), tx.branch)
+		log.Printf("[%s] IST %s → Confirmed (ACK)", TransportName(tx.transport), tx.branch)
 
 	if !tx.reliable {
 		tx.timerI = time.AfterFunc(T4, func() {
@@ -271,7 +271,7 @@ func (tx *InviteTransaction) ackReceived() {
 			tx.manager.mu.Lock()
 			delete(tx.manager.serverTxs, tx.branch)
 			tx.manager.mu.Unlock()
-			log.Printf("[%s] IST %s terminated (Timer I)", transportName(tx.transport), tx.branch)
+			log.Printf("[%s] IST %s terminated (Timer I)", TransportName(tx.transport), tx.branch)
 		})
 	} else {
 		tx.state = ISTTerminated
@@ -318,7 +318,7 @@ func (tx *InviteTransaction) scheduleTimerG() {
 
 func (tx *InviteTransaction) doSend(res *proto.SIPMessage) {
 	if err := tx.transport.Send(res, &tx.target); err != nil {
-		log.Printf("[%s] Send error on %s: %v", transportName(tx.transport), tx.branch, err)
+		log.Printf("[%s] Send error on %s: %v", TransportName(tx.transport), tx.branch, err)
 	}
 }
 
@@ -379,7 +379,7 @@ func (tm *TransactionManager) HandleRequest(ev MessageEvent, transport Transport
 			state:     ISTTrying,
 			reliable:  reliable,
 		}
-		log.Printf("[%s] New INVITE transaction [%s] → Trying", transportName(transport), branch)
+		log.Printf("[%s] New INVITE transaction [%s] → Trying", TransportName(transport), branch)
 	default:
 		tx = &NonInviteTransaction{
 			branch:    branch,
@@ -390,7 +390,7 @@ func (tm *TransactionManager) HandleRequest(ev MessageEvent, transport Transport
 			state:     NISTTrying,
 			reliable:  reliable,
 		}
-		log.Printf("[%s] New %s transaction [%s] → Trying", transportName(transport), ev.Msg.Method(), branch)
+		log.Printf("[%s] New %s transaction [%s] → Trying", TransportName(transport), ev.Msg.Method(), branch)
 	}
 
 	tm.mu.Lock()
@@ -408,14 +408,14 @@ func (tm *TransactionManager) handleRetransmission(tx Transaction) {
 		t.mu.Lock()
 		defer t.mu.Unlock()
 		if t.state == NISTCompleted && t.lastResp != nil {
-			log.Printf("[%s] Retransmission of %s, re-sending final response", transportName(t.transport), t.method)
+			log.Printf("[%s] Retransmission of %s, re-sending final response", TransportName(t.transport), t.method)
 			t.transport.Send(t.lastResp, &t.target)
 		}
 	case *InviteTransaction:
 		t.mu.Lock()
 		defer t.mu.Unlock()
 		if t.state == ISTCompleted && t.lastResp != nil {
-			log.Printf("[%s] Retransmission of INVITE, re-sending final response", transportName(t.transport))
+			log.Printf("[%s] Retransmission of INVITE, re-sending final response", TransportName(t.transport))
 			t.transport.Send(t.lastResp, &t.target)
 		}
 	}

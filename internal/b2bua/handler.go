@@ -1,131 +1,59 @@
-package main
+package b2bua
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
-	"strings"
-	"sync"
 
 	"gitub.com/thorsager/trec/internal/media"
-	"gitub.com/thorsager/trec/internal/session"
 	"gitub.com/thorsager/trec/internal/sip"
 	"gitub.com/thorsager/trec/proto"
 )
 
-type B2BUACall struct {
-	AliceCallID    string
-	BobCallID      string
-	Bridge         *media.Bridge
-	AliceSess      *media.Session
-	BobSess        *media.Session
-	BobConn        net.Conn
-	BobRTPAddr     net.Addr
-	BridgeReady    bool
-
-	BobContactURI  string
-	BobTransport   sip.Transport
-	BobTarget      *sip.Target
-	BobCalleeTag   string
-	BobRemoteTag   string
-	AliceFromTag   string
-	AliceServerTag string
-	AliceContactURI string
-	AliceTarget    *sip.Target
-
-	AliceDialog    *session.Dialog
-	BobDialog      *session.Dialog
-	AliceTransport sip.Transport
+// Config holds the dependencies needed to create a B2BUA handler.
+type Config struct {
+	Registrar      *sip.Registrar
+	SessionManager *media.SessionManager
+	Server         *sip.Server
+	ServerIP       string
+	ServerAddr     string
+	UACManager     *sip.UACManager
+	RTPPortMin     int
+	RTPPortMax     int
 }
 
-type ServerHandlers struct {
-	reg        *sip.Registrar
-	sm         *media.SessionManager
-	server     *sip.Server
-	serverIP   string
+// Handler implements SIP request handlers for the T-REC B2BUA server,
+// including echo service, B2BUA call bridging, and call teardown.
+type Handler struct {
+	reg      *sip.Registrar
+	sm       *media.SessionManager
+	server   *sip.Server
+	serverIP string
 	serverAddr string
-	uacMgr     *sip.UACManager
-
-	b2buaCalls map[string]*B2BUACall
-	b2buaByBob map[string]string
-	b2buaMu    sync.Mutex
+	uacMgr   *sip.UACManager
+	rtpMin   int
+	rtpMax   int
+	store    *Store
 }
 
-func (h *ServerHandlers) storeB2BUACall(call *B2BUACall) {
-	h.b2buaMu.Lock()
-	defer h.b2buaMu.Unlock()
-	h.b2buaCalls[call.AliceCallID] = call
-	h.b2buaByBob[call.BobCallID] = call.AliceCallID
-}
-
-func (h *ServerHandlers) getB2BUACall(callID string) *B2BUACall {
-	h.b2buaMu.Lock()
-	defer h.b2buaMu.Unlock()
-	if c := h.b2buaCalls[callID]; c != nil {
-		return c
-	}
-	if aid := h.b2buaByBob[callID]; aid != "" {
-		return h.b2buaCalls[aid]
-	}
-	return nil
-}
-
-func (h *ServerHandlers) removeB2BUACall(aliceCID string) {
-	h.b2buaMu.Lock()
-	defer h.b2buaMu.Unlock()
-	call := h.b2buaCalls[aliceCID]
-	if call != nil {
-		delete(h.b2buaByBob, call.BobCallID)
-		delete(h.b2buaCalls, aliceCID)
-		if call.BobConn != nil {
-			call.BobConn.Close()
-		}
+// NewHandler creates a new B2BUA handler with the given configuration.
+func NewHandler(cfg Config) *Handler {
+	return &Handler{
+		reg:        cfg.Registrar,
+		sm:         cfg.SessionManager,
+		server:     cfg.Server,
+		serverIP:   cfg.ServerIP,
+		serverAddr: cfg.ServerAddr,
+		uacMgr:     cfg.UACManager,
+		rtpMin:     cfg.RTPPortMin,
+		rtpMax:     cfg.RTPPortMax,
+		store:      NewStore(),
 	}
 }
 
-func generateTag() string {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		return "trec"
-	}
-	return hex.EncodeToString(b)
-}
-
-func extractUser(uri string) string {
-	uri = strings.TrimPrefix(uri, "sip:")
-	if at := strings.IndexByte(uri, '@'); at >= 0 {
-		return uri[:at]
-	}
-	return ""
-}
-
-// normalizeAOR strips the port from a SIP URI for registrar lookup.
-// The registrar keys by address-of-record (sip:user@host, no port).
-// stripBrackets removes surrounding angle brackets from a URI string.
-// If the string has no brackets it is returned unmodified.
-func stripBrackets(s string) string {
-	if len(s) > 0 && s[0] == '<' {
-		if close := strings.IndexByte(s, '>'); close >= 0 {
-			return s[1:close]
-		}
-	}
-	return s
-}
-
-func normalizeAOR(uri string) string {
-	if at := strings.IndexByte(uri, '@'); at >= 0 {
-		host := uri[at+1:]
-		if colon := strings.IndexByte(host, ':'); colon >= 0 {
-			return uri[:at+1] + host[:colon]
-		}
-	}
-	return uri
-}
-
-func (h *ServerHandlers) handleOptions(req *proto.SIPMessage, tx sip.Transaction) {
+// HandleOptions responds to OPTIONS requests.
+func (h *Handler) HandleOptions(req *proto.SIPMessage, tx sip.Transaction) {
 	trying := proto.NewResponse(req, 100, "Trying")
 	tx.Respond(trying)
 
@@ -136,11 +64,12 @@ func (h *ServerHandlers) handleOptions(req *proto.SIPMessage, tx sip.Transaction
 	tx.Respond(res)
 }
 
-func (h *ServerHandlers) handleInvite(req *proto.SIPMessage, tx sip.Transaction) {
+// HandleInvite dispatches to either echo service or B2BUA call routing.
+func (h *Handler) HandleInvite(req *proto.SIPMessage, tx sip.Transaction) {
 	trying := proto.NewResponse(req, 100, "Trying")
 	tx.Respond(trying)
 
-	user := extractUser(req.RequestURI())
+	user := sip.ExtractUser(req.RequestURI())
 	if user == "echo" {
 		h.handleEchoInvite(req, tx)
 		return
@@ -149,8 +78,8 @@ func (h *ServerHandlers) handleInvite(req *proto.SIPMessage, tx sip.Transaction)
 	h.handleB2BUAInvite(req, tx)
 }
 
-func (h *ServerHandlers) handleEchoInvite(req *proto.SIPMessage, tx sip.Transaction) {
-	serverTag := generateTag()
+func (h *Handler) handleEchoInvite(req *proto.SIPMessage, tx sip.Transaction) {
+	serverTag := sip.GenerateTag()
 
 	var sdpOffer *proto.SDP
 	if len(req.Body) > 0 && req.Headers.GetFirst("Content-Type") == "application/sdp" {
@@ -163,7 +92,7 @@ func (h *ServerHandlers) handleEchoInvite(req *proto.SIPMessage, tx sip.Transact
 		sdpOffer = sdp
 	}
 
-	rtpConn, err := media.NewRTPConn()
+	rtpConn, err := media.NewRTPConnRange(h.rtpMin, h.rtpMax)
 	if err != nil {
 		res := proto.NewResponse(req, 500, "Server Internal Error")
 		tx.Respond(res)
@@ -171,7 +100,7 @@ func (h *ServerHandlers) handleEchoInvite(req *proto.SIPMessage, tx sip.Transact
 	}
 
 	rtpAddr := rtpConn.LocalAddr().(*net.UDPAddr)
-	payloadType := uint8(media.PCMU)
+	payloadType := uint8(proto.PCMU)
 
 	var sdpBody *proto.SDP
 	if sdpOffer != nil {
@@ -225,7 +154,7 @@ func (h *ServerHandlers) handleEchoInvite(req *proto.SIPMessage, tx sip.Transact
 	}
 }
 
-func (h *ServerHandlers) handleB2BUAInvite(req *proto.SIPMessage, tx sip.Transaction) {
+func (h *Handler) handleB2BUAInvite(req *proto.SIPMessage, tx sip.Transaction) {
 	to, err := req.To()
 	if err != nil {
 		res := proto.NewResponse(req, 400, "Bad Request")
@@ -233,7 +162,7 @@ func (h *ServerHandlers) handleB2BUAInvite(req *proto.SIPMessage, tx sip.Transac
 		return
 	}
 
-	aor := normalizeAOR(to.URI)
+	aor := sip.NormalizeAOR(to.URI)
 	bindings := h.reg.GetBindings(aor)
 	if len(bindings) == 0 {
 		log.Printf("B2BUA: no binding for %q (normalized from %q)", aor, to.URI)
@@ -247,7 +176,6 @@ func (h *ServerHandlers) handleB2BUAInvite(req *proto.SIPMessage, tx sip.Transac
 	var transport string
 
 	// Prefer bindings with live TCP flows, then newest bindings.
-	// Bindings without a live connection (stale UDP, dead TCP) are skipped.
 	for i := len(bindings) - 1; i >= 0; i-- {
 		b := bindings[i]
 
@@ -301,20 +229,20 @@ func (h *ServerHandlers) handleB2BUAInvite(req *proto.SIPMessage, tx sip.Transac
 	aliceFromTag := from.Tag
 	if aliceFromTag == "" {
 		log.Printf("B2BUA: missing From tag in INVITE from %s — generating fallback", from.URI)
-		aliceFromTag = generateTag()
+		aliceFromTag = sip.GenerateTag()
 	}
 
 	callID := req.Headers.GetFirst("Call-ID")
-	serverTag := generateTag()
+	serverTag := sip.GenerateTag()
 
-	rtpConnA, err := media.NewRTPConn()
+	rtpConnA, err := media.NewRTPConnRange(h.rtpMin, h.rtpMax)
 	if err != nil {
 		res := proto.NewResponse(req, 500, "Server Internal Error")
 		tx.Respond(res)
 		return
 	}
 
-	rtpConnB, err := media.NewRTPConn()
+	rtpConnB, err := media.NewRTPConnRange(h.rtpMin, h.rtpMax)
 	if err != nil {
 		rtpConnA.Close()
 		res := proto.NewResponse(req, 500, "Server Internal Error")
@@ -346,7 +274,7 @@ func (h *ServerHandlers) handleB2BUAInvite(req *proto.SIPMessage, tx sip.Transac
 		aliceSDPBytes, _ = aliceAnswer.Marshal()
 	}
 
-	calleeTag := generateTag()
+	calleeTag := sip.GenerateTag()
 	bobCallID := sip.GenerateCallID()
 
 	calleeFrom := fmt.Sprintf("<%s>;tag=%s", from.URI, calleeTag)
@@ -386,7 +314,7 @@ func (h *ServerHandlers) handleB2BUAInvite(req *proto.SIPMessage, tx sip.Transac
 		bobInvite, serverPort, binding)
 }
 
-func (h *ServerHandlers) b2buaResponseLoop(
+func (h *Handler) b2buaResponseLoop(
 	req *proto.SIPMessage, tx sip.Transaction,
 	target *sip.Target, transportImpl sip.Transport, uac *sip.UACTransaction,
 	rtpConnA, rtpConnB *media.RTPConn,
@@ -433,8 +361,7 @@ func (h *ServerHandlers) b2buaResponseLoop(
 
 			if sc >= 300 {
 				log.Printf("B2BUA: Bob responded %d %s — forwarding to Alice", sc, resp.Status())
-				status := sc
-				errResp := proto.NewResponse(req, status, resp.Status())
+				errResp := proto.NewResponse(req, sc, resp.Status())
 				tx.Respond(errResp)
 				return
 			}
@@ -447,7 +374,7 @@ func (h *ServerHandlers) b2buaResponseLoop(
 	}
 }
 
-func (h *ServerHandlers) handleBob200OK(
+func (h *Handler) handleBob200OK(
 	resp *proto.SIPMessage, req *proto.SIPMessage, tx sip.Transaction,
 	target *sip.Target, transportImpl sip.Transport,
 	rtpConnA, rtpConnB *media.RTPConn,
@@ -478,7 +405,7 @@ func (h *ServerHandlers) handleBob200OK(
 	ackToBob := proto.NewRequest(proto.SIPMethodACK, binding.ContactURI)
 	ackToBob.Headers.Add("Via",
 		fmt.Sprintf("SIP/2.0/%s %s:%s;branch=%s;rport",
-			transportName(transportImpl), h.serverIP, serverPort, sip.GenerateBranch()))
+			sip.TransportName(transportImpl), h.serverIP, serverPort, sip.GenerateBranch()))
 	ackToBob.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s", from.URI, calleeTag))
 	ackToBob.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s", to.URI, bobTo.Tag))
 	ackToBob.Headers.Add("Call-ID", bobCallID)
@@ -506,7 +433,7 @@ func (h *ServerHandlers) handleBob200OK(
 	alice200.Headers.Set("Content-Type", []string{"application/sdp"})
 	alice200.Headers["Allow"] = []string{"INVITE, ACK, BYE, CANCEL, OPTIONS, REGISTER"}
 	alice200.Headers.Add("Record-Route", recordRoute)
-	aliceContactHeader := fmt.Sprintf("<sip:trec@%s:%s;transport=%s>", h.serverIP, serverPort, transportName(tx.Transport()))
+	aliceContactHeader := fmt.Sprintf("<sip:trec@%s:%s;transport=%s>", h.serverIP, serverPort, sip.TransportName(tx.Transport()))
 	alice200.Headers.Add("Contact", aliceContactHeader)
 	tx.Respond(alice200)
 	log.Printf("B2BUA: sent 200 OK to Alice [%s]", callID)
@@ -538,24 +465,24 @@ func (h *ServerHandlers) handleBob200OK(
 
 	serverContact := fmt.Sprintf("<sip:trec@%s:%s>", h.serverIP, serverPort)
 
-	aliceDialogID := session.DialogID{
+	aliceDialogID := sip.DialogID{
 		CallID:    callID,
 		LocalTag:  serverTag,
 		RemoteTag: aliceFromTag,
 	}
-	aliceDialog := session.NewDialog(aliceDialogID, serverContact, from.URI, aliceContact)
-	aliceDialog.SetState(session.DialogStateConfirmed)
+	aliceDialog := sip.NewDialog(aliceDialogID, serverContact, from.URI, aliceContact)
+	aliceDialog.SetState(sip.DialogStateConfirmed)
 
-	bobDialogID := session.DialogID{
+	bobDialogID := sip.DialogID{
 		CallID:    bobCallID,
 		LocalTag:  calleeTag,
 		RemoteTag: bobTo.Tag,
 	}
-	bobDialog := session.NewDialog(bobDialogID, serverContact, to.URI, binding.ContactURI)
-	bobDialog.SetState(session.DialogStateConfirmed)
+	bobDialog := sip.NewDialog(bobDialogID, serverContact, to.URI, binding.ContactURI)
+	bobDialog.SetState(sip.DialogStateConfirmed)
 
 	aliceTarget := tx.Target()
-	call := &B2BUACall{
+	call := &Call{
 		AliceCallID:     callID,
 		BobCallID:       bobCallID,
 		Bridge:          bridge,
@@ -590,21 +517,13 @@ func (h *ServerHandlers) handleBob200OK(
 		log.Printf("B2BUA: waiting for Alice ACK with SDP (delayed offer)")
 	}
 
-	h.storeB2BUACall(call)
+	h.store.Store(call)
 }
 
-func transportName(t sip.Transport) string {
-	switch t.(type) {
-	case *sip.TCPTransport:
-		return "TCP"
-	default:
-		return "UDP"
-	}
-}
-
-func (h *ServerHandlers) handleAck(msg *proto.SIPMessage, target sip.Target, transport sip.Transport) {
+// HandleAck handles incoming ACK requests, routing to echo or B2BUA.
+func (h *Handler) HandleAck(msg *proto.SIPMessage, target sip.Target, transport sip.Transport) {
 	callID := msg.Headers.GetFirst("Call-ID")
-	if call, err := checkB2BUAAck(h, msg, callID); err == nil && call != nil {
+	if call := h.checkB2BUAAck(msg, callID); call != nil {
 		return
 	}
 
@@ -645,28 +564,25 @@ func (h *ServerHandlers) handleAck(msg *proto.SIPMessage, target sip.Target, tra
 	}
 }
 
-func checkB2BUAAck(h *ServerHandlers, msg *proto.SIPMessage, callID string) (*B2BUACall, error) {
-	h.b2buaMu.Lock()
-	call := h.b2buaCalls[callID]
-	h.b2buaMu.Unlock()
-
+func (h *Handler) checkB2BUAAck(msg *proto.SIPMessage, callID string) *Call {
+	call := h.store.Get(callID)
 	if call == nil {
-		return nil, nil
+		return nil
 	}
 
 	if call.BridgeReady {
-		return call, nil
+		return call
 	}
 
 	if len(msg.Body) == 0 {
 		log.Printf("B2BUA: ACK for %s has no SDP body (delayed offer)", callID)
-		return call, nil
+		return call
 	}
 
 	sdp, err := proto.UnmarshalSDPBytes(msg.Body)
 	if err != nil {
 		log.Printf("B2BUA: failed to parse ACK SDP: %v", err)
-		return call, nil
+		return call
 	}
 
 	clientIP, clientPort := media.ExtractRTPAddr(sdp)
@@ -681,10 +597,11 @@ func checkB2BUAAck(h *ServerHandlers, msg *proto.SIPMessage, callID string) (*B2
 	call.AliceSess.SetState(media.SessionActive)
 	log.Printf("B2BUA: bridge started (delayed offer) for %s", callID)
 
-	return call, nil
+	return call
 }
 
-func (h *ServerHandlers) handleBye(req *proto.SIPMessage, tx sip.Transaction) {
+// HandleBye handles incoming BYE requests, forwarding to the other leg.
+func (h *Handler) HandleBye(req *proto.SIPMessage, tx sip.Transaction) {
 	trying := proto.NewResponse(req, 100, "Trying")
 	tx.Respond(trying)
 
@@ -695,14 +612,14 @@ func (h *ServerHandlers) handleBye(req *proto.SIPMessage, tx sip.Transaction) {
 		serverPort = "5060"
 	}
 
-	call := h.getB2BUACall(callID)
+	call := h.store.Get(callID)
 	if call != nil {
 		log.Printf("B2BUA: BYE for %s — forwarding to other leg", callID)
 		call.Bridge.Stop()
 
 		isFromAlice := callID == call.AliceCallID
 
-		var dlg *session.Dialog
+		var dlg *sip.Dialog
 		var fwdTransport sip.Transport
 		var fwdTargetObj *sip.Target
 		var fwdRequestURI string
@@ -710,13 +627,13 @@ func (h *ServerHandlers) handleBye(req *proto.SIPMessage, tx sip.Transaction) {
 
 		if isFromAlice {
 			dlg = call.BobDialog
-			fwdRequestURI = stripBrackets(call.BobContactURI)
+			fwdRequestURI = sip.StripBrackets(call.BobContactURI)
 			fwdTransport = call.BobTransport
 			fwdTargetObj = call.BobTarget
-			viaTransport = transportName(fwdTransport)
+			viaTransport = sip.TransportName(fwdTransport)
 		} else {
 			dlg = call.AliceDialog
-			fwdRequestURI = stripBrackets(call.AliceContactURI)
+			fwdRequestURI = sip.StripBrackets(call.AliceContactURI)
 			fwdTargetObj = call.AliceTarget
 			if fwdTargetObj == nil {
 				var err error
@@ -727,7 +644,7 @@ func (h *ServerHandlers) handleBye(req *proto.SIPMessage, tx sip.Transaction) {
 				}
 			}
 			fwdTransport = call.AliceTransport
-			viaTransport = transportName(fwdTransport)
+			viaTransport = sip.TransportName(fwdTransport)
 		}
 
 		fwdBye := proto.NewRequest(proto.SIPMethodBYE, fwdRequestURI)
@@ -735,9 +652,9 @@ func (h *ServerHandlers) handleBye(req *proto.SIPMessage, tx sip.Transaction) {
 			fmt.Sprintf("SIP/2.0/%s %s:%s;branch=%s",
 				viaTransport, h.serverIP, serverPort, sip.GenerateBranch()))
 		fwdBye.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s",
-			stripBrackets(dlg.LocalURI), dlg.ID.LocalTag))
+			sip.StripBrackets(dlg.LocalURI), dlg.ID.LocalTag))
 		fwdBye.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s",
-			stripBrackets(dlg.RemoteURI), dlg.ID.RemoteTag))
+			sip.StripBrackets(dlg.RemoteURI), dlg.ID.RemoteTag))
 		fwdBye.Headers.Add("Call-ID", dlg.ID.CallID)
 		fwdBye.CSeq = proto.CSeq{Method: proto.SIPMethodBYE, Seq: 2}
 		fwdBye.Headers.Add("Max-Forwards", "70")
@@ -750,10 +667,10 @@ func (h *ServerHandlers) handleBye(req *proto.SIPMessage, tx sip.Transaction) {
 		}
 
 		if call.AliceDialog != nil {
-			call.AliceDialog.SetState(session.DialogStateTerminated)
+			call.AliceDialog.SetState(sip.DialogStateTerminated)
 		}
 		if call.BobDialog != nil {
-			call.BobDialog.SetState(session.DialogStateTerminated)
+			call.BobDialog.SetState(sip.DialogStateTerminated)
 		}
 
 		if call.BobSess != nil {
@@ -767,7 +684,7 @@ func (h *ServerHandlers) handleBye(req *proto.SIPMessage, tx sip.Transaction) {
 			h.sm.Remove(call.AliceSess.Key)
 		}
 
-		h.removeB2BUACall(call.AliceCallID)
+		h.store.Remove(call.AliceCallID)
 	} else {
 		from, err := req.From()
 		if err == nil {
@@ -793,6 +710,7 @@ func (h *ServerHandlers) handleBye(req *proto.SIPMessage, tx sip.Transaction) {
 	tx.Respond(res)
 }
 
-func (h *ServerHandlers) handleResponse(msg *proto.SIPMessage, target sip.Target, transport sip.Transport) {
+// HandleResponse routes incoming SIP responses to the UAC manager.
+func (h *Handler) HandleResponse(msg *proto.SIPMessage, target sip.Target, transport sip.Transport) {
 	h.uacMgr.HandleResponse(msg)
 }

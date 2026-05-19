@@ -91,24 +91,20 @@ func PickPayloadType(offer *proto.SDP) uint8 {
 			if err != nil {
 				continue
 			}
-			if pt == PCMU {
-				return PCMU
+			if pt == proto.PCMU {
+				return proto.PCMU
 			}
-			if pt == PCMA {
-				best = PCMA
+			if pt == proto.PCMA {
+				best = proto.PCMA
 			}
 		}
 	}
 	if best != math.MaxUint8 {
 		return best
 	}
-	return PCMU
+	return proto.PCMU
 }
 
-const (
-	PCMU = 0
-	PCMA = 8
-)
 
 // ExtractRTPAddr extracts the IP address and port from an SDP for the first
 // audio media line.

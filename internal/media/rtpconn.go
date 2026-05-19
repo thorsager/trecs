@@ -8,29 +8,33 @@ import (
 	"gitub.com/thorsager/trec/proto"
 )
 
-var (
-	RTPPortMin = 0
-	RTPPortMax = 0
-)
-
 // RTPConn wraps a UDP socket for reading and writing RTP packets.
 type RTPConn struct {
 	conn *net.UDPConn
 }
 
-// NewRTPConn binds a UDP socket for RTP media. If RTPPortMin/RTPPortMax
-// are set (non-zero), it tries ports within that range; otherwise it uses
-// a random OS-assigned port.
+// NewRTPConn binds a UDP socket for RTP media using an OS-assigned port.
 func NewRTPConn() (*RTPConn, error) {
-	if RTPPortMin > 0 && RTPPortMax > 0 && RTPPortMax >= RTPPortMin {
-		for port := RTPPortMin; port <= RTPPortMax; port++ {
+	addr := &net.UDPAddr{IP: net.IPv4zero, Port: 0}
+	conn, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return &RTPConn{conn: conn}, nil
+}
+
+// NewRTPConnRange binds a UDP socket for RTP media within the given port range.
+// If the range is invalid (min > max) or both are 0, an OS-assigned port is used.
+func NewRTPConnRange(min, max int) (*RTPConn, error) {
+	if min > 0 && max > 0 && max >= min {
+		for port := min; port <= max; port++ {
 			addr := &net.UDPAddr{IP: net.IPv4zero, Port: port}
 			conn, err := net.ListenUDP("udp", addr)
 			if err == nil {
 				return &RTPConn{conn: conn}, nil
 			}
 		}
-		return nil, fmt.Errorf("no available RTP port in range %d-%d", RTPPortMin, RTPPortMax)
+		return nil, fmt.Errorf("no available RTP port in range %d-%d", min, max)
 	}
 	addr := &net.UDPAddr{IP: net.IPv4zero, Port: 0}
 	conn, err := net.ListenUDP("udp", addr)

@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"time"
 
@@ -99,7 +98,7 @@ func (u *UACTransaction) Send(req *proto.SIPMessage) error {
 	if err := u.transport.Send(req, u.target); err != nil {
 		return err
 	}
-	log.Printf("[%s] UAC %s → Calling (sent %s)", transportName(u.transport), u.Branch, u.Method)
+	log.Printf("[%s] UAC %s → Calling (sent %s)", TransportName(u.transport), u.Branch, u.Method)
 
 	if !u.reliable {
 		u.startTimerA()
@@ -127,7 +126,7 @@ func (u *UACTransaction) HandleResponse(msg *proto.SIPMessage) {
 				u.timerA.Stop()
 				u.timerA = nil
 			}
-			log.Printf("[%s] UAC %s → Proceeding (%d)", transportName(u.transport), u.Branch, sc)
+			log.Printf("[%s] UAC %s → Proceeding (%d)", TransportName(u.transport), u.Branch, sc)
 		}
 		select {
 		case u.Responses <- msg:
@@ -137,7 +136,7 @@ func (u *UACTransaction) HandleResponse(msg *proto.SIPMessage) {
 	case sc >= 200 && sc < 300:
 		if u.state == UACStateCalling || u.state == UACStateProceeding {
 			u.transitionToCompleted()
-			log.Printf("[%s] UAC %s → Completed (%d)", transportName(u.transport), u.Branch, sc)
+			log.Printf("[%s] UAC %s → Completed (%d)", TransportName(u.transport), u.Branch, sc)
 		}
 		select {
 		case u.Responses <- msg:
@@ -147,7 +146,7 @@ func (u *UACTransaction) HandleResponse(msg *proto.SIPMessage) {
 	case sc >= 300:
 		if u.state == UACStateCalling || u.state == UACStateProceeding {
 			u.transitionToCompleted()
-			log.Printf("[%s] UAC %s → Completed (%d)", transportName(u.transport), u.Branch, sc)
+			log.Printf("[%s] UAC %s → Completed (%d)", TransportName(u.transport), u.Branch, sc)
 			if u.Method == proto.SIPMethodINVITE {
 				u.sendACK(msg)
 			}
@@ -178,7 +177,7 @@ func (u *UACTransaction) transitionToCompleted() {
 		u.stateMu.Lock()
 		u.state = UACStateTerminated
 		u.stateMu.Unlock()
-		log.Printf("[%s] UAC %s terminated (Timer D)", transportName(u.transport), u.Branch)
+		log.Printf("[%s] UAC %s terminated (Timer D)", TransportName(u.transport), u.Branch)
 		if u.manager != nil {
 			u.manager.Deregister(u.Branch)
 		}
@@ -202,11 +201,11 @@ func (u *UACTransaction) scheduleTimerA() {
 			return
 		}
 		if err := u.transport.Send(u.request, u.target); err != nil {
-			log.Printf("[%s] UAC retransmit error on %s: %v", transportName(u.transport), u.Branch, err)
+			log.Printf("[%s] UAC retransmit error on %s: %v", TransportName(u.transport), u.Branch, err)
 			u.stateMu.Unlock()
 			return
 		}
-		log.Printf("[%s] UAC %s retransmit #%d", transportName(u.transport), u.Branch, u.retxCount+1)
+		log.Printf("[%s] UAC %s retransmit #%d", TransportName(u.transport), u.Branch, u.retxCount+1)
 		u.retxCount++
 		u.stateMu.Unlock()
 		u.scheduleTimerA()
@@ -222,7 +221,7 @@ func (u *UACTransaction) startTimerB() {
 			u.timerA = nil
 		}
 		u.stateMu.Unlock()
-		log.Printf("[%s] UAC %s terminated (Timer B)", transportName(u.transport), u.Branch)
+		log.Printf("[%s] UAC %s terminated (Timer B)", TransportName(u.transport), u.Branch)
 		select {
 		case u.Errors <- TimeoutError{Method: u.Method}:
 		default:
@@ -238,18 +237,12 @@ func (u *UACTransaction) startTimerB() {
 func (u *UACTransaction) sendACK(resp *proto.SIPMessage) {
 	ackURI := u.request.RequestURI()
 	if contact := resp.Headers.GetFirst("Contact"); contact != "" {
-		uri := contact
-		if len(uri) > 0 && uri[0] == '<' {
-			if close := strings.IndexByte(uri, '>'); close >= 0 {
-				uri = uri[1:close]
-			}
-		}
-		ackURI = uri
+		ackURI = StripBrackets(contact)
 	}
 
 	ack := proto.NewRequest(proto.SIPMethodACK, ackURI)
 	ack.Headers.Add("Via", fmt.Sprintf("SIP/2.0/%s %s;branch=%s",
-		transportName(u.transport), u.request.ViaSentBy(), u.Branch))
+		TransportName(u.transport), u.request.ViaSentBy(), u.Branch))
 	if fromVals := u.request.Headers["From"]; len(fromVals) > 0 {
 		ack.Headers.Add("From", fromVals[0])
 	}
@@ -262,9 +255,9 @@ func (u *UACTransaction) sendACK(resp *proto.SIPMessage) {
 	ack.Headers.Add("Content-Length", "0")
 
 	if err := u.transport.Send(ack, u.target); err != nil {
-		log.Printf("[%s] UAC %s ACK send error: %v", transportName(u.transport), u.Branch, err)
+		log.Printf("[%s] UAC %s ACK send error: %v", TransportName(u.transport), u.Branch, err)
 	} else {
-		log.Printf("[%s] UAC %s ACK sent for %d response", transportName(u.transport), u.Branch, resp.StatusCode())
+		log.Printf("[%s] UAC %s ACK sent for %d response", TransportName(u.transport), u.Branch, resp.StatusCode())
 	}
 }
 

@@ -626,11 +626,7 @@ func TestRTPConn_ReadAfterClose(t *testing.T) {
 }
 
 func TestRTPConn_PortRange(t *testing.T) {
-	origMin, origMax := media.RTPPortMin, media.RTPPortMax
-	media.RTPPortMin, media.RTPPortMax = 20000, 20010
-	defer func() { media.RTPPortMin, media.RTPPortMax = origMin, origMax }()
-
-	c, err := media.NewRTPConn()
+	c, err := media.NewRTPConnRange(20000, 20010)
 	require.NoError(t, err)
 	defer c.Close()
 
@@ -640,13 +636,9 @@ func TestRTPConn_PortRange(t *testing.T) {
 }
 
 func TestRTPConn_PortRangeMultiple(t *testing.T) {
-	origMin, origMax := media.RTPPortMin, media.RTPPortMax
-	media.RTPPortMin, media.RTPPortMax = 20100, 20110
-	defer func() { media.RTPPortMin, media.RTPPortMax = origMin, origMax }()
-
 	var conns []*media.RTPConn
 	for range 5 {
-		c, err := media.NewRTPConn()
+		c, err := media.NewRTPConnRange(20100, 20110)
 		if err != nil {
 			break
 		}
@@ -661,25 +653,17 @@ func TestRTPConn_PortRangeMultiple(t *testing.T) {
 }
 
 func TestRTPConn_PortRangeExhausted(t *testing.T) {
-	origMin, origMax := media.RTPPortMin, media.RTPPortMax
-	media.RTPPortMin, media.RTPPortMax = 20200, 20200
-	defer func() { media.RTPPortMin, media.RTPPortMax = origMin, origMax }()
-
-	c1, err := media.NewRTPConn()
+	c1, err := media.NewRTPConnRange(20200, 20200)
 	require.NoError(t, err)
 	defer c1.Close()
 
-	_, err = media.NewRTPConn()
+	_, err = media.NewRTPConnRange(20200, 20200)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no available RTP port")
 }
 
 func TestRTPConn_PortRangeInvalid(t *testing.T) {
-	origMin, origMax := media.RTPPortMin, media.RTPPortMax
-	media.RTPPortMin, media.RTPPortMax = 100, 1
-	defer func() { media.RTPPortMin, media.RTPPortMax = origMin, origMax }()
-
-	c, err := media.NewRTPConn()
+	c, err := media.NewRTPConnRange(100, 1)
 	require.NoError(t, err)
 	c.Close()
 }
@@ -941,7 +925,7 @@ func createServer(t *testing.T) *sip.Server {
 		}
 
 		rtpAddr := rtpConn.LocalAddr().(*net.UDPAddr)
-		payloadType := uint8(media.PCMU)
+		payloadType := uint8(proto.PCMU)
 
 		var sdpBody *proto.SDP
 		if sdpOffer != nil {

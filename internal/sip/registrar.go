@@ -404,27 +404,6 @@ func splitAddrSpecContact(raw string) (uri string, expires int) {
 	return
 }
 
-// uriHost extracts the host[:port] from a SIP URI like "sip:user@host:port;params".
-func uriHost(uri string) string {
-	uri = strings.TrimPrefix(uri, "sip:")
-	if at := strings.LastIndexByte(uri, '@'); at >= 0 {
-		uri = uri[at+1:]
-	}
-	if semi := strings.IndexByte(uri, ';'); semi >= 0 {
-		uri = uri[:semi]
-	}
-	return uri
-}
-
-// uriHostname extracts just the host (without port) from a SIP URI.
-// Per RFC 3261 §10.2, the registrar domain comparison uses only the host portion.
-func uriHostname(uri string) string {
-	h := uriHost(uri)
-	if colon := strings.IndexByte(h, ':'); colon >= 0 {
-		h = h[:colon]
-	}
-	return h
-}
 
 func removeBinding(bindings []*Binding, contactURI string) []*Binding {
 	for i, b := range bindings {

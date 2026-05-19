@@ -7,7 +7,6 @@ import (
 	"log"
 	"net"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -377,47 +376,6 @@ func (t *TCPTransport) Close() error {
 	return err
 }
 
-func extractSIPURI(contactURI string) (host string, port int, transport string) {
-	transport = "UDP"
-	port = 5060
-
-	uri := contactURI
-	if strings.HasPrefix(strings.ToLower(uri), "sip:") {
-		uri = uri[4:]
-	}
-
-	var params string
-	if semi := strings.IndexByte(uri, ';'); semi >= 0 {
-		params = uri[semi+1:]
-		uri = uri[:semi]
-	}
-
-	if params != "" {
-		for _, p := range strings.Split(params, ";") {
-			p = strings.TrimSpace(p)
-			k, v, ok := strings.Cut(p, "=")
-			if ok && strings.EqualFold(k, "transport") {
-				transport = strings.ToUpper(v)
-			}
-		}
-	}
-
-	if at := strings.IndexByte(uri, '@'); at >= 0 {
-		uri = uri[at+1:]
-	}
-
-	h, p, err := net.SplitHostPort(uri)
-	if err != nil {
-		host = uri
-	} else {
-		host = h
-		if pn, err := strconv.Atoi(p); err == nil {
-			port = pn
-		}
-	}
-
-	return
-}
 
 func TargetFromContact(contactURI string) (*Target, string, error) {
 	host, port, transport := extractSIPURI(contactURI)
