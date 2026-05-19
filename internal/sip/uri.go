@@ -24,18 +24,20 @@ func StripBrackets(s string) string {
 // ExtractUser returns the user part of a SIP URI (sip:user@host ...).
 func ExtractUser(uri string) string {
 	uri = strings.TrimPrefix(uri, "sip:")
-	if at := strings.IndexByte(uri, '@'); at >= 0 {
-		return uri[:at]
+	user, _, found := strings.Cut(uri, "@")
+	if found {
+		return user
 	}
 	return ""
 }
 
 // NormalizeAOR strips the port from a SIP URI for registrar lookup.
 func NormalizeAOR(uri string) string {
-	if at := strings.IndexByte(uri, '@'); at >= 0 {
-		host := uri[at+1:]
-		if colon := strings.IndexByte(host, ':'); colon >= 0 {
-			return uri[:at+1] + host[:colon]
+	before, after, found := strings.Cut(uri, "@")
+	if found {
+		host, _, hasPort := strings.Cut(after, ":")
+		if hasPort {
+			return before + "@" + host
 		}
 	}
 	return uri
@@ -88,7 +90,7 @@ func extractSIPURI(contactURI string) (host string, port int, transport string) 
 	}
 
 	if params != "" {
-		for _, p := range strings.Split(params, ";") {
+		for p := range strings.SplitSeq(params, ";") {
 			p = strings.TrimSpace(p)
 			k, v, ok := strings.Cut(p, "=")
 			if ok && strings.EqualFold(k, "transport") {
