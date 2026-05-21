@@ -1109,3 +1109,314 @@ func BenchmarkParseSIP_CompactHeaders(b *testing.B) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SIP MarshalSize / MarshalCompactSize
+// ---------------------------------------------------------------------------
+
+func BenchmarkSIPMarshalSize_Request(b *testing.B) {
+	msg := sipBenchRequest()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = msg.MarshalSize()
+	}
+}
+
+func BenchmarkSIPMarshalSize_Response(b *testing.B) {
+	msg := sipBenchResponse()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = msg.MarshalSize()
+	}
+}
+
+func BenchmarkSIPMarshalCompactSize_Request(b *testing.B) {
+	msg := sipBenchRequest()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = msg.MarshalCompactSize()
+	}
+}
+
+func BenchmarkSIPMarshalCompactSize_Response(b *testing.B) {
+	msg := sipBenchResponse()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = msg.MarshalCompactSize()
+	}
+}
+
+func BenchmarkSIPString(b *testing.B) {
+	msg := sipBenchRequest()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = msg.String()
+	}
+}
+
+func BenchmarkSIPNewRequest(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = NewRequest(SIPMethodINVITE, "sip:bob@example.com")
+	}
+}
+
+func BenchmarkSIPNewResponse(b *testing.B) {
+	req := sipBenchRequest()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = NewResponse(req, 200, "OK")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RTP Unmarshal — missing cases
+// ---------------------------------------------------------------------------
+
+func BenchmarkParseRTP_TwoByteExtension(b *testing.B) {
+	extData := []byte{0x05, 0x02, 0xDE, 0xAD}
+	data := make([]byte, 12+4+len(extData))
+	data[0] = 0x90
+	data[1] = 96
+	binary.BigEndian.PutUint16(data[2:4], 1)
+	binary.BigEndian.PutUint32(data[4:8], 100)
+	binary.BigEndian.PutUint32(data[8:12], 0xCAFEBABE)
+	binary.BigEndian.PutUint16(data[12:14], 0x1000)
+	binary.BigEndian.PutUint16(data[14:16], 1)
+	copy(data[16:], extData)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := UnmarshalRTP(data)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkParseRTP_WithPadding(b *testing.B) {
+	payload := make([]byte, 160)
+	data := make([]byte, 12+len(payload)+4)
+	data[0] = 0xA0
+	data[1] = 96
+	binary.BigEndian.PutUint16(data[2:4], 1)
+	binary.BigEndian.PutUint32(data[4:8], 100)
+	binary.BigEndian.PutUint32(data[8:12], 0xDEADBEEF)
+	copy(data[12:], payload)
+	data[len(data)-1] = 4
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := UnmarshalRTP(data)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRTPMarshalSize_Minimal(b *testing.B) {
+	p := &RTPPacket{
+		Header: RTPHeader{
+			Version:        2,
+			PayloadType:    0,
+			SequenceNumber: 1,
+			Timestamp:      100,
+			SSRC:           0xDEADBEEF,
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = p.MarshalSize()
+	}
+}
+
+func BenchmarkRTPMarshalSize_WithPayload(b *testing.B) {
+	p := &RTPPacket{
+		Header: RTPHeader{
+			Version:        2,
+			PayloadType:    96,
+			SequenceNumber: 42,
+			Timestamp:      5000,
+			SSRC:           0xAAAAAAAA,
+		},
+		Payload: make([]byte, 160),
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = p.MarshalSize()
+	}
+}
+
+func BenchmarkRTPMarshalTo_WithPadding(b *testing.B) {
+	p := &RTPPacket{
+		Header: RTPHeader{
+			Version:     2,
+			Padding:     true,
+			PaddingSize: 4,
+			PayloadType: 0,
+			SequenceNumber: 1,
+			Timestamp:   0,
+			SSRC:        0x12345678,
+		},
+		Payload: []byte{0x01, 0x02},
+	}
+	buf := make([]byte, p.MarshalSize())
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := p.MarshalTo(buf)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkParseRTP_RoundTrip_Extensions(b *testing.B) {
+	orig := &RTPPacket{
+		Header: RTPHeader{
+			Version:          2,
+			PayloadType:      96,
+			SequenceNumber:   1,
+			Timestamp:        100,
+			SSRC:             0x12345678,
+			Extension:        true,
+			ExtensionProfile: ExtensionProfileOneByte,
+			Extensions: []RTPExtension{
+				{ID: 1, Payload: []byte{0xAA}},
+				{ID: 2, Payload: []byte{0xBB, 0xCC}},
+			},
+		},
+		Payload: []byte{0xFF},
+	}
+	data, err := orig.Marshal()
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := UnmarshalRTP(data)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RTCP Unmarshal — missing cases
+// ---------------------------------------------------------------------------
+
+func BenchmarkParseRTCP_BYE(b *testing.B) {
+	data := make([]byte, 0, 8)
+	data = append(data, putRTCPHeader(false, 1, RTCPTypeBYE, 1)...)
+	data = putU32BEAppend(data, 0xDEADBEEF)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		packets, err := UnmarshalRTCP(data)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(packets) == 0 {
+			b.Fatal("no packets")
+		}
+	}
+}
+
+func BenchmarkParseRTCP_APP(b *testing.B) {
+	data := make([]byte, 0, 16)
+	data = append(data, putRTCPHeader(false, 3, RTCPTypeAPP, 3)...)
+	data = putU32BEAppend(data, 0x55555555)
+	data = append(data, []byte("TEST")...)
+	data = append(data, 0x01, 0x02, 0x03, 0x04)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		packets, err := UnmarshalRTCP(data)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(packets) == 0 {
+			b.Fatal("no packets")
+		}
+	}
+}
+
+func BenchmarkParseRTCP_CompoundFull(b *testing.B) {
+	var compound []byte
+
+	srHdr := putRTCPHeader(false, 1, RTCPTypeSR, 12)
+	compound = append(compound, srHdr...)
+	compound = putU32BEAppend(compound, 0x902f9e2e)
+	compound = putU64BEAppend(compound, 0xdf3cf7581c604540)
+	compound = putU32BEAppend(compound, 0x11223344)
+	compound = putU32BEAppend(compound, 17)
+	compound = putU32BEAppend(compound, 3400)
+	compound = append(compound, makeReceptionReport(0xbc5e9a40, 0, 0, 0x46e1, 273, 0x9f36432, 150137)...)
+
+	sdesHdr := putRTCPHeader(false, 1, RTCPTypeSDES, 3)
+	sdesStart := len(compound)
+	compound = append(compound, sdesHdr...)
+	compound = putU32BEAppend(compound, 0x902f9e2e)
+	compound = append(compound, 0x01, 0x09)
+	compound = append(compound, []byte("user@host")...)
+	compound = append(compound, 0x00)
+	for len(compound)%4 != 0 {
+		compound = append(compound, 0x00)
+	}
+	binary.BigEndian.PutUint16(compound[sdesStart+2:sdesStart+4], uint16((len(compound)-sdesStart)/4-1))
+
+	byeHdr := putRTCPHeader(false, 1, RTCPTypeBYE, 1)
+	compound = append(compound, byeHdr...)
+	compound = putU32BEAppend(compound, 0x902f9e2e)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		packets, err := UnmarshalRTCP(compound)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(packets) == 0 {
+			b.Fatal("no packets")
+		}
+	}
+}
+
+func BenchmarkRTCPMarshalSize_SR(b *testing.B) {
+	p := &SenderReport{SSRC: 0x902f9e2e, NTPTime: 0xdf3cf7581c604540, RTPTime: 0x11223344, PacketCount: 17, OctetCount: 3400}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = p.MarshalSize()
+	}
+}
+
+func BenchmarkRTCPMarshalSize_RR(b *testing.B) {
+	p := &ReceiverReport{
+		SSRC: 0x11111111,
+		Reports: []ReceptionReport{
+			{SSRC: 0xaaaaaaaa, FractionLost: 5, TotalLost: 10, LastSequenceNumber: 54321, Jitter: 100, LastSenderReport: 0xffffffff, Delay: 200},
+			{SSRC: 0xbbbbbbbb, FractionLost: 0, TotalLost: 0, LastSequenceNumber: 9876, Jitter: 50, LastSenderReport: 0, Delay: 0},
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = p.MarshalSize()
+	}
+}
