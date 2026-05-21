@@ -98,7 +98,11 @@ func UnmarshalRTP(data []byte) (RTPPacket, error) {
 		if len(data) < n+extLen {
 			return RTPPacket{}, UnmarshalErrorf("rtp: header too short for extension data")
 		}
-		h.Extensions, _ = unmarshalExtensions(h.ExtensionProfile, data[n:n+extLen])
+		var extErr error
+		h.Extensions, extErr = unmarshalExtensions(h.ExtensionProfile, data[n:n+extLen])
+		if extErr != nil {
+			return RTPPacket{}, extErr
+		}
 		n += extLen
 	}
 
@@ -259,12 +263,24 @@ func (p *RTPPacket) MarshalTo(buf []byte) (int, error) {
 		switch p.Header.ExtensionProfile {
 		case ExtensionProfileOneByte:
 			for _, ext := range p.Header.Extensions {
+				if ext.ID == 0 || ext.ID >= 15 {
+					return 0, UnmarshalErrorf("rtp: one-byte extension ID must be 1-14")
+				}
+				if len(ext.Payload) > 16 {
+					return 0, UnmarshalErrorf("rtp: one-byte extension payload max 16 bytes")
+				}
 				buf[n] = (ext.ID << 4) | (uint8(len(ext.Payload)) - 1)
 				n++
 				n += copy(buf[n:], ext.Payload)
 			}
 		case ExtensionProfileTwoByte:
 			for _, ext := range p.Header.Extensions {
+				if ext.ID == 0 {
+					return 0, UnmarshalErrorf("rtp: two-byte extension ID must be 1-255")
+				}
+				if len(ext.Payload) > 255 {
+					return 0, UnmarshalErrorf("rtp: two-byte extension payload max 255 bytes")
+				}
 				buf[n] = ext.ID
 				n++
 				buf[n] = uint8(len(ext.Payload))
@@ -272,6 +288,9 @@ func (p *RTPPacket) MarshalTo(buf []byte) (int, error) {
 				n += copy(buf[n:], ext.Payload)
 			}
 		default:
+			if len(p.Header.Extensions) > 1 {
+				return 0, UnmarshalErrorf("rtp: profile-defined extension supports only one extension block")
+			}
 			if len(p.Header.Extensions) > 0 {
 				n += copy(buf[n:], p.Header.Extensions[0].Payload)
 			}
@@ -281,9 +300,21 @@ func (p *RTPPacket) MarshalTo(buf []byte) (int, error) {
 		roundedExtSize := ((extSize + 3) / 4) * 4
 		binary.BigEndian.PutUint16(buf[extHeaderStart+2:extHeaderStart+4], uint16(roundedExtSize/4))
 
-		for i := 0; i < roundedExtSize-extSize; i++ {
-			buf[n] = 0
-			n++
+		padCount := roundedExtSize - extSize
+		if padCount > 0 {
+			if p.Header.ExtensionProfile == ExtensionProfileOneByte {
+				buf[n] = 0xF0
+				n++
+				for i := 0; i < padCount-1; i++ {
+					buf[n] = 0
+					n++
+				}
+			} else {
+				for i := 0; i < padCount; i++ {
+					buf[n] = 0
+					n++
+				}
+			}
 		}
 	}
 

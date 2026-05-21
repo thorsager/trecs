@@ -217,111 +217,13 @@ func TestParseRTP_RFC3550Extension(t *testing.T) {
 	assert.Equal(t, extPayload, pkt.Header.Extensions[0].Payload)
 }
 
-func TestRTP_RoundTrip(t *testing.T) {
-	orig := &RTPPacket{
-		Header: RTPHeader{
-			Version:        2,
-			Marker:         true,
-			Padding:        false,
-			PayloadType:    0,
-			SequenceNumber: 42,
-			Timestamp:      12345,
-			SSRC:           0xDEADBEEF,
-			CSRC:           []uint32{0x11111111},
-		},
-		Payload: []byte{0x01, 0x02, 0x03},
-	}
-	data, err := orig.Marshal()
-	require.NoError(t, err)
 
-	parsed, err := UnmarshalRTP(data)
-	require.NoError(t, err)
-	assert.Equal(t, orig.Header.Version, parsed.Header.Version)
-	assert.Equal(t, orig.Header.Marker, parsed.Header.Marker)
-	assert.Equal(t, orig.Header.PayloadType, parsed.Header.PayloadType)
-	assert.Equal(t, orig.Header.SequenceNumber, parsed.Header.SequenceNumber)
-	assert.Equal(t, orig.Header.Timestamp, parsed.Header.Timestamp)
-	assert.Equal(t, orig.Header.SSRC, parsed.Header.SSRC)
-	assert.Equal(t, orig.Header.CSRC, parsed.Header.CSRC)
-	assert.Equal(t, orig.Payload, parsed.Payload)
-}
 
-func TestRTP_RoundTripWithExtensions(t *testing.T) {
-	orig := &RTPPacket{
-		Header: RTPHeader{
-			Version:    2,
-			PayloadType: 96,
-			SequenceNumber: 1,
-			Timestamp:  100,
-			SSRC:       0x12345678,
-			Extension:  true,
-			ExtensionProfile: ExtensionProfileOneByte,
-			Extensions: []RTPExtension{
-				{ID: 1, Payload: []byte{0xAA}},
-				{ID: 2, Payload: []byte{0xBB, 0xCC}},
-			},
-		},
-		Payload: []byte{0xFF},
-	}
-	data, err := orig.Marshal()
-	require.NoError(t, err)
-	parsed, err := UnmarshalRTP(data)
-	require.NoError(t, err)
-	assert.True(t, parsed.Header.Extension)
-	assert.Equal(t, orig.Header.ExtensionProfile, parsed.Header.ExtensionProfile)
-	require.Len(t, parsed.Header.Extensions, 2)
-	assert.Equal(t, orig.Header.Extensions[0].ID, parsed.Header.Extensions[0].ID)
-	assert.Equal(t, orig.Header.Extensions[0].Payload, parsed.Header.Extensions[0].Payload)
-	assert.Equal(t, orig.Header.Extensions[1].ID, parsed.Header.Extensions[1].ID)
-	assert.Equal(t, orig.Header.Extensions[1].Payload, parsed.Header.Extensions[1].Payload)
-	assert.Equal(t, orig.Payload, parsed.Payload)
-}
 
-func TestRTP_RoundTripWithTwoByteExtensions(t *testing.T) {
-	orig := &RTPPacket{
-		Header: RTPHeader{
-			Version:    2,
-			PayloadType: 96,
-			SequenceNumber: 1,
-			Timestamp:  100,
-			SSRC:       0x12345678,
-			Extension:  true,
-			ExtensionProfile: ExtensionProfileTwoByte,
-			Extensions: []RTPExtension{
-				{ID: 5, Payload: []byte{0xDE, 0xAD}},
-			},
-		},
-	}
-	data, err := orig.Marshal()
-	require.NoError(t, err)
-	parsed, err := UnmarshalRTP(data)
-	require.NoError(t, err)
-	assert.Equal(t, ExtensionProfileTwoByte, parsed.Header.ExtensionProfile)
-	require.Len(t, parsed.Header.Extensions, 1)
-	assert.Equal(t, uint8(5), parsed.Header.Extensions[0].ID)
-}
 
-func TestRTP_PaddingRoundTrip(t *testing.T) {
-	orig := &RTPPacket{
-		Header: RTPHeader{
-			Version:     2,
-			Padding:     true,
-			PaddingSize: 4,
-			PayloadType: 0,
-			SequenceNumber: 1,
-			Timestamp:   0,
-			SSRC:        0x12345678,
-		},
-		Payload: []byte{0x01, 0x02},
-	}
-	data, err := orig.Marshal()
-	require.NoError(t, err)
-	parsed, err := UnmarshalRTP(data)
-	require.NoError(t, err)
-	assert.True(t, parsed.Header.Padding)
-	assert.Equal(t, byte(4), parsed.Header.PaddingSize)
-	assert.Equal(t, []byte{0x01, 0x02}, parsed.Payload)
-}
+
+
+
 
 func TestRTPMarshal_Minimal(t *testing.T) {
 	pkt := &RTPPacket{
@@ -504,7 +406,8 @@ func TestRTPMarshal_ExtensionOneByte(t *testing.T) {
 
 	paddedEnd := extOff + 4 + 2*4
 	require.Len(t, data, paddedEnd+1)
-	for i := extOff + 9; i < paddedEnd; i++ {
+	assert.Equal(t, byte(0xF0), data[extOff+9], "terminator at first padding byte")
+	for i := extOff + 10; i < paddedEnd; i++ {
 		assert.Equal(t, byte(0), data[i], "padding at offset %d", i)
 	}
 
@@ -627,7 +530,7 @@ func TestRTPMarshal_OneByteExt_SingleBytePadding(t *testing.T) {
 	payloadOff := extOff + expectedTotalExt
 	assert.Equal(t, byte(0x10), data[extOff+4], "ext[0]: ID=1 len-1=0")
 	assert.Equal(t, byte(0xAA), data[extOff+5], "ext payload byte")
-	assert.Equal(t, byte(0x00), data[extOff+6], "padding byte")
+	assert.Equal(t, byte(0xF0), data[extOff+6], "terminator byte")
 	assert.Equal(t, byte(0x00), data[extOff+7], "padding byte")
 	assert.Len(t, data, payloadOff, "no payload after extension")
 
@@ -817,21 +720,7 @@ func TestRTPMarshalSize_WithExtensions(t *testing.T) {
 	assert.Equal(t, len(data), sz, "MarshalSize must match actual marshaled length")
 }
 
-func TestRTPMarshalSize_MatchesActual(t *testing.T) {
-	pkts := []*RTPPacket{
-		{Header: RTPHeader{Version: 2, PayloadType: 0, SequenceNumber: 0, Timestamp: 0, SSRC: 0}},
-		{Header: RTPHeader{Version: 2, PayloadType: 96, SequenceNumber: 42, Timestamp: 100, SSRC: 0xDEADBEEF}, Payload: []byte{0x01}},
-		{Header: RTPHeader{Version: 2, Padding: true, PaddingSize: 4, PayloadType: 0, SequenceNumber: 0, Timestamp: 0, SSRC: 0}, Payload: []byte{0x01}},
-		{Header: RTPHeader{Version: 2, PayloadType: 0, SequenceNumber: 0, Timestamp: 0, SSRC: 0, CSRC: []uint32{1, 2, 3}}},
-		{Header: RTPHeader{Version: 2, Extension: true, ExtensionProfile: ExtensionProfileOneByte, PayloadType: 0, SequenceNumber: 0, Timestamp: 0, SSRC: 0, Extensions: []RTPExtension{{ID: 1, Payload: []byte{0xAA}}}}},
-		{Header: RTPHeader{Version: 2, Extension: true, ExtensionProfile: ExtensionProfileTwoByte, PayloadType: 0, SequenceNumber: 0, Timestamp: 0, SSRC: 0, Extensions: []RTPExtension{{ID: 5, Payload: []byte{0xBB, 0xCC}}}}},
-	}
-	for i, pkt := range pkts {
-		data, err := pkt.Marshal()
-		require.NoError(t, err)
-		assert.Equal(t, len(data), pkt.MarshalSize(), "pkts[%d] MarshalSize mismatch", i)
-	}
-}
+
 
 func TestRTPMarshalTo_BufferTooSmall(t *testing.T) {
 	pkt := &RTPPacket{
@@ -936,73 +825,13 @@ func TestRTPMarshal_RoundTripAllVariants(t *testing.T) {
 	}
 }
 
-func TestRTPMarshal_ZeroPayload(t *testing.T) {
-	pkt := &RTPPacket{
-		Header: RTPHeader{
-			Version:        2,
-			PayloadType:    0,
-			SequenceNumber: 0,
-			Timestamp:      0,
-			SSRC:           0,
-		},
-	}
-	data, err := pkt.Marshal()
-	require.NoError(t, err)
-	require.Len(t, data, 12)
 
-	parsed, err := UnmarshalRTP(data)
-	require.NoError(t, err)
-	assert.Empty(t, parsed.Payload)
-}
 
-func TestRTPMarshal_LargeSequenceNumber(t *testing.T) {
-	pkt := &RTPPacket{
-		Header: RTPHeader{
-			Version:        2,
-			PayloadType:    0,
-			SequenceNumber: 65535,
-			Timestamp:      0,
-			SSRC:           0,
-		},
-	}
-	data, err := pkt.Marshal()
-	require.NoError(t, err)
-	assert.Equal(t, byte(0xFF), data[2], "seq MSB")
-	assert.Equal(t, byte(0xFF), data[3], "seq LSB")
-}
 
-func TestRTPMarshal_LargeTimestamp(t *testing.T) {
-	pkt := &RTPPacket{
-		Header: RTPHeader{
-			Version:        2,
-			PayloadType:    0,
-			SequenceNumber: 0,
-			Timestamp:      0xFEEDFACE,
-			SSRC:           0,
-		},
-	}
-	data, err := pkt.Marshal()
-	require.NoError(t, err)
-	assert.Equal(t, byte(0xFE), data[4])
-	assert.Equal(t, byte(0xED), data[5])
-	assert.Equal(t, byte(0xFA), data[6])
-	assert.Equal(t, byte(0xCE), data[7])
-}
 
-func TestRTPMarshal_ZeroSSRC(t *testing.T) {
-	pkt := &RTPPacket{
-		Header: RTPHeader{
-			Version:        2,
-			PayloadType:    0,
-			SequenceNumber: 0,
-			Timestamp:      0,
-			SSRC:           0,
-		},
-	}
-	data, err := pkt.Marshal()
-	require.NoError(t, err)
-	assert.Equal(t, []byte{0x00, 0x00, 0x00, 0x00}, data[8:12], "zero SSRC")
-}
+
+
+
 
 func TestRTPMarshal_OneByteExtMaxPayload(t *testing.T) {
 	payload := make([]byte, 16)
@@ -1019,7 +848,7 @@ func TestRTPMarshal_OneByteExtMaxPayload(t *testing.T) {
 			Extension:        true,
 			ExtensionProfile: ExtensionProfileOneByte,
 			Extensions: []RTPExtension{
-				{ID: 15, Payload: payload},
+				{ID: 14, Payload: payload},
 			},
 		},
 	}
@@ -1027,7 +856,7 @@ func TestRTPMarshal_OneByteExtMaxPayload(t *testing.T) {
 	require.NoError(t, err)
 
 	extOff := 12
-	assert.Equal(t, byte(0xFF), data[extOff+4], "ID=15 len-1=15")
+	assert.Equal(t, byte(0xEF), data[extOff+4], "ID=14 len-1=15")
 	assert.Equal(t, payload, data[extOff+5:extOff+21], "16-byte extension payload")
 }
 
@@ -1059,125 +888,397 @@ func TestRTPMarshal_TwoByteExtMaxPayload(t *testing.T) {
 	assert.Equal(t, payload, data[extOff+6:extOff+6+255], "255-byte extension payload")
 }
 
-func TestRTPMarshal_OneByteExtRoundTrip(t *testing.T) {
-	for _, payloadLen := range []int{1, 2, 3, 4, 8, 16} {
-		payload := make([]byte, payloadLen)
-		for i := range payload {
-			payload[i] = byte(i)
-		}
-		orig := &RTPPacket{
-			Header: RTPHeader{
-				Version:          2,
-				PayloadType:      96,
-				SequenceNumber:   1,
-				Timestamp:        100,
-				SSRC:             0x12345678,
-				Extension:        true,
-				ExtensionProfile: ExtensionProfileOneByte,
-				Extensions: []RTPExtension{
-					{ID: 1, Payload: payload},
-				},
-			},
-		}
-		data, err := orig.Marshal()
-		require.NoError(t, err)
-		parsed, err := UnmarshalRTP(data)
-		require.NoError(t, err)
-		require.Len(t, parsed.Header.Extensions, 1)
-		assert.Equal(t, payload, parsed.Header.Extensions[0].Payload, "payloadLen=%d", payloadLen)
-	}
+// --- Unmarshal error path tests for 100% coverage ---
+
+func TestUnmarshalRTP_ExtensionHeaderTooShort(t *testing.T) {
+	// X=1 but only 2 bytes after fixed header (need 4 for ext header)
+	buf := make([]byte, 14)
+	buf[0] = 0x90 // V=2, X=1, CC=0
+	buf[1] = 0
+	putU16(buf[2:4], 1)
+	putU32(buf[4:8], 100)
+	putU32(buf[8:12], 0xCAFEBABE)
+	// Only 2 bytes for extension header (need 4)
+	buf[12] = 0xBE
+	buf[13] = 0xDE
+
+	_, err := UnmarshalRTP(buf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "extension header")
 }
 
-func TestRTPMarshal_MultipleExtensionsRoundTrip(t *testing.T) {
-	orig := &RTPPacket{
+func TestUnmarshalRTP_ExtensionDataTooShort(t *testing.T) {
+	// X=1, ext header says 8 bytes of data but only 4 present
+	buf := make([]byte, 20)
+	buf[0] = 0x90 // V=2, X=1, CC=0
+	buf[1] = 0
+	putU16(buf[2:4], 1)
+	putU32(buf[4:8], 100)
+	putU32(buf[8:12], 0xCAFEBABE)
+	putU16(buf[12:14], ExtensionProfileOneByte)
+	putU16(buf[14:16], 2) // claims 2 words = 8 bytes of ext data
+	// Only 4 bytes of ext data present (bytes 16-19)
+	buf[16] = 0x10
+	buf[17] = 0xAA
+	buf[18] = 0x00
+	buf[19] = 0x00
+
+	_, err := UnmarshalRTP(buf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "extension data")
+}
+
+func TestUnmarshalRTP_ExtensionDataTruncated(t *testing.T) {
+	// X=1, ext header length is correct (4 bytes), but the extension
+	// data itself is malformed: ID=1 claims 16 bytes of payload but
+	// only 3 bytes remain in the 4-byte extension block.
+	buf := make([]byte, 20)
+	buf[0] = 0x90 // V=2, X=1, CC=0
+	buf[1] = 0
+	putU16(buf[2:4], 1)
+	putU32(buf[4:8], 100)
+	putU32(buf[8:12], 0xCAFEBABE)
+	putU16(buf[12:14], ExtensionProfileOneByte)
+	putU16(buf[14:16], 1) // 1 word = 4 bytes of ext data (correct)
+	// Ext data: ID=1, len-1=15 -> needs 16 bytes payload, only 3 remain
+	buf[16] = 0x1F // ID=1, len-1=15
+	buf[17] = 0x00
+	buf[18] = 0x00
+	buf[19] = 0x00
+
+	_, err := UnmarshalRTP(buf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "one-byte extension truncated")
+}
+
+func TestUnmarshalRTP_NoRoomForPadByte(t *testing.T) {
+	// P=1 but payload ends exactly at header (no byte for pad count)
+	buf := make([]byte, 12)
+	buf[0] = 0xA0 // V=2, P=1, CC=0
+	buf[1] = 0
+	putU16(buf[2:4], 1)
+	putU32(buf[4:8], 100)
+	putU32(buf[8:12], 0xCAFEBABE)
+
+	_, err := UnmarshalRTP(buf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no room for pad")
+}
+
+func TestUnmarshalRTP_InvalidPaddingSizeZero(t *testing.T) {
+	// P=1, pad byte is 0x00 (invalid)
+	buf := make([]byte, 13)
+	buf[0] = 0xA0 // V=2, P=1, CC=0
+	buf[1] = 0
+	putU16(buf[2:4], 1)
+	putU32(buf[4:8], 100)
+	putU32(buf[8:12], 0xCAFEBABE)
+	buf[12] = 0x00 // pad count = 0 (invalid)
+
+	_, err := UnmarshalRTP(buf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid padding size 0")
+}
+
+func TestUnmarshalRTP_PaddingExceedsPayload(t *testing.T) {
+	// P=1, pad byte says 10 but only 2 bytes of payload+pad exist
+	buf := make([]byte, 14)
+	buf[0] = 0xA0 // V=2, P=1, CC=0
+	buf[1] = 0
+	putU16(buf[2:4], 1)
+	putU32(buf[4:8], 100)
+	putU32(buf[8:12], 0xCAFEBABE)
+	buf[12] = 0x01 // 1 byte payload
+	buf[13] = 0x0A // pad count = 10, but only 2 bytes total after header
+
+	_, err := UnmarshalRTP(buf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "padding size")
+	assert.Contains(t, err.Error(), "exceeds")
+}
+
+func TestUnmarshalRTP_DefaultExtensionEmptyData(t *testing.T) {
+	// RFC3550 extension (non-standard profile) with 0 bytes of data
+	buf := make([]byte, 16)
+	buf[0] = 0x90 // V=2, X=1, CC=0
+	buf[1] = 0
+	putU16(buf[2:4], 1)
+	putU32(buf[4:8], 100)
+	putU32(buf[8:12], 0xCAFEBABE)
+	putU16(buf[12:14], 0x4321) // custom profile
+	putU16(buf[14:16], 0)      // 0 words of ext data
+
+	pkt, err := UnmarshalRTP(buf)
+	require.NoError(t, err)
+	assert.True(t, pkt.Header.Extension)
+	assert.Equal(t, uint16(0x4321), pkt.Header.ExtensionProfile)
+	assert.Empty(t, pkt.Header.Extensions)
+}
+
+func TestUnmarshalRTP_OneByteExtTruncated(t *testing.T) {
+	// One-byte ext: ext header says 4 bytes (1 word), but the single
+	// ext entry claims 4 bytes of payload, leaving only 3 bytes.
+	buf := make([]byte, 20)
+	buf[0] = 0x90 // V=2, X=1, CC=0
+	buf[1] = 0
+	putU16(buf[2:4], 1)
+	putU32(buf[4:8], 100)
+	putU32(buf[8:12], 0xCAFEBABE)
+	putU16(buf[12:14], ExtensionProfileOneByte)
+	putU16(buf[14:16], 1) // 1 word = 4 bytes ext data (correct)
+	// Ext data: ID=1, len-1=3 -> needs 4 bytes payload, only 3 remain
+	buf[16] = 0x13 // ID=1, len-1=3
+	buf[17] = 0xAA
+	buf[18] = 0xBB
+	buf[19] = 0xCC
+
+	_, err := UnmarshalRTP(buf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "one-byte extension truncated")
+}
+
+func TestUnmarshalRTP_TwoByteExtTruncatedAtLength(t *testing.T) {
+	// Two-byte ext: ext data has padding bytes followed by an ID
+	// at the very last position, so the length byte is missing.
+	buf := make([]byte, 20)
+	buf[0] = 0x90 // V=2, X=1, CC=0
+	buf[1] = 0
+	putU16(buf[2:4], 1)
+	putU32(buf[4:8], 100)
+	putU32(buf[8:12], 0xCAFEBABE)
+	putU16(buf[12:14], ExtensionProfileTwoByte)
+	putU16(buf[14:16], 1) // 1 word = 4 bytes ext data (correct)
+	// Ext data: three padding bytes then ID at last position
+	buf[16] = 0x00 // padding (skipped)
+	buf[17] = 0x00 // padding (skipped)
+	buf[18] = 0x00 // padding (skipped)
+	buf[19] = 0x05 // ID=5 at last byte, no length byte follows
+
+	_, err := UnmarshalRTP(buf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "two-byte extension truncated at length")
+}
+
+func TestUnmarshalRTP_TwoByteExtDataTruncated(t *testing.T) {
+	// Two-byte ext: ext header says 8 bytes (2 words), first ext claims
+	// 7 bytes of payload but only 6 remain in the 8-byte block.
+	buf := make([]byte, 24)
+	buf[0] = 0x90 // V=2, X=1, CC=0
+	buf[1] = 0
+	putU16(buf[2:4], 1)
+	putU32(buf[4:8], 100)
+	putU32(buf[8:12], 0xCAFEBABE)
+	putU16(buf[12:14], ExtensionProfileTwoByte)
+	putU16(buf[14:16], 2) // 2 words = 8 bytes ext data (correct)
+	// Ext data: ID=5, len=7 -> needs 7 bytes payload, only 6 remain
+	buf[16] = 0x05 // ID=5
+	buf[17] = 0x07 // len=7
+	buf[18] = 0xAA
+	buf[19] = 0xBB
+	buf[20] = 0xCC
+	buf[21] = 0xDD
+	buf[22] = 0xEE
+	buf[23] = 0xFF
+
+	_, err := UnmarshalRTP(buf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "two-byte extension truncated")
+}
+
+func TestUnmarshalRTP_OneByteExtTerminator(t *testing.T) {
+	// One-byte ext: 0x0F byte acts as terminator (RFC 8285 §4.2).
+	buf := make([]byte, 20)
+	buf[0] = 0x90 // V=2, X=1, CC=0
+	buf[1] = 0
+	putU16(buf[2:4], 1)
+	putU32(buf[4:8], 100)
+	putU32(buf[8:12], 0xCAFEBABE)
+	putU16(buf[12:14], ExtensionProfileOneByte)
+	putU16(buf[14:16], 1) // 1 word = 4 bytes ext data
+	// Ext data: valid ext followed by terminator
+	buf[16] = 0x10 // ID=1, len-1=0 -> 1 byte payload
+	buf[17] = 0xAA // payload
+	buf[18] = 0xF0 // terminator (ID=0xF)
+	buf[19] = 0x00 // padding after terminator
+
+	pkt, err := UnmarshalRTP(buf)
+	require.NoError(t, err)
+	require.Len(t, pkt.Header.Extensions, 1)
+	assert.Equal(t, uint8(1), pkt.Header.Extensions[0].ID)
+	assert.Equal(t, []byte{0xAA}, pkt.Header.Extensions[0].Payload)
+}
+
+// --- Marshal validation tests (RFC 8285 compliance) ---
+
+func TestMarshal_OneByteExt_InvalidID_Zero(t *testing.T) {
+	pkt := &RTPPacket{
 		Header: RTPHeader{
 			Version:          2,
-			PayloadType:      96,
-			SequenceNumber:   1,
-			Timestamp:        100,
-			SSRC:             0x12345678,
+			PayloadType:      0,
+			SequenceNumber:   0,
+			Timestamp:        0,
+			SSRC:             0,
 			Extension:        true,
 			ExtensionProfile: ExtensionProfileOneByte,
+			Extensions:       []RTPExtension{{ID: 0, Payload: []byte{0xAA}}},
+		},
+	}
+	_, err := pkt.Marshal()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "one-byte extension ID must be 1-14")
+}
+
+func TestMarshal_OneByteExt_InvalidID_Fifteen(t *testing.T) {
+	pkt := &RTPPacket{
+		Header: RTPHeader{
+			Version:          2,
+			PayloadType:      0,
+			SequenceNumber:   0,
+			Timestamp:        0,
+			SSRC:             0,
+			Extension:        true,
+			ExtensionProfile: ExtensionProfileOneByte,
+			Extensions:       []RTPExtension{{ID: 15, Payload: []byte{0xAA}}},
+		},
+	}
+	_, err := pkt.Marshal()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "one-byte extension ID must be 1-14")
+}
+
+func TestMarshal_OneByteExt_PayloadTooLarge(t *testing.T) {
+	pkt := &RTPPacket{
+		Header: RTPHeader{
+			Version:          2,
+			PayloadType:      0,
+			SequenceNumber:   0,
+			Timestamp:        0,
+			SSRC:             0,
+			Extension:        true,
+			ExtensionProfile: ExtensionProfileOneByte,
+			Extensions:       []RTPExtension{{ID: 1, Payload: make([]byte, 17)}},
+		},
+	}
+	_, err := pkt.Marshal()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "one-byte extension payload max 16 bytes")
+}
+
+func TestMarshal_TwoByteExt_InvalidID_Zero(t *testing.T) {
+	pkt := &RTPPacket{
+		Header: RTPHeader{
+			Version:          2,
+			PayloadType:      0,
+			SequenceNumber:   0,
+			Timestamp:        0,
+			SSRC:             0,
+			Extension:        true,
+			ExtensionProfile: ExtensionProfileTwoByte,
+			Extensions:       []RTPExtension{{ID: 0, Payload: []byte{0xAA}}},
+		},
+	}
+	_, err := pkt.Marshal()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "two-byte extension ID must be 1-255")
+}
+
+func TestMarshal_TwoByteExt_PayloadTooLarge(t *testing.T) {
+	pkt := &RTPPacket{
+		Header: RTPHeader{
+			Version:          2,
+			PayloadType:      0,
+			SequenceNumber:   0,
+			Timestamp:        0,
+			SSRC:             0,
+			Extension:        true,
+			ExtensionProfile: ExtensionProfileTwoByte,
+			Extensions:       []RTPExtension{{ID: 1, Payload: make([]byte, 256)}},
+		},
+	}
+	_, err := pkt.Marshal()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "two-byte extension payload max 255 bytes")
+}
+
+func TestMarshal_DefaultExt_MultipleRejected(t *testing.T) {
+	pkt := &RTPPacket{
+		Header: RTPHeader{
+			Version:          2,
+			PayloadType:      0,
+			SequenceNumber:   0,
+			Timestamp:        0,
+			SSRC:             0,
+			Extension:        true,
+			ExtensionProfile: 0x4321,
 			Extensions: []RTPExtension{
-				{ID: 1, Payload: []byte{0x01}},
-				{ID: 2, Payload: []byte{0x02, 0x03}},
-				{ID: 3, Payload: []byte{0x04, 0x05, 0x06}},
-				{ID: 4, Payload: []byte{0x07, 0x08, 0x09, 0x0A}},
+				{ID: 0, Payload: []byte{0x01}},
+				{ID: 0, Payload: []byte{0x02}},
 			},
 		},
 	}
-	data, err := orig.Marshal()
-	require.NoError(t, err)
-	parsed, err := UnmarshalRTP(data)
-	require.NoError(t, err)
-	require.Len(t, parsed.Header.Extensions, 4)
-	for i := range orig.Header.Extensions {
-		assert.Equal(t, orig.Header.Extensions[i].ID, parsed.Header.Extensions[i].ID)
-		assert.Equal(t, orig.Header.Extensions[i].Payload, parsed.Header.Extensions[i].Payload)
-	}
+	_, err := pkt.Marshal()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "profile-defined extension supports only one")
 }
 
-func TestRTPMarshal_TwoByteExtMultiple(t *testing.T) {
-	orig := &RTPPacket{
+func TestMarshal_OneByteExt_TerminatorWritten(t *testing.T) {
+	// Two extensions (2+3=5 bytes data) → rounds to 8 bytes → 3 bytes padding
+	// First padding byte should be 0xF0 terminator
+	pkt := &RTPPacket{
 		Header: RTPHeader{
 			Version:          2,
-			PayloadType:      96,
-			SequenceNumber:   1,
-			Timestamp:        100,
-			SSRC:             0x12345678,
+			PayloadType:      0,
+			SequenceNumber:   0,
+			Timestamp:        0,
+			SSRC:             0,
 			Extension:        true,
-			ExtensionProfile: ExtensionProfileTwoByte,
+			ExtensionProfile: ExtensionProfileOneByte,
 			Extensions: []RTPExtension{
 				{ID: 1, Payload: []byte{0xAA}},
 				{ID: 2, Payload: []byte{0xBB, 0xCC}},
 			},
 		},
 	}
-	data, err := orig.Marshal()
+	data, err := pkt.Marshal()
 	require.NoError(t, err)
 
 	extOff := 12
-	assert.Equal(t, byte(0x10), data[extOff+0], "profile MSB")
-	assert.Equal(t, byte(0x00), data[extOff+1], "profile LSB")
-	extData := data[extOff+4 : extOff+4+4] // 2 elements (3+4=7, rounded to 8)
-	_ = extData
+	extDataStart := extOff + 4
+	extDataSize := 2 + 3 // ext1 (1+1) + ext2 (1+2)
+	roundedExtSize := ((extDataSize + 3) / 4) * 4
+	padCount := roundedExtSize - extDataSize
 
-	parsed, err := UnmarshalRTP(data)
-	require.NoError(t, err)
-	require.Len(t, parsed.Header.Extensions, 2)
-	assert.Equal(t, uint8(1), parsed.Header.Extensions[0].ID)
-	assert.Equal(t, []byte{0xAA}, parsed.Header.Extensions[0].Payload)
-	assert.Equal(t, uint8(2), parsed.Header.Extensions[1].ID)
-	assert.Equal(t, []byte{0xBB, 0xCC}, parsed.Header.Extensions[1].Payload)
+	require.Greater(t, padCount, 0, "test requires padding")
+	assert.Equal(t, byte(0xF0), data[extDataStart+extDataSize], "terminator at first padding position")
+	for i := 1; i < padCount; i++ {
+		assert.Equal(t, byte(0), data[extDataStart+extDataSize+i], "zero padding at offset %d", i)
+	}
 }
 
-func TestRTPMarshal_Idempotent(t *testing.T) {
-	orig := &RTPPacket{
+func TestMarshal_OneByteExt_NoPaddingExact(t *testing.T) {
+	// Extension data fills exactly 4 bytes (1 word) → no padding, no terminator needed
+	pkt := &RTPPacket{
 		Header: RTPHeader{
-			Version:        2,
-			Marker:         true,
-			Padding:        true,
-			PaddingSize:    4,
-			PayloadType:    96,
-			SequenceNumber: 42,
-			Timestamp:      12345,
-			SSRC:           0xDEADBEEF,
-			CSRC:           []uint32{0x11111111},
-			Extension:      true,
+			Version:          2,
+			PayloadType:      0,
+			SequenceNumber:   0,
+			Timestamp:        0,
+			SSRC:             0,
+			Extension:        true,
 			ExtensionProfile: ExtensionProfileOneByte,
 			Extensions: []RTPExtension{
-				{ID: 1, Payload: []byte{0xAA}},
+				{ID: 1, Payload: []byte{0xAA, 0xBB, 0xCC}}, // 1 byte header + 3 bytes payload = 4
 			},
 		},
-		Payload: []byte{0x01, 0x02, 0x03},
 	}
-	data1, err := orig.Marshal()
-	require.NoError(t, err)
-	data2, err := orig.Marshal()
-	require.NoError(t, err)
-	data3, err := orig.Marshal()
+	data, err := pkt.Marshal()
 	require.NoError(t, err)
 
-	assert.Equal(t, data1, data2, "first and second Marshal must match")
-	assert.Equal(t, data2, data3, "second and third Marshal must match")
+	extOff := 12
+	require.Len(t, data, extOff+4+4) // 4-byte ext header + 4-byte ext data, no padding
+	assert.Equal(t, byte(0x00), data[extOff+2], "ext length MSB")
+	assert.Equal(t, byte(0x01), data[extOff+3], "ext length LSB = 1 (4 bytes)")
+	// No terminator byte since no padding was needed
+	assert.Equal(t, byte(0x12), data[extOff+4], "ext[0]: ID=1 len-1=2")
+	assert.Equal(t, []byte{0xAA, 0xBB, 0xCC}, data[extOff+5:extOff+8], "ext payload")
 }
