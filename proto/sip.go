@@ -38,6 +38,8 @@ const (
 )
 
 var (
+	ErrMissingRequiredHeader = errors.New("sip: missing required header")
+
 	compactHeaders = map[string]string{
 		"a": "Accept-Contact",      // RFC 3841
 		"b": "Referred-By",         // RFC 3892
@@ -536,7 +538,13 @@ func unmarshalSIP(r *bufio.Reader, streamed bool) (*SIPMessage, error) {
 
 	if clStr, ok := msg.Headers["Content-Length"]; ok {
 		contentLength, err := strconv.Atoi(strings.TrimSpace(clStr[0]))
-		if err == nil && contentLength > 0 {
+		if err != nil {
+			return nil, UnmarshalErrorWrap(err, "invalid Content-Length")
+		}
+		if contentLength < 0 {
+			return nil, UnmarshalErrorf("negative Content-Length: %d", contentLength)
+		}
+		if contentLength > 0 {
 			msg.Body = make([]byte, contentLength)
 			_, err = io.ReadFull(r, msg.Body)
 			if err != nil {
@@ -703,6 +711,19 @@ func (m *SIPMessage) marshalSize(compact bool) int {
 	return sz
 }
 
+func (m *SIPMessage) validateRequiredHeaders() error {
+	if m.startLine == nil {
+		return ErrMissingRequiredHeader
+	}
+	required := []string{"Via", "From", "To", "Call-ID"}
+	for _, h := range required {
+		if _, ok := m.Headers[h]; !ok {
+			return fmt.Errorf("%w: %s", ErrMissingRequiredHeader, h)
+		}
+	}
+	return nil
+}
+
 // MarshalSize returns the exact number of bytes needed for Marshal*.
 // The Content-Length and CSeq header values in the Headers map are
 // not counted; Content-Length is computed from len(m.Body) and CSeq is
@@ -797,6 +818,9 @@ func (m *SIPMessage) marshalToCompact(buf []byte) int {
 // map are ignored; Content-Length is computed from len(m.Body) and CSeq
 // is taken from the m.CSeq struct field.
 func (m *SIPMessage) MarshalTo(buf []byte) (int, error) {
+	if err := m.validateRequiredHeaders(); err != nil {
+		return 0, err
+	}
 	sz := m.MarshalSize()
 	if len(buf) < sz {
 		return 0, fmt.Errorf("sip: buffer too small for marshal")
@@ -806,6 +830,9 @@ func (m *SIPMessage) MarshalTo(buf []byte) (int, error) {
 
 // Marshal serializes m to a wire-format byte slice.
 func (m *SIPMessage) Marshal() ([]byte, error) {
+	if err := m.validateRequiredHeaders(); err != nil {
+		return nil, err
+	}
 	sz := m.MarshalSize()
 	buf := make([]byte, sz)
 	m.marshalTo(buf)

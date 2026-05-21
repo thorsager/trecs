@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"gitub.com/thorsager/trec/proto"
 )
 
@@ -22,9 +25,7 @@ var validSIP = "OPTIONS sip:server SIP/2.0\r\n" +
 func dialTCP(t *testing.T, addr string) net.Conn {
 	t.Helper()
 	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
-	if err != nil {
-		t.Fatalf("TCP dial: %v", err)
-	}
+	require.NoError(t, err, "TCP dial")
 	return conn
 }
 
@@ -34,7 +35,7 @@ func readEvent(t *testing.T, ch <-chan MessageEvent, timeout time.Duration) Mess
 	case ev := <-ch:
 		return ev
 	case <-time.After(timeout):
-		t.Fatalf("timeout waiting for message event")
+		t.Fatalf("timeout waiting for message event after %v", timeout)
 	}
 	return MessageEvent{}
 }
@@ -52,48 +53,32 @@ func expectNoEvent(t *testing.T, ch <-chan MessageEvent, timeout time.Duration) 
 
 func TestUDPBasicSendReceive(t *testing.T) {
 	transport, err := NewUDPTransport("127.0.0.1:15070")
-	if err != nil {
-		t.Fatalf("NewUDPTransport: %v", err)
-	}
+	require.NoError(t, err)
 	transport.Start()
 	defer transport.Close()
 
 	client, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-	if err != nil {
-		t.Fatalf("ListenUDP: %v", err)
-	}
+	require.NoError(t, err)
 	defer client.Close()
 
 	serverAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:15070")
 	_, err = client.WriteToUDP([]byte(validSIP), serverAddr)
-	if err != nil {
-		t.Fatalf("WriteToUDP: %v", err)
-	}
+	require.NoError(t, err)
 
 	ev := readEvent(t, transport.Receive(), 3*time.Second)
-	if ev.Msg.Method() != proto.SIPMethodOPTIONS {
-		t.Fatalf("expected OPTIONS, got %s", ev.Msg.Method())
-	}
-	if !ev.Msg.IsRequest() {
-		t.Fatal("expected request, got response")
-	}
-	if ev.Target.Addr == nil {
-		t.Fatal("missing source address")
-	}
+	assert.Equal(t, proto.SIPMethodOPTIONS, ev.Msg.Method())
+	assert.True(t, ev.Msg.IsRequest())
+	assert.NotNil(t, ev.Target.Addr)
 }
 
 func TestUDPOrderPreserved(t *testing.T) {
 	transport, err := NewUDPTransport("127.0.0.1:15071")
-	if err != nil {
-		t.Fatalf("NewUDPTransport: %v", err)
-	}
+	require.NoError(t, err)
 	transport.Start()
 	defer transport.Close()
 
 	client, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-	if err != nil {
-		t.Fatalf("ListenUDP: %v", err)
-	}
+	require.NoError(t, err)
 	defer client.Close()
 
 	serverAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:15071")
@@ -105,24 +90,18 @@ func TestUDPOrderPreserved(t *testing.T) {
 
 	for i := 0; i < n; i++ {
 		ev := readEvent(t, transport.Receive(), 3*time.Second)
-		if ev.Msg.Method() != proto.SIPMethodOPTIONS {
-			t.Fatalf("event %d: expected OPTIONS, got %s", i, ev.Msg.Method())
-		}
+		assert.Equal(t, proto.SIPMethodOPTIONS, ev.Msg.Method(), "event %d", i)
 	}
 }
 
 func TestUDPInvalidDatagramDropped(t *testing.T) {
 	transport, err := NewUDPTransport("127.0.0.1:15072")
-	if err != nil {
-		t.Fatalf("NewUDPTransport: %v", err)
-	}
+	require.NoError(t, err)
 	transport.Start()
 	defer transport.Close()
 
 	client, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-	if err != nil {
-		t.Fatalf("ListenUDP: %v", err)
-	}
+	require.NoError(t, err)
 	defer client.Close()
 
 	serverAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:15072")
@@ -132,44 +111,30 @@ func TestUDPInvalidDatagramDropped(t *testing.T) {
 	client.WriteToUDP([]byte(validSIP), serverAddr)
 
 	ev := readEvent(t, transport.Receive(), 3*time.Second)
-	if ev.Msg.Method() != proto.SIPMethodOPTIONS {
-		t.Fatalf("expected OPTIONS after garbage, got %s", ev.Msg.Method())
-	}
+	assert.Equal(t, proto.SIPMethodOPTIONS, ev.Msg.Method())
 }
 
 func TestUDPCloseWhileIdle(t *testing.T) {
 	transport, err := NewUDPTransport("127.0.0.1:15073")
-	if err != nil {
-		t.Fatalf("NewUDPTransport: %v", err)
-	}
+	require.NoError(t, err)
 	transport.Start()
 
-	if err := transport.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	require.NoError(t, transport.Close())
 
 	_, ok := <-transport.Receive()
-	if ok {
-		t.Fatal("expected closed channel")
-	}
+	assert.False(t, ok, "expected closed channel")
 
-	if err := transport.Close(); err != nil {
-		t.Fatalf("Close (idempotent): %v", err)
-	}
+	assert.NoError(t, transport.Close(), "Close (idempotent)")
 }
 
 func TestUDPRespondBack(t *testing.T) {
 	transport, err := NewUDPTransport("127.0.0.1:15074")
-	if err != nil {
-		t.Fatalf("NewUDPTransport: %v", err)
-	}
+	require.NoError(t, err)
 	transport.Start()
 	defer transport.Close()
 
 	client, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-	if err != nil {
-		t.Fatalf("ListenUDP: %v", err)
-	}
+	require.NoError(t, err)
 	defer client.Close()
 
 	serverAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:15074")
@@ -179,32 +144,22 @@ func TestUDPRespondBack(t *testing.T) {
 
 	res := proto.NewResponse(ev.Msg, 200, "OK")
 	target := &ev.Target
-	if err := transport.Send(res, target); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
+	require.NoError(t, transport.Send(res, target))
 
 	client.SetReadDeadline(time.Now().Add(3 * time.Second))
 	buf := make([]byte, 4096)
 	n, _, err := client.ReadFromUDP(buf)
-	if err != nil {
-		t.Fatalf("ReadFromUDP: %v", err)
-	}
+	require.NoError(t, err)
 	msg, err := proto.UnmarshalSIPDatagram(buf[:n])
-	if err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-	if msg.StatusCode() != 200 {
-		t.Fatalf("expected 200, got %d", msg.StatusCode())
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 200, msg.StatusCode())
 }
 
 // --- TCP Transport ---
 
 func TestTCPBasicSendReceive(t *testing.T) {
 	transport, err := NewTCPTransport("127.0.0.1:15080")
-	if err != nil {
-		t.Fatalf("NewTCPTransport: %v", err)
-	}
+	require.NoError(t, err)
 	transport.Start()
 	defer transport.Close()
 
@@ -212,24 +167,16 @@ func TestTCPBasicSendReceive(t *testing.T) {
 	defer conn.Close()
 
 	_, err = conn.Write([]byte(validSIP))
-	if err != nil {
-		t.Fatalf("Write: %v", err)
-	}
+	require.NoError(t, err)
 
 	ev := readEvent(t, transport.Receive(), 3*time.Second)
-	if ev.Msg.Method() != proto.SIPMethodOPTIONS {
-		t.Fatalf("expected OPTIONS, got %s", ev.Msg.Method())
-	}
-	if ev.Target.Conn == nil {
-		t.Fatal("missing connection in target")
-	}
+	assert.Equal(t, proto.SIPMethodOPTIONS, ev.Msg.Method())
+	assert.NotNil(t, ev.Target.Conn)
 }
 
 func TestTCPMultipleMessagesSameConn(t *testing.T) {
 	transport, err := NewTCPTransport("127.0.0.1:15081")
-	if err != nil {
-		t.Fatalf("NewTCPTransport: %v", err)
-	}
+	require.NoError(t, err)
 	transport.Start()
 	defer transport.Close()
 
@@ -240,24 +187,18 @@ func TestTCPMultipleMessagesSameConn(t *testing.T) {
 	for i := 0; i < n; i++ {
 		msg := buildSIPRequest(i)
 		_, err := conn.Write([]byte(msg))
-		if err != nil {
-			t.Fatalf("Write %d: %v", i, err)
-		}
+		require.NoError(t, err, "Write %d", i)
 	}
 
 	for i := 0; i < n; i++ {
 		ev := readEvent(t, transport.Receive(), 3*time.Second)
-		if ev.Msg.Method() != proto.SIPMethodOPTIONS {
-			t.Fatalf("event %d: expected OPTIONS, got %s", i, ev.Msg.Method())
-		}
+		assert.Equal(t, proto.SIPMethodOPTIONS, ev.Msg.Method(), "event %d", i)
 	}
 }
 
 func TestTCPRespondBack(t *testing.T) {
 	transport, err := NewTCPTransport("127.0.0.1:15082")
-	if err != nil {
-		t.Fatalf("NewTCPTransport: %v", err)
-	}
+	require.NoError(t, err)
 	transport.Start()
 	defer transport.Close()
 
@@ -265,38 +206,26 @@ func TestTCPRespondBack(t *testing.T) {
 	defer conn.Close()
 
 	_, err = conn.Write([]byte(validSIP))
-	if err != nil {
-		t.Fatalf("Write: %v", err)
-	}
+	require.NoError(t, err)
 
 	ev := readEvent(t, transport.Receive(), 3*time.Second)
 
 	res := proto.NewResponse(ev.Msg, 200, "OK")
 	target := &ev.Target
-	if err := transport.Send(res, target); err != nil {
-		t.Fatalf("Send: %v", err)
-	}
+	require.NoError(t, transport.Send(res, target))
 
 	buf := make([]byte, 4096)
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	n, err := conn.Read(buf)
-	if err != nil {
-		t.Fatalf("Read: %v", err)
-	}
+	require.NoError(t, err)
 	msg, err := proto.UnmarshalSIPDatagram(buf[:n])
-	if err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-	if msg.StatusCode() != 200 {
-		t.Fatalf("expected 200, got %d", msg.StatusCode())
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 200, msg.StatusCode())
 }
 
 func TestTCPRespondOnWrongConnFails(t *testing.T) {
 	transport, err := NewTCPTransport("127.0.0.1:15083")
-	if err != nil {
-		t.Fatalf("NewTCPTransport: %v", err)
-	}
+	require.NoError(t, err)
 	transport.Start()
 	defer transport.Close()
 
@@ -304,38 +233,28 @@ func TestTCPRespondOnWrongConnFails(t *testing.T) {
 	defer conn.Close()
 
 	_, err = conn.Write([]byte(validSIP))
-	if err != nil {
-		t.Fatalf("Write: %v", err)
-	}
+	require.NoError(t, err)
 
 	ev := readEvent(t, transport.Receive(), 3*time.Second)
 
 	res := proto.NewResponse(ev.Msg, 200, "OK")
 	fakeTarget := &Target{Addr: ev.Target.Addr, Conn: nil}
-	if err := transport.Send(res, fakeTarget); err == nil {
-		t.Fatal("expected error sending with nil conn")
-	}
+	assert.Error(t, transport.Send(res, fakeTarget), "expected error sending with nil conn")
 }
 
 func TestTCPCloseWaitsForHandlers(t *testing.T) {
 	transport, err := NewTCPTransport("127.0.0.1:15084")
-	if err != nil {
-		t.Fatalf("NewTCPTransport: %v", err)
-	}
+	require.NoError(t, err)
 	transport.Start()
 
 	conn := dialTCP(t, "127.0.0.1:15084")
 	defer conn.Close()
 
 	_, err = conn.Write([]byte(validSIP))
-	if err != nil {
-		t.Fatalf("Write: %v", err)
-	}
+	require.NoError(t, err)
 
 	ev := readEvent(t, transport.Receive(), 3*time.Second)
-	if ev.Msg == nil {
-		t.Fatal("expected message")
-	}
+	require.NotNil(t, ev.Msg)
 
 	done := make(chan struct{})
 	go func() {
@@ -346,41 +265,29 @@ func TestTCPCloseWaitsForHandlers(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Close did not return within timeout")
+		assert.Fail(t, "Close did not return within timeout")
 	}
 
 	_, ok := <-transport.Receive()
-	if ok {
-		t.Fatal("expected closed channel after Close")
-	}
+	assert.False(t, ok, "expected closed channel after Close")
 }
 
 func TestTCPGracefulCloseNoConns(t *testing.T) {
 	transport, err := NewTCPTransport("127.0.0.1:15085")
-	if err != nil {
-		t.Fatalf("NewTCPTransport: %v", err)
-	}
+	require.NoError(t, err)
 	transport.Start()
 
-	if err := transport.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	require.NoError(t, transport.Close())
 
 	_, ok := <-transport.Receive()
-	if ok {
-		t.Fatal("expected closed channel")
-	}
+	assert.False(t, ok, "expected closed channel")
 
-	if err := transport.Close(); err != nil {
-		t.Fatalf("Close (idempotent): %v", err)
-	}
+	assert.NoError(t, transport.Close(), "Close (idempotent)")
 }
 
 func TestTCPInvalidSIPDisconnects(t *testing.T) {
 	transport, err := NewTCPTransport("127.0.0.1:15086")
-	if err != nil {
-		t.Fatalf("NewTCPTransport: %v", err)
-	}
+	require.NoError(t, err)
 	transport.Start()
 	defer transport.Close()
 
@@ -388,27 +295,21 @@ func TestTCPInvalidSIPDisconnects(t *testing.T) {
 	defer conn.Close()
 
 	_, err = conn.Write([]byte("garbage data\r\n\r\n"))
-	if err != nil {
-		t.Fatalf("Write: %v", err)
-	}
+	require.NoError(t, err)
 
 	expectNoEvent(t, transport.Receive(), 2*time.Second)
 
 	buf := make([]byte, 1)
 	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 	_, err = conn.Read(buf)
-	if err == nil {
-		t.Fatal("expected connection to be closed after invalid SIP")
-	}
+	assert.Error(t, err, "expected connection to be closed after invalid SIP")
 }
 
 // --- Concurrent connections ---
 
 func TestTCPConcurrentConnections(t *testing.T) {
 	transport, err := NewTCPTransport("127.0.0.1:15087")
-	if err != nil {
-		t.Fatalf("NewTCPTransport: %v", err)
-	}
+	require.NoError(t, err)
 	transport.Start()
 	defer transport.Close()
 
@@ -440,61 +341,37 @@ func TestTCPConcurrentConnections(t *testing.T) {
 	wg.Wait()
 	time.Sleep(500 * time.Millisecond)
 
-	if n := received.Load(); n == 0 {
-		t.Fatal("expected at least one received message")
-	}
+	assert.Greater(t, received.Load(), int32(0), "expected at least one received message")
 }
 
 // --- TargetFromContact ---
 
 func TestTargetFromContactUDP(t *testing.T) {
 	target, transport, err := TargetFromContact("sip:alice@192.168.1.5:5060")
-	if err != nil {
-		t.Fatalf("TargetFromContact: %v", err)
-	}
-	if transport != "UDP" {
-		t.Fatalf("expected UDP transport, got %s", transport)
-	}
-	if target.Addr == nil {
-		t.Fatal("expected non-nil Addr for UDP")
-	}
-	if target.Conn != nil {
-		t.Fatal("expected nil Conn for UDP")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "UDP", transport)
+	assert.NotNil(t, target.Addr)
+	assert.Nil(t, target.Conn)
 }
 
 func TestTargetFromContactUDPDefaultPort(t *testing.T) {
 	target, transport, err := TargetFromContact("sip:alice@192.168.1.5")
-	if err != nil {
-		t.Fatalf("TargetFromContact: %v", err)
-	}
-	if transport != "UDP" {
-		t.Fatalf("expected UDP transport, got %s", transport)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "UDP", transport)
 	udpAddr := target.Addr.(*net.UDPAddr)
-	if udpAddr.Port != 5060 {
-		t.Fatalf("expected default port 5060, got %d", udpAddr.Port)
-	}
+	assert.Equal(t, 5060, udpAddr.Port)
 }
 
 func TestTargetFromContactUDPNoDialNeeded(t *testing.T) {
 	target, transport, err := TargetFromContact("sip:alice@192.168.1.5:5060")
-	if err != nil {
-		t.Fatalf("TargetFromContact: %v", err)
-	}
-	if transport != "UDP" {
-		t.Fatalf("expected UDP transport, got %s", transport)
-	}
-	if target.Addr == nil {
-		t.Fatal("expected non-nil Addr for UDP")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "UDP", transport)
+	assert.NotNil(t, target.Addr)
 }
 
 func TestTargetFromContactTCPWithListener(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
+	require.NoError(t, err)
 	defer listener.Close()
 
 	go func() {
@@ -507,37 +384,25 @@ func TestTargetFromContactTCPWithListener(t *testing.T) {
 
 	_, port, _ := net.SplitHostPort(listener.Addr().String())
 	target, transport, err := TargetFromContact("sip:alice@127.0.0.1:" + port + ";transport=tcp")
-	if err != nil {
-		t.Fatalf("TargetFromContact: %v", err)
-	}
-	if transport != "TCP" {
-		t.Fatalf("expected TCP transport, got %s", transport)
-	}
-	if target.Conn == nil {
-		t.Fatal("expected non-nil Conn for TCP")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "TCP", transport)
+	assert.NotNil(t, target.Conn)
 	target.Conn.Close()
 }
 
 func TestTargetFromContactTCPDialRefused(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
+	require.NoError(t, err)
 	port := listener.Addr().(*net.TCPAddr).Port
 	listener.Close()
 
 	_, _, err = TargetFromContact("sip:alice@127.0.0.1:" + strconv.Itoa(port) + ";transport=tcp")
-	if err == nil {
-		t.Fatal("expected error dialing closed TCP port")
-	}
+	assert.Error(t, err, "expected error dialing closed TCP port")
 }
 
 func TestTargetFromContactPreservesTransportParam(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
+	require.NoError(t, err)
 	defer listener.Close()
 
 	go func() {
@@ -550,25 +415,57 @@ func TestTargetFromContactPreservesTransportParam(t *testing.T) {
 
 	_, port, _ := net.SplitHostPort(listener.Addr().String())
 	target, transport, err := TargetFromContact("sip:alice@127.0.0.1:" + port + ";transport=tcp;ob;lr")
-	if err != nil {
-		t.Fatalf("TargetFromContact: %v", err)
-	}
-	if transport != "TCP" {
-		t.Fatalf("expected TCP transport, got %s", transport)
-	}
-	if target.Conn == nil {
-		t.Fatal("expected non-nil Conn for TCP")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "TCP", transport)
+	assert.NotNil(t, target.Conn)
 	target.Conn.Close()
 }
 
 func TestTargetFromContactDefaultTransportUDP(t *testing.T) {
 	_, transport, err := TargetFromContact("sip:alice@192.168.1.5:5060;ob;lr")
-	if err != nil {
-		t.Fatalf("TargetFromContact: %v", err)
+	require.NoError(t, err)
+	assert.Equal(t, "UDP", transport)
+}
+
+// --- RFC 3261 §18.1.1: UDP message size limit ---
+
+func TestUDPTransport_Send_Exceeds1300Bytes(t *testing.T) {
+	transport, err := NewUDPTransport("127.0.0.1:15090")
+	require.NoError(t, err)
+	transport.Start()
+	defer transport.Close()
+
+	largeBody := make([]byte, 1400)
+	for i := range largeBody {
+		largeBody[i] = 'x'
 	}
-	if transport != "UDP" {
-		t.Fatalf("expected default UDP transport, got %s", transport)
+	msg := proto.NewRequest(proto.SIPMethodINVITE, "sip:user@host")
+	msg.Headers.Set("Via", []string{"SIP/2.0/UDP 127.0.0.1:9999;branch=z9hG4bKtest"})
+	msg.Headers.Set("From", []string{"<sip:test@localhost>;tag=abc"})
+	msg.Headers.Set("To", []string{"<sip:user@host>"})
+	msg.Headers.Set("Call-ID", []string{"test-call-id"})
+	msg.Body = largeBody
+
+	err = transport.Send(msg, &Target{Addr: &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9999}})
+	require.Error(t, err, "expected error for UDP message exceeding 1300 bytes")
+	assert.Contains(t, err.Error(), "1300")
+}
+
+func TestUDPTransport_Send_WithinLimit(t *testing.T) {
+	transport, err := NewUDPTransport("127.0.0.1:15091")
+	require.NoError(t, err)
+	transport.Start()
+	defer transport.Close()
+
+	msg := proto.NewRequest(proto.SIPMethodOPTIONS, "sip:server")
+	msg.Headers.Set("Via", []string{"SIP/2.0/UDP 127.0.0.1:9999;branch=z9hG4bKtest"})
+	msg.Headers.Set("From", []string{"<sip:test@localhost>;tag=abc"})
+	msg.Headers.Set("To", []string{"<sip:server@localhost>"})
+	msg.Headers.Set("Call-ID", []string{"test-call-id"})
+
+	err = transport.Send(msg, &Target{Addr: &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9999}})
+	if err != nil {
+		assert.NotContains(t, err.Error(), "1300", "small message should not trigger 1300-byte limit error")
 	}
 }
 

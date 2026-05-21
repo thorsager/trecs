@@ -1301,12 +1301,11 @@ func TestSIPMarshal_ResponseRoundTrip(t *testing.T) {
 }
 
 func TestSIPMarshal_IgnoreStaleCSeqInHeaders(t *testing.T) {
-	input := "INVITE sip:bob@example.com SIP/2.0\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n"
+	input := "INVITE sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/UDP host;branch=z9hG4bK1\r\nFrom: <sip:a>;tag=x\r\nTo: <sip:b>\r\nCall-ID: id\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n"
 	msg, err := UnmarshalSIP(newTestReader(input))
 	if !assert.NoError(t, err) {
 		return
 	}
-	// mutate CSeq; Headers["CSeq"] still holds stale "1 INVITE"
 	msg.CSeq.Seq = 999
 
 	got, err := msg.Marshal()
@@ -1317,12 +1316,11 @@ func TestSIPMarshal_IgnoreStaleCSeqInHeaders(t *testing.T) {
 }
 
 func TestSIPMarshal_IgnoreStaleContentLengthInHeaders(t *testing.T) {
-	input := "INVITE sip:bob@example.com SIP/2.0\r\nContent-Length: 4\r\n\r\nbody"
+	input := "INVITE sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/UDP host;branch=z9hG4bK1\r\nFrom: <sip:a>;tag=x\r\nTo: <sip:b>\r\nCall-ID: id\r\nContent-Length: 4\r\n\r\nbody"
 	msg, err := UnmarshalSIP(newTestReader(input))
 	if !assert.NoError(t, err) {
 		return
 	}
-	// mutate body; Headers["Content-Length"] still holds stale "4"
 	msg.Body = []byte("newbody")
 
 	got, err := msg.Marshal()
@@ -1341,6 +1339,7 @@ func TestSIPMarshal_MarshalSize(t *testing.T) {
 			Version:   "SIP/2.0",
 		},
 		Headers: SIPHeaders{
+			"Via":     {"SIP/2.0/UDP pc33.atlanta.com;branch=z9hG4bK1"},
 			"From":    {"<sip:alice@atlanta.com>;tag=abc"},
 			"To":      {"<sip:bob@biloxi.com>"},
 			"Call-ID": {"a84b4c76e66710@pc33.atlanta.com"},
@@ -1353,7 +1352,6 @@ func TestSIPMarshal_MarshalSize(t *testing.T) {
 		return
 	}
 
-	// re-parse and verify
 	msg2, err := UnmarshalSIP(newTestReader(string(got)))
 	if assert.NoError(t, err) {
 		assert.Equal(t, "INVITE sip:bob@example.com SIP/2.0", msg2.StartLine())
@@ -1368,13 +1366,20 @@ func TestSIPMarshal_NilStartLine(t *testing.T) {
 	msg := &SIPMessage{}
 	assert.Equal(t, 0, msg.MarshalSize())
 	got, err := msg.Marshal()
-	assert.NoError(t, err)
+	assert.Error(t, err)
 	assert.Empty(t, got)
 }
 
 func TestSIPMarshal_BufferTooSmall(t *testing.T) {
 	msg := &SIPMessage{
 		startLine: &startLine{IsRequest: true, Method: "INVITE", URI: "sip:x", Version: "SIP/2.0"},
+		Headers: SIPHeaders{
+			"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+			"From":    {"<sip:a>"},
+			"To":      {"<sip:b>"},
+			"Call-ID": {"id"},
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
 	}
 	buf := make([]byte, 1)
 	_, err := msg.MarshalTo(buf)
@@ -1387,6 +1392,7 @@ func TestSIPMarshal_DeterministicHeaderOrder(t *testing.T) {
 		startLine: &startLine{IsRequest: true, Method: "INVITE", URI: "sip:x", Version: "SIP/2.0"},
 		Headers: SIPHeaders{
 			"Z-Last":  {"z"},
+			"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
 			"From":    {"<sip:a>"},
 			"To":      {"<sip:b>"},
 			"Subject": {"hello"},
@@ -1405,6 +1411,7 @@ func TestSIPMarshal_DeterministicHeaderOrder(t *testing.T) {
 		"From: <sip:a>\r\n" +
 		"Subject: hello\r\n" +
 		"To: <sip:b>\r\n" +
+		"Via: SIP/2.0/UDP host;branch=z9hG4bK1\r\n" +
 		"Z-Last: z\r\n" +
 		"CSeq: 1 INVITE\r\n" +
 		"Content-Length: 0\r\n\r\n"
@@ -1426,6 +1433,12 @@ func TestRFC3261_Marshal_RequestLineGrammar(t *testing.T) {
 			Method:    "INVITE",
 			URI:       "sip:bob@atlanta.com",
 			Version:   "SIP/2.0",
+		},
+		Headers: SIPHeaders{
+			"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+			"From":    {"<sip:a>"},
+			"To":      {"<sip:b>"},
+			"Call-ID": {"id"},
 		},
 		CSeq: CSeq{Seq: 1, Method: "INVITE"},
 	}
@@ -1464,6 +1477,12 @@ func TestRFC3261_Marshal_RequestLine_MultipleMethods(t *testing.T) {
 					URI:       "sip:user@host",
 					Version:   "SIP/2.0",
 				},
+				Headers: SIPHeaders{
+					"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+					"From":    {"<sip:a>"},
+					"To":      {"<sip:b>"},
+					"Call-ID": {"id"},
+				},
 				CSeq: CSeq{Seq: 1, Method: method},
 			}
 			got, err := msg.Marshal()
@@ -1492,6 +1511,12 @@ func TestRFC3261_Marshal_RequestLine_URIParameters(t *testing.T) {
 			URI:       "sip:bob@atlanta.com;lr;transport=tcp",
 			Version:   "SIP/2.0",
 		},
+		Headers: SIPHeaders{
+			"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+			"From":    {"<sip:a>"},
+			"To":      {"<sip:b>"},
+			"Call-ID": {"id"},
+		},
 		CSeq: CSeq{Seq: 1, Method: "INVITE"},
 	}
 	got, err := msg.Marshal()
@@ -1507,6 +1532,12 @@ func TestRFC3261_Marshal_RequestLine_SIPSURI(t *testing.T) {
 			Method:    "INVITE",
 			URI:       "sips:bob@atlanta.com",
 			Version:   "SIP/2.0",
+		},
+		Headers: SIPHeaders{
+			"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+			"From":    {"<sip:a>"},
+			"To":      {"<sip:b>"},
+			"Call-ID": {"id"},
 		},
 		CSeq: CSeq{Seq: 1, Method: "INVITE"},
 	}
@@ -1527,6 +1558,12 @@ func TestRFC3261_Marshal_StatusLineGrammar(t *testing.T) {
 			Version:   "SIP/2.0",
 			StatusCode: 200,
 			Status:    "200 OK",
+		},
+		Headers: SIPHeaders{
+			"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+			"From":    {"<sip:a>"},
+			"To":      {"<sip:b>"},
+			"Call-ID": {"id"},
 		},
 		CSeq: CSeq{Seq: 1, Method: "INVITE"},
 	}
@@ -1559,6 +1596,12 @@ func TestRFC3261_Marshal_StatusLine_VariousCodes(t *testing.T) {
 					StatusCode: code,
 					Status:    fmt.Sprintf("%d %s", code, reason),
 				},
+				Headers: SIPHeaders{
+					"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+					"From":    {"<sip:a>"},
+					"To":      {"<sip:b>"},
+					"Call-ID": {"id"},
+				},
 				CSeq: CSeq{Seq: 1, Method: "INVITE"},
 			}
 			got, err := msg.Marshal()
@@ -1584,6 +1627,12 @@ func TestRFC3261_Marshal_StatusLine_MultiWordReason(t *testing.T) {
 			Version:   "SIP/2.0",
 			StatusCode: 181,
 			Status:    "181 Call Is Being Forwarded",
+		},
+		Headers: SIPHeaders{
+			"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+			"From":    {"<sip:a>"},
+			"To":      {"<sip:b>"},
+			"Call-ID": {"id"},
 		},
 		CSeq: CSeq{Seq: 1, Method: "INVITE"},
 	}
@@ -1755,6 +1804,12 @@ func TestRFC3261_Marshal_ContentLengthAccuracy(t *testing.T) {
 					IsRequest: true, Method: "INVITE",
 					URI: "sip:x", Version: "SIP/2.0",
 				},
+				Headers: SIPHeaders{
+					"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+					"From":    {"<sip:a>"},
+					"To":      {"<sip:b>"},
+					"Call-ID": {"id"},
+				},
 				CSeq: CSeq{Seq: 1, Method: "INVITE"},
 				Body: tt.body,
 			}
@@ -1814,8 +1869,11 @@ func TestRFC3261_Marshal_NoExtraContentLength(t *testing.T) {
 			URI: "sip:x", Version: "SIP/2.0",
 		},
 		Headers: SIPHeaders{
+			"Via":            {"SIP/2.0/UDP host;branch=z9hG4bK1"},
 			"Content-Length": {"999"},
 			"From":           {"<sip:a>"},
+			"To":             {"<sip:b>"},
+			"Call-ID":        {"id"},
 		},
 		CSeq: CSeq{Seq: 1, Method: "INVITE"},
 		Body: []byte("hello"),
@@ -1852,6 +1910,12 @@ func TestRFC3261_Marshal_CSeqFormat(t *testing.T) {
 					IsRequest: true, Method: tt.method,
 					URI: "sip:x", Version: "SIP/2.0",
 				},
+				Headers: SIPHeaders{
+					"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+					"From":    {"<sip:a>"},
+					"To":      {"<sip:b>"},
+					"Call-ID": {"id"},
+				},
 				CSeq: CSeq{Seq: tt.seq, Method: tt.method},
 			}
 			got, err := msg.Marshal()
@@ -1869,6 +1933,12 @@ func TestRFC3261_Marshal_CSeqMethodMatches(t *testing.T) {
 		startLine: &startLine{
 			IsRequest: true, Method: "BYE",
 			URI: "sip:alice@example.com", Version: "SIP/2.0",
+		},
+		Headers: SIPHeaders{
+			"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+			"From":    {"<sip:a>"},
+			"To":      {"<sip:b>"},
+			"Call-ID": {"id"},
 		},
 		CSeq: CSeq{Seq: 1, Method: "BYE"},
 	}
@@ -1919,6 +1989,12 @@ func TestRFC3261_Marshal_NoExtraBody(t *testing.T) {
 			IsRequest: true, Method: "OPTIONS",
 			URI: "sip:proxy.example.com", Version: "SIP/2.0",
 		},
+		Headers: SIPHeaders{
+			"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+			"From":    {"<sip:a>"},
+			"To":      {"<sip:b>"},
+			"Call-ID": {"id"},
+		},
 		CSeq: CSeq{Seq: 1, Method: "OPTIONS"},
 		Body: nil,
 	}
@@ -1928,6 +2004,75 @@ func TestRFC3261_Marshal_NoExtraBody(t *testing.T) {
 		assert.True(t, strings.HasSuffix(string(got), "Content-Length: 0\r\n\r\n"),
 			"marshal with nil body must end with Content-Length: 0\\r\\n\\r\\n")
 	}
+}
+
+// -----------------------------------------------------------------------------
+// Section 8.1.1 / 8.2.6: Required headers validation
+// -----------------------------------------------------------------------------
+
+func TestRFC3261_Marshal_MissingVia(t *testing.T) {
+	msg := &SIPMessage{
+		startLine: &startLine{IsRequest: true, Method: "INVITE", URI: "sip:x", Version: "SIP/2.0"},
+		Headers: SIPHeaders{
+			"From":    {"<sip:a>"},
+			"To":      {"<sip:b>"},
+			"Call-ID": {"id"},
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
+	}
+	_, err := msg.Marshal()
+	if assert.Error(t, err) {
+		assert.ErrorIs(t, err, ErrMissingRequiredHeader)
+		assert.Contains(t, err.Error(), "Via")
+	}
+}
+
+func TestRFC3261_Marshal_MissingFrom(t *testing.T) {
+	msg := &SIPMessage{
+		startLine: &startLine{IsRequest: true, Method: "INVITE", URI: "sip:x", Version: "SIP/2.0"},
+		Headers: SIPHeaders{
+			"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+			"To":      {"<sip:b>"},
+			"Call-ID": {"id"},
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
+	}
+	_, err := msg.Marshal()
+	if assert.Error(t, err) {
+		assert.ErrorIs(t, err, ErrMissingRequiredHeader)
+		assert.Contains(t, err.Error(), "From")
+	}
+}
+
+func TestRFC3261_Marshal_AllRequiredHeaders(t *testing.T) {
+	msg := &SIPMessage{
+		startLine: &startLine{IsRequest: true, Method: "INVITE", URI: "sip:x", Version: "SIP/2.0"},
+		Headers: SIPHeaders{
+			"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+			"From":    {"<sip:a>"},
+			"To":      {"<sip:b>"},
+			"Call-ID": {"id"},
+		},
+		CSeq: CSeq{Seq: 1, Method: "INVITE"},
+	}
+	got, err := msg.Marshal()
+	if assert.NoError(t, err) {
+		assert.Contains(t, string(got), "INVITE sip:x SIP/2.0")
+	}
+}
+
+func TestRFC3261_Unmarshal_NegativeContentLength(t *testing.T) {
+	input := "INVITE sip:x SIP/2.0\r\nVia: SIP/2.0/UDP host;branch=z9hG4bK1\r\nContent-Length: -5\r\n\r\n"
+	_, err := UnmarshalSIPDatagram([]byte(input))
+	if assert.Error(t, err) {
+		assert.Contains(t, err.Error(), "negative Content-Length")
+	}
+}
+
+func TestRFC3261_Unmarshal_InvalidContentLength(t *testing.T) {
+	input := "INVITE sip:x SIP/2.0\r\nVia: SIP/2.0/UDP host;branch=z9hG4bK1\r\nContent-Length: abc\r\n\r\n"
+	_, err := UnmarshalSIPDatagram([]byte(input))
+	assert.Error(t, err, "invalid Content-Length should cause error")
 }
 
 // -----------------------------------------------------------------------------
@@ -1945,6 +2090,9 @@ func TestRFC3261_Marshal_MultipleHeaderValues(t *testing.T) {
 				"SIP/2.0/UDP host1;branch=z9hG4bK1",
 				"SIP/2.0/UDP host2;branch=z9hG4bK2",
 			},
+			"From":    {"<sip:a>"},
+			"To":      {"<sip:b>"},
+			"Call-ID": {"id"},
 		},
 		CSeq: CSeq{Seq: 1, Method: "INVITE"},
 	}

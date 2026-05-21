@@ -3,6 +3,7 @@ package sip
 import (
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -153,6 +154,19 @@ func (s *Server) route(ev MessageEvent, transport Transport) {
 			s.ackCallback(ev.Msg, ev.Target, transport)
 		}
 		return
+	}
+
+	// Max-Forwards check per RFC 3261 §8.1.3.2.
+	if mf := ev.Msg.Headers.GetFirst("Max-Forwards"); mf != "" {
+		maxFwds, err := strconv.Atoi(mf)
+		if err == nil {
+			if maxFwds <= 0 {
+				res := proto.NewResponse(ev.Msg, 483, "Too Many Hops")
+				transport.Send(res, &ev.Target)
+				return
+			}
+			ev.Msg.Headers.Set("Max-Forwards", []string{strconv.Itoa(maxFwds - 1)})
+		}
 	}
 
 	handler := s.handlers[method]

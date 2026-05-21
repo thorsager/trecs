@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"strconv"
@@ -111,6 +112,9 @@ func (t *UDPTransport) Send(msg *proto.SIPMessage, target *Target) error {
 	data, err := msg.Marshal()
 	if err != nil {
 		return err
+	}
+	if len(data) > 1300 {
+		return fmt.Errorf("sip: UDP message size %d exceeds RFC 3261 limit of 1300 bytes", len(data))
 	}
 	udpAddr, ok := target.Addr.(*net.UDPAddr)
 	if !ok {

@@ -423,7 +423,8 @@ func (tm *TransactionManager) handleRetransmission(tx Transaction) {
 
 // HandleACK processes an incoming ACK. Non-2xx ACKs are matched to the
 // corresponding INVITE transaction by Via branch. 2xx ACKs use a different
-// branch and are silently dropped for now.
+// branch and won't match a transaction, but are still delivered to the
+// application layer via the ackCallback in Server.route().
 func (tm *TransactionManager) HandleACK(ev MessageEvent, transport Transport) {
 	branch := ev.Msg.ViaBranch()
 	if branch == "" {
