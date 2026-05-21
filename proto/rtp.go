@@ -54,18 +54,23 @@ func (p RTPPacket) String() string {
 		p.Header.Timestamp, p.Header.SSRC, p.Header.Marker, p.Header.Padding, len(p.Payload))
 }
 
-// UnmarshalRTP parses a single RTP packet from a byte slice.
-func UnmarshalRTP(data []byte) (RTPPacket, error) {
+// Reset clears the packet fields for reuse.
+func (p *RTPPacket) Reset() {
+	p.Header = RTPHeader{}
+	p.Payload = p.Payload[:0]
+}
+
+// UnmarshalRTPTo parses a single RTP packet from data into the provided packet.
+// Reuses existing slice capacity in pkt to minimize allocations.
+func UnmarshalRTPTo(data []byte, pkt *RTPPacket) error {
 	if len(data) < rtpFixedHeaderLen {
-		return RTPPacket{}, UnmarshalErrorf("rtp: packet too short: %d < %d", len(data), rtpFixedHeaderLen)
+		return UnmarshalErrorf("rtp: packet too short: %d < %d", len(data), rtpFixedHeaderLen)
 	}
 
-	var h RTPHeader
-	n := rtpFixedHeaderLen
-
+	h := &pkt.Header
 	h.Version = data[0] >> 6 & 0x03
 	if h.Version != rtpVersion {
-		return RTPPacket{}, UnmarshalErrorf("rtp: unsupported version %d", h.Version)
+		return UnmarshalErrorf("rtp: unsupported version %d", h.Version)
 	}
 
 	h.Padding = (data[0]>>5)&0x01 != 0
@@ -79,71 +84,106 @@ func UnmarshalRTP(data []byte) (RTPPacket, error) {
 	h.SSRC = binary.BigEndian.Uint32(data[8:12])
 
 	if cc > 0 {
-		h.CSRC = make([]uint32, cc)
+		if cap(h.CSRC) < cc {
+			h.CSRC = make([]uint32, cc)
+		} else {
+			h.CSRC = h.CSRC[:cc]
+		}
 		for i := 0; i < cc; i++ {
 			off := 12 + i*4
 			h.CSRC[i] = binary.BigEndian.Uint32(data[off:])
-			n += 4
 		}
+	} else {
+		h.CSRC = h.CSRC[:0]
 	}
+
+	n := rtpFixedHeaderLen + cc*4
 
 	if hasExtension {
 		if len(data) < n+4 {
-			return RTPPacket{}, UnmarshalErrorf("rtp: header too short for extension header")
+			return UnmarshalErrorf("rtp: header too short for extension header")
 		}
 		h.Extension = true
 		h.ExtensionProfile = binary.BigEndian.Uint16(data[n:])
 		extLen := int(binary.BigEndian.Uint16(data[n+2:])) * 4
 		n += 4
 		if len(data) < n+extLen {
-			return RTPPacket{}, UnmarshalErrorf("rtp: header too short for extension data")
+			return UnmarshalErrorf("rtp: header too short for extension data")
 		}
 		var extErr error
-		h.Extensions, extErr = unmarshalExtensions(h.ExtensionProfile, data[n:n+extLen])
+		h.Extensions, extErr = unmarshalExtensionsTo(h.ExtensionProfile, data[n:n+extLen], h.Extensions[:0])
 		if extErr != nil {
-			return RTPPacket{}, extErr
+			return extErr
 		}
 		n += extLen
+	} else {
+		h.Extension = false
+		h.ExtensionProfile = 0
+		h.Extensions = h.Extensions[:0]
 	}
 
 	end := len(data)
 	if h.Padding {
 		if end <= n {
-			return RTPPacket{}, UnmarshalErrorf("rtp: padding flag set but no room for pad byte")
+			return UnmarshalErrorf("rtp: padding flag set but no room for pad byte")
 		}
 		h.PaddingSize = data[end-1]
 		if h.PaddingSize == 0 {
-			return RTPPacket{}, UnmarshalErrorf("rtp: invalid padding size 0")
+			return UnmarshalErrorf("rtp: invalid padding size 0")
 		}
 		if int(h.PaddingSize) > end-n {
-			return RTPPacket{}, UnmarshalErrorf("rtp: padding size %d exceeds payload length %d", h.PaddingSize, end-n)
+			return UnmarshalErrorf("rtp: padding size %d exceeds payload length %d", h.PaddingSize, end-n)
 		}
 		end -= int(h.PaddingSize)
+	} else {
+		h.PaddingSize = 0
 	}
 
-	return RTPPacket{
-		Header:  h,
-		Payload: data[n:end],
-	}, nil
+	payloadLen := end - n
+	if cap(pkt.Payload) < payloadLen {
+		pkt.Payload = make([]byte, payloadLen)
+	} else {
+		pkt.Payload = pkt.Payload[:payloadLen]
+	}
+	copy(pkt.Payload, data[n:end])
+
+	return nil
+}
+
+// UnmarshalRTP parses a single RTP packet from a byte slice.
+func UnmarshalRTP(data []byte) (RTPPacket, error) {
+	var pkt RTPPacket
+	if err := UnmarshalRTPTo(data, &pkt); err != nil {
+		return RTPPacket{}, err
+	}
+	return pkt, nil
 }
 
 // unmarshalExtensions parses RTP header extension data based on the profile.
 func unmarshalExtensions(profile uint16, data []byte) ([]RTPExtension, error) {
+	return unmarshalExtensionsTo(profile, data, nil)
+}
+
+func unmarshalExtensionsTo(profile uint16, data []byte, exts []RTPExtension) ([]RTPExtension, error) {
+	exts = exts[:0]
 	switch profile {
 	case ExtensionProfileOneByte:
-		return unmarshalOneByteExtensions(data)
+		return unmarshalOneByteExtensionsTo(data, exts)
 	case ExtensionProfileTwoByte:
-		return unmarshalTwoByteExtensions(data)
+		return unmarshalTwoByteExtensionsTo(data, exts)
 	default:
 		if len(data) == 0 {
-			return nil, nil
+			return exts, nil
 		}
-		return []RTPExtension{{ID: 0, Payload: data}}, nil
+		return append(exts, RTPExtension{ID: 0, Payload: data}), nil
 	}
 }
 
 func unmarshalOneByteExtensions(data []byte) ([]RTPExtension, error) {
-	exts := make([]RTPExtension, 0, len(data)/2)
+	return unmarshalOneByteExtensionsTo(data, nil)
+}
+
+func unmarshalOneByteExtensionsTo(data []byte, exts []RTPExtension) ([]RTPExtension, error) {
 	for i := 0; i < len(data); {
 		if data[i] == 0x00 {
 			i++
@@ -158,14 +198,19 @@ func unmarshalOneByteExtensions(data []byte) ([]RTPExtension, error) {
 		if i+payloadLen > len(data) {
 			return exts, UnmarshalErrorf("rtp: one-byte extension truncated")
 		}
-		exts = append(exts, RTPExtension{ID: id, Payload: data[i : i+payloadLen]})
+		payload := make([]byte, payloadLen)
+		copy(payload, data[i:i+payloadLen])
+		exts = append(exts, RTPExtension{ID: id, Payload: payload})
 		i += payloadLen
 	}
 	return exts, nil
 }
 
 func unmarshalTwoByteExtensions(data []byte) ([]RTPExtension, error) {
-	exts := make([]RTPExtension, 0, len(data)/3)
+	return unmarshalTwoByteExtensionsTo(data, nil)
+}
+
+func unmarshalTwoByteExtensionsTo(data []byte, exts []RTPExtension) ([]RTPExtension, error) {
 	for i := 0; i < len(data); {
 		if data[i] == 0x00 {
 			i++
@@ -181,7 +226,9 @@ func unmarshalTwoByteExtensions(data []byte) ([]RTPExtension, error) {
 		if i+payloadLen > len(data) {
 			return exts, UnmarshalErrorf("rtp: two-byte extension truncated")
 		}
-		exts = append(exts, RTPExtension{ID: id, Payload: data[i : i+payloadLen]})
+		payload := make([]byte, payloadLen)
+		copy(payload, data[i:i+payloadLen])
+		exts = append(exts, RTPExtension{ID: id, Payload: payload})
 		i += payloadLen
 	}
 	return exts, nil

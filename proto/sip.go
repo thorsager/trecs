@@ -383,7 +383,6 @@ func NewResponse(req *SIPMessage, statusCode int, reason string) *SIPMessage {
 			msg.Headers[h] = append([]string{}, vals...)
 		}
 	}
-	// Recompute Content-Length from empty body.
 	msg.Body = nil
 	return msg
 }

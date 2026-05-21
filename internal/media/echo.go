@@ -52,11 +52,14 @@ func RunEcho(ctx context.Context, conn *RTPConn, payloadType uint8) {
 		}
 		n, err := out.MarshalTo(marshalBuf)
 		if err != nil {
+			rtpPktPool.Put(pkt)
 			return
 		}
 		if _, err := conn.conn.WriteTo(marshalBuf[:n], addr); err != nil {
+			rtpPktPool.Put(pkt)
 			return
 		}
+		rtpPktPool.Put(pkt)
 		seq++
 		timestamp += samplesPerFrame
 	}

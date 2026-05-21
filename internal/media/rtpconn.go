@@ -10,9 +10,21 @@ import (
 )
 
 var rtpBufPool = sync.Pool{
-		New: func() any {
-			return make([]byte, 4096)
-		},
+	New: func() any {
+		return make([]byte, 4096)
+	},
+}
+
+var rtpWriteBufPool = sync.Pool{
+	New: func() any {
+		return make([]byte, 1500)
+	},
+}
+
+var rtpPktPool = sync.Pool{
+	New: func() any {
+		return new(proto.RTPPacket)
+	},
 }
 
 // RTPConn wraps a UDP socket for reading and writing RTP packets.
@@ -64,25 +76,36 @@ func (c *RTPConn) ReadRTP() (*proto.RTPPacket, net.Addr, error) {
 		rtpBufPool.Put(buf)
 		return nil, nil, err
 	}
-	pkt, err := proto.UnmarshalRTP(buf[:n])
-	if err != nil {
+	pkt := rtpPktPool.Get().(*proto.RTPPacket)
+	pkt.Reset()
+	if err := proto.UnmarshalRTPTo(buf[:n], pkt); err != nil {
 		rtpBufPool.Put(buf)
+		rtpPktPool.Put(pkt)
 		return nil, nil, err
 	}
-	payload := make([]byte, len(pkt.Payload))
-	copy(payload, pkt.Payload)
-	pkt.Payload = payload
 	rtpBufPool.Put(buf)
-	return &pkt, addr, nil
+	return pkt, addr, nil
 }
 
 // WriteRTP marshals and sends one RTP packet to addr.
+// Uses a pooled buffer to avoid allocation on the marshal path.
 func (c *RTPConn) WriteRTP(pkt *proto.RTPPacket, addr net.Addr) error {
-	data, err := pkt.Marshal()
+	buf := rtpWriteBufPool.Get().([]byte)
+	sz := pkt.MarshalSize()
+	if sz > len(buf) {
+		buf = make([]byte, sz)
+	}
+	n, err := pkt.MarshalTo(buf)
 	if err != nil {
+		if n == 0 || len(buf) > 1500 {
+			rtpWriteBufPool.Put(buf)
+		}
 		return err
 	}
-	_, err = c.conn.WriteTo(data, addr)
+	_, err = c.conn.WriteTo(buf[:n], addr)
+	if len(buf) <= 1500 {
+		rtpWriteBufPool.Put(buf)
+	}
 	return err
 }
 
@@ -94,4 +117,11 @@ func (c *RTPConn) SetReadDeadline(t time.Time) error {
 // Close closes the underlying UDP socket.
 func (c *RTPConn) Close() error {
 	return c.conn.Close()
+}
+
+// Release returns an RTPPacket obtained from ReadRTP back to the pool.
+func (c *RTPConn) Release(pkt *proto.RTPPacket) {
+	if pkt != nil {
+		rtpPktPool.Put(pkt)
+	}
 }

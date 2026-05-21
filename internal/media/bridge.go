@@ -110,11 +110,14 @@ func (b *Bridge) forward(src, dst *RTPConn, remote net.Addr, ssrc uint32, dir st
 		}
 		n, err := out.MarshalTo(marshalBuf)
 		if err != nil {
+			rtpPktPool.Put(pkt)
 			return
 		}
 		if _, err := dst.conn.WriteTo(marshalBuf[:n], remote); err != nil {
+			rtpPktPool.Put(pkt)
 			return
 		}
+		rtpPktPool.Put(pkt)
 		seq++
 		timestamp += samplesPerFrame
 	}
