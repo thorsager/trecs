@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests with coverage
+        run: go test -v -count=1 -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Show coverage summary
+        run: go tool cover -func=coverage.out
+
+      - name: Post coverage to PR
+        if: github.event_name == 'pull_request'
+        uses: MishaKav/go-test-coverage-comment@main
+        with:
+          coverage-summary-path: coverage.out
+          title: Test Coverage
+          badge-title: Coverage
+          show-line: true
+          show-branch: false
