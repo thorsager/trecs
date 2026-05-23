@@ -129,11 +129,12 @@ PJSUA_LOG="$TMPDIR/pjsua.log"
     echo "sleep $DURATION"
     sleep $((DURATION + 3))
 ) | pjsua \
-    --rtp-port 13000 13099 \
+    --rtp-port 13000 \
     --id "sip:caller@127.0.0.1${SIP_PARAMS}" \
     --registrar "sip:${TARGET}${SIP_PARAMS}" \
     --realm "*" \
     --play-file "$TONE_FILE" \
+    --null-audio \
     --auto-play \
     --auto-rec \
     --rec-file "$RECV_FILE" \

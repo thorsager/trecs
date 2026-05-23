@@ -117,7 +117,7 @@ echo ""
 echo "=================================================================="
 echo " 5/8 — Dialplan echo test (UDP)"
 echo "=================================================================="
-"$ROOT/scripts/test_dialplan_echo.sh" -t "$TARGET" -p udp || ((EXIT++))
+"$ROOT/scripts/test_dialpdan_echo.sh" -t "$TARGET" -p udp || ((EXIT++))
 
 echo ""
 echo "=================================================================="

@@ -137,7 +137,7 @@ ALICE_RTP=10100
 
 # Bob (callee) — keep alive for 10s via pipe
 (sleep 10) | pjsua \
-    --rtp-port $BOB_RTP $((BOB_RTP + 99)) \
+    --rtp-port $BOB_RTP \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
@@ -159,7 +159,7 @@ else
 
     # Alice (caller) — call Bob, stay alive 6s, then exit (BYE)
     (sleep 6) | pjsua \
-        --rtp-port $ALICE_RTP $((ALICE_RTP + 99)) \
+        --rtp-port $ALICE_RTP \
         --local-port "$ALICE_PORT" \
         --id "sip:alice@${HOST}" \
         --registrar "sip:${TARGET}" \
@@ -212,7 +212,7 @@ ALICE_RTP=10300
 
 # Bob (callee) — auto-hangup after 3s, keep alive 10s
 (sleep 10) | pjsua \
-    --rtp-port $BOB_RTP $((BOB_RTP + 99)) \
+    --rtp-port $BOB_RTP \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
@@ -231,7 +231,7 @@ else
 
     # Alice (caller) — stay alive 8s, Bob will hang up first
     (sleep 8) | pjsua \
-        --rtp-port $ALICE_RTP $((ALICE_RTP + 99)) \
+        --rtp-port $ALICE_RTP \
         --local-port "$ALICE_PORT" \
         --id "sip:alice@${HOST}" \
         --registrar "sip:${TARGET}" \
@@ -283,7 +283,7 @@ ALICE_RTP=10500
 
 # Bob (callee) — auto-answer with 486, keep alive 10s
     (sleep 10) | pjsua \
-    --rtp-port $BOB_RTP $((BOB_RTP + 99)) \
+    --rtp-port $BOB_RTP \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
@@ -301,7 +301,7 @@ else
 
     # Alice (caller) — call will be rejected
     (sleep 2) | pjsua \
-        --rtp-port $ALICE_RTP $((ALICE_RTP + 99)) \
+        --rtp-port $ALICE_RTP \
         --local-port "$ALICE_PORT" \
         --id "sip:alice@${HOST}" \
         --registrar "sip:${TARGET}" \
@@ -343,7 +343,7 @@ BOB_RTP=10600
 ALICE_RTP=10700
 
 (sleep 10) | pjsua \
-    --rtp-port $BOB_RTP $((BOB_RTP + 99)) \
+    --rtp-port $BOB_RTP \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST};transport=tcp" \
     --registrar "sip:${TARGET};transport=tcp" \
@@ -365,7 +365,7 @@ else
     pass "[S4] Bob started (PID $BOB_PID4, TCP)"
 
     (sleep 6) | pjsua \
-        --rtp-port $ALICE_RTP $((ALICE_RTP + 99)) \
+        --rtp-port $ALICE_RTP \
         --local-port "$ALICE_PORT" \
         --id "sip:alice@${HOST};transport=tcp" \
         --registrar "sip:${TARGET};transport=tcp" \
@@ -421,7 +421,7 @@ ALICE_RTP=10900
 
 # Bob (UDP)
 (sleep 10) | pjsua \
-    --rtp-port $BOB_RTP $((BOB_RTP + 99)) \
+    --rtp-port $BOB_RTP \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
@@ -443,7 +443,7 @@ else
 
     # Alice (TCP)
     (sleep 6) | pjsua \
-        --rtp-port $ALICE_RTP $((ALICE_RTP + 99)) \
+        --rtp-port $ALICE_RTP \
         --local-port "$ALICE_PORT" \
         --id "sip:alice@${HOST};transport=tcp" \
         --registrar "sip:${TARGET};transport=tcp" \
@@ -499,7 +499,7 @@ ALICE_RTP=11100
 
 # Bob (TCP)
 (sleep 10) | pjsua \
-    --rtp-port $BOB_RTP $((BOB_RTP + 99)) \
+    --rtp-port $BOB_RTP \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST};transport=tcp" \
     --registrar "sip:${TARGET};transport=tcp" \
@@ -522,7 +522,7 @@ else
 
     # Alice (UDP)
     (sleep 6) | pjsua \
-        --rtp-port $ALICE_RTP $((ALICE_RTP + 99)) \
+        --rtp-port $ALICE_RTP \
         --local-port "$ALICE_PORT" \
         --id "sip:alice@${HOST}" \
         --registrar "sip:${TARGET}" \

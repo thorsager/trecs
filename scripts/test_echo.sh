@@ -108,7 +108,8 @@ SIP_PARAMS=""
     echo "sleep $DURATION"
     sleep $((DURATION + 3))
 ) | pjsua \
-    --rtp-port 15000 15099 \
+    --rtp-port 15000 \
+    --local-port 0 \
     --id "sip:caller@127.0.0.1${SIP_PARAMS}" \
     --registrar "sip:${TARGET}${SIP_PARAMS}" \
     --realm "*" \

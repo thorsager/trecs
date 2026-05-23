@@ -126,7 +126,7 @@ echo "=== pjsua call to file playback (${PROTO}) ==="
     echo "sleep 6000"
     sleep 10
 ) | pjsua \
-    --rtp-port 14000 14099 \
+    --rtp-port 14000 \
     --id "sip:listener@127.0.0.1${SIP_PARAMS}" \
     --registrar "sip:${TARGET}${SIP_PARAMS}" \
     --realm "*" \
