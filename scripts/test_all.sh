@@ -37,7 +37,7 @@ cat > "$DIALPLAN_FILE" <<JSON
 {
   "extensions": {
     "echo": { "action": "echo" },
-    "play": { "action": "play", "file": "$ROOT/EDIS-SCD-02.wav" }
+    "play": { "action": "play", "file": "$ROOT/testdata/EDIS-SCD-02.wav" }
   }
 }
 JSON

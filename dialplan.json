@@ -1,6 +1,6 @@
 {
   "extensions": {
     "echo":  { "action": "echo" },
-    "alert": { "action": "play", "file": "EDIS-SCD-02.wav" }
+    "alert": { "action": "play", "file": "testdata/EDIS-SCD-02.wav" }
   }
 }
