@@ -126,6 +126,7 @@ echo "=== pjsua call to file playback (${PROTO}) ==="
     echo "sleep 6000"
     sleep 10
 ) | pjsua \
+    --config-file /dev/null \
     --id "sip:listener@127.0.0.1${SIP_PARAMS}" \
     --registrar "sip:${TARGET}${SIP_PARAMS}" \
     --realm "*" \

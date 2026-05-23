@@ -115,8 +115,6 @@ else
 fi
 
 HOST="127.0.0.1"
-ALICE_PORT=15062
-BOB_PORT=15063
 
 # ==================================================================
 # SCENARIO 1: basic — BYE from Alice (Alice hangs up)
@@ -132,8 +130,12 @@ ALICE_LOG1="$TMPDIR/alice1.log"
 BOB_RECV1="$TMPDIR/bob1_recv.wav"
 ALICE_RECV1="$TMPDIR/alice1_recv.wav"
 
+ALICE_PORT=$((15062 + 1*2))
+BOB_PORT=$((15063 + 1*2))
+
 # Bob (callee) — keep alive for 10s via pipe
 (sleep 10) | pjsua \
+    --config-file /dev/null \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
@@ -155,6 +157,7 @@ else
 
     # Alice (caller) — call Bob, stay alive 6s, then exit (BYE)
     (sleep 6) | pjsua \
+        --config-file /dev/null \
         --local-port "$ALICE_PORT" \
         --id "sip:alice@${HOST}" \
         --registrar "sip:${TARGET}" \
@@ -200,8 +203,12 @@ echo "════════════════════════�
 BOB_LOG2="$TMPDIR/bob2.log"
 ALICE_LOG2="$TMPDIR/alice2.log"
 
+ALICE_PORT=$((15062 + 2*2))
+BOB_PORT=$((15063 + 2*2))
+
 # Bob (callee) — auto-hangup after 3s, keep alive 10s
 (sleep 10) | pjsua \
+    --config-file /dev/null \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
@@ -220,6 +227,7 @@ else
 
     # Alice (caller) — stay alive 8s, Bob will hang up first
     (sleep 8) | pjsua \
+        --config-file /dev/null \
         --local-port "$ALICE_PORT" \
         --id "sip:alice@${HOST}" \
         --registrar "sip:${TARGET}" \
@@ -264,8 +272,12 @@ echo "════════════════════════�
 BOB_LOG3="$TMPDIR/bob3.log"
 ALICE_LOG3="$TMPDIR/alice3.log"
 
+ALICE_PORT=$((15062 + 3*2))
+BOB_PORT=$((15063 + 3*2))
+
 # Bob (callee) — auto-answer with 486, keep alive 10s
     (sleep 10) | pjsua \
+    --config-file /dev/null \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
@@ -283,6 +295,7 @@ else
 
     # Alice (caller) — call will be rejected
     (sleep 2) | pjsua \
+        --config-file /dev/null \
         --local-port "$ALICE_PORT" \
         --id "sip:alice@${HOST}" \
         --registrar "sip:${TARGET}" \
@@ -318,7 +331,11 @@ ALICE_LOG4="$TMPDIR/alice4.log"
 BOB_RECV4="$TMPDIR/bob4_recv.wav"
 ALICE_RECV4="$TMPDIR/alice4_recv.wav"
 
+ALICE_PORT=$((15062 + 4*2))
+BOB_PORT=$((15063 + 4*2))
+
 (sleep 10) | pjsua \
+    --config-file /dev/null \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST};transport=tcp" \
     --registrar "sip:${TARGET};transport=tcp" \
@@ -340,6 +357,7 @@ else
     pass "[S4] Bob started (PID $BOB_PID4, TCP)"
 
     (sleep 6) | pjsua \
+        --config-file /dev/null \
         --local-port "$ALICE_PORT" \
         --id "sip:alice@${HOST};transport=tcp" \
         --registrar "sip:${TARGET};transport=tcp" \
@@ -388,8 +406,12 @@ ALICE_LOG5="$TMPDIR/alice5.log"
 BOB_RECV5="$TMPDIR/bob5_recv.wav"
 ALICE_RECV5="$TMPDIR/alice5_recv.wav"
 
+ALICE_PORT=$((15062 + 5*2))
+BOB_PORT=$((15063 + 5*2))
+
 # Bob (UDP)
 (sleep 10) | pjsua \
+    --config-file /dev/null \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
@@ -411,6 +433,7 @@ else
 
     # Alice (TCP)
     (sleep 6) | pjsua \
+        --config-file /dev/null \
         --local-port "$ALICE_PORT" \
         --id "sip:alice@${HOST};transport=tcp" \
         --registrar "sip:${TARGET};transport=tcp" \
@@ -459,8 +482,12 @@ ALICE_LOG6="$TMPDIR/alice6.log"
 BOB_RECV6="$TMPDIR/bob6_recv.wav"
 ALICE_RECV6="$TMPDIR/alice6_recv.wav"
 
+ALICE_PORT=$((15062 + 6*2))
+BOB_PORT=$((15063 + 6*2))
+
 # Bob (TCP)
 (sleep 10) | pjsua \
+    --config-file /dev/null \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST};transport=tcp" \
     --registrar "sip:${TARGET};transport=tcp" \
@@ -483,6 +510,7 @@ else
 
     # Alice (UDP)
     (sleep 6) | pjsua \
+        --config-file /dev/null \
         --local-port "$ALICE_PORT" \
         --id "sip:alice@${HOST}" \
         --registrar "sip:${TARGET}" \
