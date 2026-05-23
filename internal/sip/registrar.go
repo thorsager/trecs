@@ -3,8 +3,10 @@ package sip
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"math"
+
+	"github.com/thorsager/trecs/internal/logutil"
 	"strconv"
 	"strings"
 	"sync"
@@ -95,19 +97,22 @@ func (r *Registrar) RemoveBindingsByFlowID(flowID string) {
 
 // HandleRegister implements the REGISTER request handler per RFC 3261 §10.
 // It can be registered directly with Server.On.
-func (r *Registrar) HandleRegister(req *proto.SIPMessage, tx Transaction) {
+func (r *Registrar) HandleRegister(ctx context.Context, req *proto.SIPMessage, tx Transaction) {
+	ctx = logutil.WithValues(ctx,
+		"contact", req.Headers.GetFirst("Contact"),
+		"expires", req.Headers.GetFirst("Expires"),
+		"require", req.Headers.GetFirst("Require"),
+		"supported", req.Headers.GetFirst("Supported"))
+	log := logutil.FromContext(ctx)
+
+	log.Debug("REGISTER received")
+
 	to, err := req.To()
 	if err != nil {
-		log.Printf("REGISTER: bad To header: %v", err)
+		log.Error("REGISTER: bad To header", "error", err)
 		tx.Respond(proto.NewResponse(req, 400, "Bad Request"))
 		return
 	}
-
-	log.Printf("REGISTER <<< raw Contact: %q, Expires: %q, Require: %q, Supported: %q",
-		req.Headers.GetFirst("Contact"),
-		req.Headers.GetFirst("Expires"),
-		req.Headers.GetFirst("Require"),
-		req.Headers.GetFirst("Supported"))
 
 	aor := to.URI
 
@@ -115,7 +120,7 @@ func (r *Registrar) HandleRegister(req *proto.SIPMessage, tx Transaction) {
 	// while the To header is the full AOR (sip:user@domain). We check that
 	// the host[:port] parts match.
 	if reqURI := req.RequestURI(); reqURI != "" && uriHostname(reqURI) != uriHostname(aor) {
-		log.Printf("REGISTER: Request-URI %q domain != To %q domain", reqURI, aor)
+		log.Warn("REGISTER: Request-URI domain mismatch", "requestURI", reqURI, "aor", aor)
 		tx.Respond(proto.NewResponse(req, 400, "Bad Request"))
 		return
 	}
@@ -140,7 +145,7 @@ func (r *Registrar) HandleRegister(req *proto.SIPMessage, tx Transaction) {
 
 	if last, ok := r.lastCSeq[callID]; ok && req.CSeq.Seq <= last {
 		r.mu.Unlock()
-		log.Printf("REGISTER: non-monotonic CSeq %d (last %d) for Call-ID %s", req.CSeq.Seq, last, callID)
+		log.Warn("REGISTER: non-monotonic CSeq", "cseq", req.CSeq.Seq, "last", last, "callID", callID)
 		tx.Respond(proto.NewResponse(req, 400, "Bad Request"))
 		return
 	}
@@ -148,7 +153,7 @@ func (r *Registrar) HandleRegister(req *proto.SIPMessage, tx Transaction) {
 	if hasStar {
 		if defaultExpires != 0 {
 			r.mu.Unlock()
-			log.Printf("REGISTER: star Contact without Expires: 0")
+			log.Warn("REGISTER: star Contact without Expires: 0")
 			tx.Respond(proto.NewResponse(req, 400, "Bad Request"))
 			return
 		}
@@ -235,7 +240,7 @@ func sendRegisterResponse(req *proto.SIPMessage, tx Transaction, bindings []*Bin
 		}
 	}
 
-	log.Printf("REGISTER response >>> %s", res)
+	slog.Debug("REGISTER responded", "statusCode", res.StatusCode())
 	tx.Respond(res)
 }
 
@@ -304,7 +309,7 @@ func extractContacts(raw []string) (contacts []parsedContact, hasStar bool) {
 			}
 			c, err := parseContactURI(part)
 			if err != nil {
-				log.Printf("REGISTER: skipping invalid contact: %v", err)
+				slog.Warn("REGISTER: skipping invalid contact", "error", err)
 				continue
 			}
 			contacts = append(contacts, c)

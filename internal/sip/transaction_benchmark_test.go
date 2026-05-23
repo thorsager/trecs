@@ -1,8 +1,10 @@
 package sip
 
 import (
+	"context"
 	"testing"
 
+	"github.com/thorsager/trecs/internal/logutil"
 	"github.com/thorsager/trecs/proto"
 )
 
@@ -17,13 +19,13 @@ func BenchmarkNISTRespond(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
-		tx := &NonInviteTransaction{
+	tx := &NonInviteTransaction{
 			branch:    "bench-nist",
 			method:    proto.SIPMethodOPTIONS,
-			state:     NISTTrying,
 			transport: trans,
 			manager:   tm,
 			reliable:  true,
+			logger:    logutil.NewTestLogger(b),
 		}
 		b.StartTimer()
 
@@ -50,6 +52,7 @@ func BenchmarkNISTRespondProvisionalThenFinal(b *testing.B) {
 			transport: trans,
 			manager:   tm,
 			reliable:  true,
+			logger:    logutil.NewTestLogger(b),
 		}
 		b.StartTimer()
 
@@ -75,6 +78,7 @@ func BenchmarkISTRespond2xx(b *testing.B) {
 			transport: trans,
 			manager:   tm,
 			reliable:  true,
+			logger:    logutil.NewTestLogger(b),
 		}
 		b.StartTimer()
 
@@ -99,6 +103,7 @@ func BenchmarkISTRespond300Plus(b *testing.B) {
 			transport: trans,
 			manager:   tm,
 			reliable:  true,
+			logger:    logutil.NewTestLogger(b),
 		}
 		b.StartTimer()
 
@@ -124,6 +129,7 @@ func BenchmarkISTRespondProvisionalThen300(b *testing.B) {
 			transport: trans,
 			manager:   tm,
 			reliable:  true,
+			logger:    logutil.NewTestLogger(b),
 		}
 		b.StartTimer()
 
@@ -137,7 +143,7 @@ func BenchmarkManagerHandleRequestNew(b *testing.B) {
 	req := testRequest(b, proto.SIPMethodOPTIONS, "bench-mgr-new", true)
 	ev := MessageEvent{Msg: req, Target: Target{}}
 
-	handler := func(r *proto.SIPMessage, tx Transaction) {
+	handler := func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
 		tx.Respond(proto.NewResponse(r, 200, "OK"))
 	}
 
@@ -149,7 +155,7 @@ func BenchmarkManagerHandleRequestNew(b *testing.B) {
 		tm := NewTransactionManager()
 		b.StartTimer()
 
-		tm.HandleRequest(ev, trans, handler)
+		tm.HandleRequest(b.Context(), ev, trans, handler)
 	}
 }
 
@@ -159,7 +165,7 @@ func BenchmarkManagerHandleRequestRetransmission(b *testing.B) {
 	ev := MessageEvent{Msg: req, Target: Target{}}
 
 	tm := NewTransactionManager()
-	tm.HandleRequest(ev, trans, func(r *proto.SIPMessage, tx Transaction) {
+	tm.HandleRequest(b.Context(), ev, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
 		tx.Respond(proto.NewResponse(r, 200, "OK"))
 	})
 
@@ -167,7 +173,7 @@ func BenchmarkManagerHandleRequestRetransmission(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		tm.HandleRequest(ev, trans, nil)
+		tm.HandleRequest(b.Context(), ev, trans, nil)
 	}
 }
 
@@ -177,7 +183,7 @@ func BenchmarkManagerHandleACK(b *testing.B) {
 	ev := MessageEvent{Msg: req, Target: Target{}}
 
 	tm := NewTransactionManager()
-	tm.HandleRequest(ev, trans, func(r *proto.SIPMessage, tx Transaction) {
+	tm.HandleRequest(b.Context(), ev, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
 		tx.Respond(proto.NewResponse(r, 404, "Not Found"))
 	})
 
@@ -195,7 +201,7 @@ func BenchmarkManagerHandleACK(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		tm.HandleACK(ackEv, trans)
+		tm.HandleACK(b.Context(), ackEv, trans)
 	}
 }
 
@@ -217,6 +223,6 @@ func BenchmarkManagerHandleACKNoMatch(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		tm.HandleACK(ackEv, trans)
+		tm.HandleACK(b.Context(), ackEv, trans)
 	}
 }

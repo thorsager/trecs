@@ -2,12 +2,13 @@ package media
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"math/rand"
 	"net"
 	"sync"
 	"time"
 
+	"github.com/thorsager/trecs/internal/logutil"
 	"github.com/thorsager/trecs/proto"
 )
 
@@ -25,10 +26,11 @@ type Bridge struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+	logger *slog.Logger
 }
 
-func NewBridge(aConn, bConn *RTPConn) *Bridge {
-	ctx, cancel := context.WithCancel(context.Background())
+func NewBridge(ctx context.Context, aConn, bConn *RTPConn) *Bridge {
+	ctx, cancel := context.WithCancel(ctx)
 	return &Bridge{
 		AConn:   aConn,
 		BConn:   bConn,
@@ -36,6 +38,7 @@ func NewBridge(aConn, bConn *RTPConn) *Bridge {
 		BSToASS: rand.Uint32(),
 		ctx:     ctx,
 		cancel:  cancel,
+		logger:  logutil.FromContext(ctx),
 	}
 }
 
@@ -59,7 +62,7 @@ func (b *Bridge) Start() {
 	}
 	if b.aRemote == nil || b.bRemote == nil {
 		b.mu.Unlock()
-		log.Printf("Bridge: cannot start — remote addresses not set")
+		b.logger.Warn("Bridge: cannot start — remote addresses not set")
 		return
 	}
 	b.started = true
@@ -67,7 +70,7 @@ func (b *Bridge) Start() {
 
 	go b.forward(b.AConn, b.BConn, b.bRemote, b.ASToBSS, "A→B")
 	go b.forward(b.BConn, b.AConn, b.aRemote, b.BSToASS, "B→A")
-	log.Printf("Bridge started: A↔B")
+	b.logger.Info("Bridge started: A↔B")
 }
 
 func (b *Bridge) Stop() {

@@ -1,6 +1,7 @@
 package media_test
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -684,7 +685,7 @@ func TestNewSession(t *testing.T) {
 	defer rtpConn.Close()
 
 	key := media.SessionKey{CallID: "test", LocalTag: "local", RemoteTag: "remote"}
-	s := media.NewSession(key, rtpConn, 0, rtpConn.LocalAddr())
+	s := media.NewSession(t.Context(), key, rtpConn, 0, rtpConn.LocalAddr())
 	require.NotNil(t, s)
 
 	assert.Equal(t, key, s.Key)
@@ -698,7 +699,7 @@ func TestSessionManager(t *testing.T) {
 	defer rtpConn.Close()
 
 	key := media.SessionKey{CallID: "test", LocalTag: "a", RemoteTag: "b"}
-	s := media.NewSession(key, rtpConn, 0, rtpConn.LocalAddr())
+	s := media.NewSession(t.Context(), key, rtpConn, 0, rtpConn.LocalAddr())
 	sm.Add(s)
 
 	got := sm.Get(key)
@@ -714,7 +715,7 @@ func TestSessionStateTransitions(t *testing.T) {
 	defer rtpConn.Close()
 
 	key := media.SessionKey{CallID: "state-test", LocalTag: "l", RemoteTag: "r"}
-	s := media.NewSession(key, rtpConn, 0, rtpConn.LocalAddr())
+	s := media.NewSession(t.Context(), key, rtpConn, 0, rtpConn.LocalAddr())
 
 	assert.Equal(t, media.SessionCreated, s.StateSafe())
 	s.SetState(media.SessionWaitingAck)
@@ -728,7 +729,7 @@ func TestSessionCancel(t *testing.T) {
 	defer rtpConn.Close()
 
 	key := media.SessionKey{CallID: "cancel-test", LocalTag: "l", RemoteTag: "r"}
-	s := media.NewSession(key, rtpConn, 0, rtpConn.LocalAddr())
+	s := media.NewSession(t.Context(), key, rtpConn, 0, rtpConn.LocalAddr())
 
 	ctx := s.Ctx()
 	select {
@@ -900,7 +901,7 @@ func createServer(t *testing.T) *sip.Server {
 	sm := media.NewSessionManager()
 	serverIP := "127.0.0.1"
 
-	srv.On(proto.SIPMethodINVITE, func(req *proto.SIPMessage, tx sip.Transaction) {
+	srv.On(proto.SIPMethodINVITE, func(ctx context.Context, req *proto.SIPMessage, tx sip.Transaction) {
 		t.Logf("INVITE received: Call-ID=%s", req.Headers.GetFirst("Call-ID"))
 
 		trying := proto.NewResponse(req, 100, "Trying")
@@ -949,7 +950,7 @@ func createServer(t *testing.T) *sip.Server {
 			LocalTag:  serverTag,
 		}
 
-		session := media.NewSession(key, rtpConn, payloadType, rtpAddr)
+		session := media.NewSession(t.Context(), key, rtpConn, payloadType, rtpAddr)
 
 		if sdpOffer != nil {
 			clientIP, clientPort := media.ExtractRTPAddr(sdpOffer)
@@ -982,7 +983,7 @@ func createServer(t *testing.T) *sip.Server {
 			callID, serverTag, rtpAddr.Port, sdpOffer != nil)
 	})
 
-	srv.OnAck(func(msg *proto.SIPMessage, target sip.Target, transport sip.Transport) {
+	srv.OnAck(func(ctx context.Context, msg *proto.SIPMessage, target sip.Target, transport sip.Transport) {
 		t.Logf("ACK received: Call-ID=%s", msg.Headers.GetFirst("Call-ID"))
 
 		from, err := msg.From()
@@ -1023,7 +1024,7 @@ func createServer(t *testing.T) *sip.Server {
 		}
 	})
 
-	srv.On(proto.SIPMethodBYE, func(req *proto.SIPMessage, tx sip.Transaction) {
+	srv.On(proto.SIPMethodBYE, func(ctx context.Context, req *proto.SIPMessage, tx sip.Transaction) {
 		t.Logf("BYE received: Call-ID=%s", req.Headers.GetFirst("Call-ID"))
 
 		trying := proto.NewResponse(req, 100, "Trying")
@@ -1061,7 +1062,7 @@ func createServer(t *testing.T) *sip.Server {
 
 	reg := sip.NewRegistrar()
 	srv.On(proto.SIPMethodREGISTER, reg.HandleRegister)
-	srv.On(proto.SIPMethodOPTIONS, func(req *proto.SIPMessage, tx sip.Transaction) {
+	srv.On(proto.SIPMethodOPTIONS, func(ctx context.Context, req *proto.SIPMessage, tx sip.Transaction) {
 		trying := proto.NewResponse(req, 100, "Trying")
 		tx.Respond(trying)
 		res := proto.NewResponse(req, 200, "OK")

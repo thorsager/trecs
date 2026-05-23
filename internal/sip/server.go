@@ -1,21 +1,23 @@
 package sip
 
 import (
-	"log"
+	"context"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/thorsager/trecs/internal/logutil"
 	"github.com/thorsager/trecs/proto"
 )
 
 // AckCallback is invoked for every incoming ACK after transaction handling.
-type AckCallback func(msg *proto.SIPMessage, target Target, transport Transport)
+type AckCallback func(ctx context.Context, msg *proto.SIPMessage, target Target, transport Transport)
 
 // ResponseHandler is invoked for incoming SIP responses that don't match
 // an existing server transaction.
-type ResponseHandler func(msg *proto.SIPMessage, target Target, transport Transport)
+type ResponseHandler func(ctx context.Context, msg *proto.SIPMessage, target Target, transport Transport)
 
 // Server is a SIP server that listens on UDP and TCP, manages transactions,
 // and dispatches requests to registered method handlers.
@@ -42,6 +44,8 @@ func NewServer(addr string) (*Server, error) {
 		udp.Close()
 		return nil, err
 	}
+	udp.SetLogger(slog.Default())
+	tcp.SetLogger(slog.Default())
 	return &Server{
 		udpTransport: udp,
 		tcpTransport: tcp,
@@ -124,22 +128,24 @@ func (s *Server) Start() {
 	go s.dispatch(s.tcpTransport)
 
 	s.started = true
-	log.Printf("SIP server listening on UDP and TCP")
+	slog.Info("SIP server listening on UDP and TCP")
 }
 
 // dispatch reads messages from a transport and routes them.
 func (s *Server) dispatch(transport Transport) {
 	defer s.wg.Done()
 	for ev := range transport.Receive() {
-		s.route(ev, transport)
+		ctx := context.Background()
+		ctx = logutil.NewContext(ctx, slog.Default().With("transport", TransportName(transport)))
+		s.route(ctx, ev, transport)
 	}
 }
 
 // route processes one incoming message.
-func (s *Server) route(ev MessageEvent, transport Transport) {
+func (s *Server) route(ctx context.Context, ev MessageEvent, transport Transport) {
 	if !ev.Msg.IsRequest() {
 		if s.responseHandler != nil {
-			s.responseHandler(ev.Msg, ev.Target, transport)
+			s.responseHandler(ctx, ev.Msg, ev.Target, transport)
 		}
 		return
 	}
@@ -149,9 +155,9 @@ func (s *Server) route(ev MessageEvent, transport Transport) {
 	// ACK for non-2xx is routed to the matching INVITE transaction.
 	// The AckCallback (if set) receives every ACK including 2xx variants.
 	if method == proto.SIPMethodACK {
-		s.txMgr.HandleACK(ev, transport)
+		s.txMgr.HandleACK(ctx, ev, transport)
 		if s.ackCallback != nil {
-			s.ackCallback(ev.Msg, ev.Target, transport)
+			s.ackCallback(ctx, ev.Msg, ev.Target, transport)
 		}
 		return
 	}
@@ -174,11 +180,11 @@ func (s *Server) route(ev MessageEvent, transport Transport) {
 		handler = s.defaultHandler
 	}
 
-	s.txMgr.HandleRequest(ev, transport, handler)
+	s.txMgr.HandleRequest(ctx, ev, transport, handler)
 }
 
 // defaultHandler responds with 501 Not Implemented for unregistered methods.
-func (s *Server) defaultHandler(req *proto.SIPMessage, tx Transaction) {
+func (s *Server) defaultHandler(ctx context.Context, req *proto.SIPMessage, tx Transaction) {
 	res := proto.NewResponse(req, 501, "Not Implemented")
 	tx.Respond(res)
 }
@@ -201,6 +207,6 @@ func (s *Server) Close() error {
 	}
 	s.wg.Wait()
 	s.started = false
-	log.Printf("SIP server stopped")
+	slog.Info("SIP server stopped")
 	return err
 }

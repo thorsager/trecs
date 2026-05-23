@@ -149,7 +149,7 @@ func BenchmarkRTPConn_EchoLoop(b *testing.B) {
 
 	serverAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: conn.LocalAddr().(*net.UDPAddr).Port}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(b.Context())
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -199,7 +199,7 @@ func BenchmarkBridgeForward(b *testing.B) {
 	}
 	defer clientB.Close()
 
-	bridge := media.NewBridge(serverA, serverB)
+	bridge := media.NewBridge(b.Context(), serverA, serverB)
 
 	aPort := clientA.LocalAddr().(*net.UDPAddr).Port
 	bPort := clientB.LocalAddr().(*net.UDPAddr).Port
@@ -261,7 +261,7 @@ func BenchmarkBridge_ForwardLoop(b *testing.B) {
 	}
 	defer clientB.Close()
 
-	bridge := media.NewBridge(serverA, serverB)
+	bridge := media.NewBridge(b.Context(), serverA, serverB)
 
 	aPort := clientA.LocalAddr().(*net.UDPAddr).Port
 	bPort := clientB.LocalAddr().(*net.UDPAddr).Port

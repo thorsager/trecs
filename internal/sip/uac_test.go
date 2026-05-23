@@ -1,7 +1,6 @@
 package sip
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -11,7 +10,7 @@ import (
 func TestUAC_CallingToProceeding(t *testing.T) {
 	mock := &mockTransport{}
 	target := &Target{}
-	uac := newUACTransaction(context.Background(), proto.SIPMethodINVITE, mock, target)
+	uac := newUACTransaction(t.Context(), proto.SIPMethodINVITE, mock, target)
 	uac.reliable = true
 
 	req := testRequest(t, proto.SIPMethodINVITE, uac.Branch, false)
@@ -39,7 +38,7 @@ func TestUAC_CallingToProceeding(t *testing.T) {
 func TestUAC_CallingToCompleted2xx(t *testing.T) {
 	mock := &mockTransport{}
 	target := &Target{}
-	uac := newUACTransaction(context.Background(), proto.SIPMethodINVITE, mock, target)
+	uac := newUACTransaction(t.Context(), proto.SIPMethodINVITE, mock, target)
 	uac.reliable = true
 
 	req := testRequest(t, proto.SIPMethodINVITE, uac.Branch, false)
@@ -61,7 +60,7 @@ func TestUAC_CallingToCompleted2xx(t *testing.T) {
 func TestUAC_CallingToCompleted3xx(t *testing.T) {
 	mock := &mockTransport{}
 	target := &Target{}
-	uac := newUACTransaction(context.Background(), proto.SIPMethodINVITE, mock, target)
+	uac := newUACTransaction(t.Context(), proto.SIPMethodINVITE, mock, target)
 	uac.reliable = true
 
 	req := testRequest(t, proto.SIPMethodINVITE, uac.Branch, false)
@@ -83,7 +82,7 @@ func TestUAC_CallingToCompleted3xx(t *testing.T) {
 func TestUAC_ProceedingToCompleted2xx(t *testing.T) {
 	mock := &mockTransport{}
 	target := &Target{}
-	uac := newUACTransaction(context.Background(), proto.SIPMethodINVITE, mock, target)
+	uac := newUACTransaction(t.Context(), proto.SIPMethodINVITE, mock, target)
 	uac.reliable = true
 
 	req := testRequest(t, proto.SIPMethodINVITE, uac.Branch, false)
@@ -111,7 +110,7 @@ func TestUAC_ProceedingToCompleted2xx(t *testing.T) {
 func TestUAC_TerminatedIgnoresResponses(t *testing.T) {
 	mock := &mockTransport{}
 	target := &Target{}
-	uac := newUACTransaction(context.Background(), proto.SIPMethodINVITE, mock, target)
+	uac := newUACTransaction(t.Context(), proto.SIPMethodINVITE, mock, target)
 	uac.reliable = true
 
 	req := testRequest(t, proto.SIPMethodINVITE, uac.Branch, false)
@@ -134,7 +133,7 @@ func TestUAC_TerminatedIgnoresResponses(t *testing.T) {
 func TestUAC_RetransmitOnUDP(t *testing.T) {
 	mock := &mockTransport{}
 	target := &Target{}
-	uac := newUACTransaction(context.Background(), proto.SIPMethodINVITE, mock, target)
+	uac := newUACTransaction(t.Context(), proto.SIPMethodINVITE, mock, target)
 	uac.reliable = false
 
 	req := testRequest(t, proto.SIPMethodINVITE, uac.Branch, false)
@@ -171,7 +170,7 @@ func TestUAC_RetransmitOnUDP(t *testing.T) {
 func TestUAC_NoRetransmitOnTCP(t *testing.T) {
 	mock := &mockTransport{}
 	target := &Target{}
-	uac := newUACTransaction(context.Background(), proto.SIPMethodINVITE, mock, target)
+	uac := newUACTransaction(t.Context(), proto.SIPMethodINVITE, mock, target)
 	uac.reliable = true
 
 	req := testRequest(t, proto.SIPMethodINVITE, uac.Branch, false)
@@ -195,7 +194,7 @@ func TestUAC_TimerBTimeout(t *testing.T) {
 
 	mock := &mockTransport{}
 	target := &Target{}
-	uac := newUACTransaction(context.Background(), proto.SIPMethodINVITE, mock, target)
+	uac := newUACTransaction(t.Context(), proto.SIPMethodINVITE, mock, target)
 	uac.reliable = true
 
 	req := testRequest(t, proto.SIPMethodINVITE, uac.Branch, false)
@@ -224,7 +223,7 @@ func TestUAC_TimerDCompleted(t *testing.T) {
 
 	mock := &mockTransport{}
 	target := &Target{}
-	uac := newUACTransaction(context.Background(), proto.SIPMethodINVITE, mock, target)
+	uac := newUACTransaction(t.Context(), proto.SIPMethodINVITE, mock, target)
 	uac.reliable = true
 
 	req := testRequest(t, proto.SIPMethodINVITE, uac.Branch, false)
@@ -248,8 +247,8 @@ func TestUAC_TimerDCompleted(t *testing.T) {
 func TestUACManager_BranchRouting(t *testing.T) {
 	mgr := NewUACManager()
 
-	uac1 := mgr.NewTransaction(context.Background(), proto.SIPMethodINVITE, &mockTransport{}, &Target{})
-	uac2 := mgr.NewTransaction(context.Background(), proto.SIPMethodOPTIONS, &mockTransport{}, &Target{})
+	uac1 := mgr.NewTransaction(t.Context(), proto.SIPMethodINVITE, &mockTransport{}, &Target{})
+	uac2 := mgr.NewTransaction(t.Context(), proto.SIPMethodOPTIONS, &mockTransport{}, &Target{})
 
 	req1 := testRequest(t, proto.SIPMethodINVITE, uac1.Branch, false)
 	req2 := testRequest(t, proto.SIPMethodOPTIONS, uac2.Branch, false)
@@ -288,7 +287,7 @@ func TestUACManager_BranchRouting(t *testing.T) {
 func TestUAC_CancelStopsTimers(t *testing.T) {
 	mock := &mockTransport{}
 	target := &Target{}
-	uac := newUACTransaction(context.Background(), proto.SIPMethodINVITE, mock, target)
+	uac := newUACTransaction(t.Context(), proto.SIPMethodINVITE, mock, target)
 	uac.reliable = false
 
 	req := testRequest(t, proto.SIPMethodINVITE, uac.Branch, false)
@@ -313,7 +312,7 @@ func TestUAC_CancelStopsTimers(t *testing.T) {
 func TestUAC_ProceedingStopsRetransmit(t *testing.T) {
 	mock := &mockTransport{}
 	target := &Target{}
-	uac := newUACTransaction(context.Background(), proto.SIPMethodINVITE, mock, target)
+	uac := newUACTransaction(t.Context(), proto.SIPMethodINVITE, mock, target)
 	uac.reliable = false
 
 	req := testRequest(t, proto.SIPMethodINVITE, uac.Branch, false)

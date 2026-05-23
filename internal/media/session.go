@@ -84,9 +84,9 @@ func (s *Session) StateSafe() SessionState {
 	return s.State
 }
 
-// NewSession creates a Session with a cancellable context.
-func NewSession(key SessionKey, rtpConn *RTPConn, payloadType uint8, serverAddr net.Addr) *Session {
-	ctx, cancel := context.WithCancel(context.Background())
+// NewSession creates a Session with a cancellable context derived from parent.
+func NewSession(parent context.Context, key SessionKey, rtpConn *RTPConn, payloadType uint8, serverAddr net.Addr) *Session {
+	ctx, cancel := context.WithCancel(parent)
 	return &Session{
 		Key:         key,
 		State:       SessionCreated,

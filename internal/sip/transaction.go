@@ -1,10 +1,12 @@
 package sip
 
 import (
-	"log"
+	"context"
+	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/thorsager/trecs/internal/logutil"
 	"github.com/thorsager/trecs/proto"
 )
 
@@ -22,7 +24,7 @@ type Transaction interface {
 }
 
 // RequestHandler processes a SIP request within a transaction.
-type RequestHandler func(req *proto.SIPMessage, tx Transaction)
+type RequestHandler func(ctx context.Context, req *proto.SIPMessage, tx Transaction)
 
 func TransportName(t Transport) string {
 	switch t.(type) {
@@ -74,6 +76,7 @@ type NonInviteTransaction struct {
 	manager   *TransactionManager
 	timerJ    *time.Timer
 	reliable  bool
+	logger    *slog.Logger
 }
 
 // Respond implements Transaction per RFC 3261 §17.2.3.
@@ -86,12 +89,13 @@ func (tx *NonInviteTransaction) Respond(res *proto.SIPMessage) {
 	}
 
 	sc := res.StatusCode()
+	tx.logger.Debug("NIST responding", "statusCode", sc, "reason", res.Status(), "state", tx.state)
 
 	switch {
 	case sc >= 100 && sc < 200:
 		if tx.state == NISTTrying {
 			tx.state = NISTProceeding
-			log.Printf("[%s] NIST %s → Proceeding (1xx)", TransportName(tx.transport), tx.branch)
+			tx.logger.Debug("NIST state transition", "state", "Proceeding", "status", "1xx")
 		}
 		tx.doSend(res)
 
@@ -99,10 +103,11 @@ func (tx *NonInviteTransaction) Respond(res *proto.SIPMessage) {
 		tx.lastResp = res
 		prev := tx.state
 		tx.state = NISTCompleted
-		log.Printf("[%s] NIST %s → Completed (%d) [from %s]", TransportName(tx.transport), tx.branch, sc, prev)
+		tx.logger.Debug("NIST state transition", "state", "Completed", "statusCode", sc, "from", prev)
 		tx.doSend(res)
 
 		if !tx.reliable {
+			logger := tx.logger
 			tx.timerJ = time.AfterFunc(64*T1, func() {
 				tx.mu.Lock()
 				tx.state = NISTTerminated
@@ -111,7 +116,7 @@ func (tx *NonInviteTransaction) Respond(res *proto.SIPMessage) {
 				tx.manager.mu.Lock()
 				delete(tx.manager.serverTxs, tx.branch)
 				tx.manager.mu.Unlock()
-				log.Printf("[%s] NIST %s terminated (Timer J)", TransportName(tx.transport), tx.branch)
+				logger.Debug("NIST terminated", "reason", "Timer J")
 			})
 		} else {
 			tx.timerJ = time.AfterFunc(0, func() {
@@ -128,7 +133,7 @@ func (tx *NonInviteTransaction) Respond(res *proto.SIPMessage) {
 
 func (tx *NonInviteTransaction) doSend(res *proto.SIPMessage) {
 	if err := tx.transport.Send(res, &tx.target); err != nil {
-		log.Printf("[%s] Send error on %s: %v", TransportName(tx.transport), tx.branch, err)
+		tx.logger.Error("Send error", "error", err)
 	}
 }
 
@@ -186,6 +191,7 @@ type InviteTransaction struct {
 	timerG    *time.Timer
 	reliable  bool
 	gCount    int
+	logger    *slog.Logger
 }
 
 // Respond implements Transaction per RFC 3261 §17.2.1.
@@ -198,6 +204,7 @@ func (tx *InviteTransaction) Respond(res *proto.SIPMessage) {
 	}
 
 	sc := res.StatusCode()
+	tx.logger.Debug("IST responding", "statusCode", sc, "reason", res.Status(), "state", tx.state)
 
 	switch {
 	case sc >= 100 && sc < 200:
@@ -209,13 +216,13 @@ func (tx *InviteTransaction) Respond(res *proto.SIPMessage) {
 		}
 		if tx.state == ISTTrying || tx.state == ISTProceeding {
 			tx.state = ISTProceeding
-			log.Printf("[%s] IST %s → Proceeding (1xx)", TransportName(tx.transport), tx.branch)
+			tx.logger.Debug("IST state transition", "state", "Proceeding", "status", "1xx")
 			tx.doSend(res)
 		}
 
 	case sc >= 200 && sc < 300:
 		tx.state = ISTTerminated
-		log.Printf("[%s] IST %s → Terminated (2xx)", TransportName(tx.transport), tx.branch)
+		tx.logger.Debug("IST state transition", "state", "Terminated", "status", "2xx")
 		tx.doSend(res)
 
 		tx.manager.mu.Lock()
@@ -226,9 +233,10 @@ func (tx *InviteTransaction) Respond(res *proto.SIPMessage) {
 		tx.lastResp = res
 		if tx.state != ISTCompleted {
 			tx.state = ISTCompleted
-			log.Printf("[%s] IST %s → Completed (%d)", TransportName(tx.transport), tx.branch, sc)
+			tx.logger.Debug("IST state transition", "state", "Completed", "statusCode", sc)
 			tx.doSend(res)
 
+			logger := tx.logger
 			tx.timerH = time.AfterFunc(64*T1, func() {
 				tx.mu.Lock()
 				tx.state = ISTTerminated
@@ -238,7 +246,7 @@ func (tx *InviteTransaction) Respond(res *proto.SIPMessage) {
 				tx.manager.mu.Lock()
 				delete(tx.manager.serverTxs, tx.branch)
 				tx.manager.mu.Unlock()
-				log.Printf("[%s] IST %s terminated (Timer H)", TransportName(tx.transport), tx.branch)
+				logger.Debug("IST terminated", "reason", "Timer H")
 			})
 
 			if !tx.reliable {
@@ -260,9 +268,10 @@ func (tx *InviteTransaction) ackReceived() {
 
 	tx.state = ISTConfirmed
 	tx.stopTimers()
-		log.Printf("[%s] IST %s → Confirmed (ACK)", TransportName(tx.transport), tx.branch)
+	tx.logger.Debug("IST state transition", "state", "Confirmed", "reason", "ACK")
 
 	if !tx.reliable {
+		logger := tx.logger
 		tx.timerI = time.AfterFunc(T4, func() {
 			tx.mu.Lock()
 			tx.state = ISTTerminated
@@ -271,7 +280,7 @@ func (tx *InviteTransaction) ackReceived() {
 			tx.manager.mu.Lock()
 			delete(tx.manager.serverTxs, tx.branch)
 			tx.manager.mu.Unlock()
-			log.Printf("[%s] IST %s terminated (Timer I)", TransportName(tx.transport), tx.branch)
+			logger.Debug("IST terminated", "reason", "Timer I")
 		})
 	} else {
 		tx.state = ISTTerminated
@@ -318,7 +327,7 @@ func (tx *InviteTransaction) scheduleTimerG() {
 
 func (tx *InviteTransaction) doSend(res *proto.SIPMessage) {
 	if err := tx.transport.Send(res, &tx.target); err != nil {
-		log.Printf("[%s] Send error on %s: %v", TransportName(tx.transport), tx.branch, err)
+		tx.logger.Error("Send error", "error", err)
 	}
 }
 
@@ -350,10 +359,10 @@ func NewTransactionManager() *TransactionManager {
 // existing transaction is found in a retransmittable state, the last response
 // is re-sent. Otherwise a new transaction is created (IST for INVITE, NIST
 // for all others) and the handler is called.
-func (tm *TransactionManager) HandleRequest(ev MessageEvent, transport Transport, handler RequestHandler) {
+func (tm *TransactionManager) HandleRequest(ctx context.Context, ev MessageEvent, transport Transport, handler RequestHandler) {
 	branch := ev.Msg.ViaBranch()
 	if branch == "" {
-		log.Printf("Dropping request: missing branch in Via header")
+		slog.Warn("Dropping request: missing branch in Via header")
 		return
 	}
 
@@ -367,6 +376,7 @@ func (tm *TransactionManager) HandleRequest(ev MessageEvent, transport Transport
 	}
 
 	reliable := ev.Msg.IsReliableTransport()
+	txnLogger := logutil.FromContext(ctx).With("branch", branch)
 
 	var tx Transaction
 	switch ev.Msg.Method() {
@@ -378,8 +388,9 @@ func (tm *TransactionManager) HandleRequest(ev MessageEvent, transport Transport
 			manager:   tm,
 			state:     ISTTrying,
 			reliable:  reliable,
+			logger:    txnLogger,
 		}
-		log.Printf("[%s] New INVITE transaction [%s] → Trying", TransportName(transport), branch)
+		txnLogger.Debug("New INVITE transaction", "state", "Trying")
 	default:
 		tx = &NonInviteTransaction{
 			branch:    branch,
@@ -389,16 +400,18 @@ func (tm *TransactionManager) HandleRequest(ev MessageEvent, transport Transport
 			manager:   tm,
 			state:     NISTTrying,
 			reliable:  reliable,
+			logger:    txnLogger,
 		}
-		log.Printf("[%s] New %s transaction [%s] → Trying", TransportName(transport), ev.Msg.Method(), branch)
+		txnLogger.Debug("New transaction", "method", string(ev.Msg.Method()), "state", "Trying")
 	}
 
 	tm.mu.Lock()
 	tm.serverTxs[branch] = tx
 	tm.mu.Unlock()
 
+	ctx = logutil.NewContext(ctx, txnLogger)
 	if handler != nil {
-		handler(ev.Msg, tx)
+		handler(ctx, ev.Msg, tx)
 	}
 }
 
@@ -408,14 +421,14 @@ func (tm *TransactionManager) handleRetransmission(tx Transaction) {
 		t.mu.Lock()
 		defer t.mu.Unlock()
 		if t.state == NISTCompleted && t.lastResp != nil {
-			log.Printf("[%s] Retransmission of %s, re-sending final response", TransportName(t.transport), t.method)
+			t.logger.Debug("Retransmission of non-INVITE, re-sending final response", "method", string(t.method))
 			t.transport.Send(t.lastResp, &t.target)
 		}
 	case *InviteTransaction:
 		t.mu.Lock()
 		defer t.mu.Unlock()
 		if t.state == ISTCompleted && t.lastResp != nil {
-			log.Printf("[%s] Retransmission of INVITE, re-sending final response", TransportName(t.transport))
+			t.logger.Debug("Retransmission of INVITE, re-sending final response")
 			t.transport.Send(t.lastResp, &t.target)
 		}
 	}
@@ -425,7 +438,7 @@ func (tm *TransactionManager) handleRetransmission(tx Transaction) {
 // corresponding INVITE transaction by Via branch. 2xx ACKs use a different
 // branch and won't match a transaction, but are still delivered to the
 // application layer via the ackCallback in Server.route().
-func (tm *TransactionManager) HandleACK(ev MessageEvent, transport Transport) {
+func (tm *TransactionManager) HandleACK(ctx context.Context, ev MessageEvent, transport Transport) {
 	branch := ev.Msg.ViaBranch()
 	if branch == "" {
 		return

@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/thorsager/trecs/internal/logutil"
 	"github.com/thorsager/trecs/proto"
 )
 
@@ -54,6 +55,7 @@ func expectNoEvent(t *testing.T, ch <-chan MessageEvent, timeout time.Duration) 
 func TestUDPBasicSendReceive(t *testing.T) {
 	transport, err := NewUDPTransport("127.0.0.1:15070")
 	require.NoError(t, err)
+	transport.SetLogger(logutil.NewTestLogger(t))
 	transport.Start()
 	defer transport.Close()
 
@@ -74,6 +76,7 @@ func TestUDPBasicSendReceive(t *testing.T) {
 func TestUDPOrderPreserved(t *testing.T) {
 	transport, err := NewUDPTransport("127.0.0.1:15071")
 	require.NoError(t, err)
+	transport.SetLogger(logutil.NewTestLogger(t))
 	transport.Start()
 	defer transport.Close()
 
@@ -97,6 +100,7 @@ func TestUDPOrderPreserved(t *testing.T) {
 func TestUDPInvalidDatagramDropped(t *testing.T) {
 	transport, err := NewUDPTransport("127.0.0.1:15072")
 	require.NoError(t, err)
+	transport.SetLogger(logutil.NewTestLogger(t))
 	transport.Start()
 	defer transport.Close()
 
@@ -117,6 +121,7 @@ func TestUDPInvalidDatagramDropped(t *testing.T) {
 func TestUDPCloseWhileIdle(t *testing.T) {
 	transport, err := NewUDPTransport("127.0.0.1:15073")
 	require.NoError(t, err)
+	transport.SetLogger(logutil.NewTestLogger(t))
 	transport.Start()
 
 	require.NoError(t, transport.Close())
@@ -130,6 +135,7 @@ func TestUDPCloseWhileIdle(t *testing.T) {
 func TestUDPRespondBack(t *testing.T) {
 	transport, err := NewUDPTransport("127.0.0.1:15074")
 	require.NoError(t, err)
+	transport.SetLogger(logutil.NewTestLogger(t))
 	transport.Start()
 	defer transport.Close()
 
@@ -160,6 +166,7 @@ func TestUDPRespondBack(t *testing.T) {
 func TestTCPBasicSendReceive(t *testing.T) {
 	transport, err := NewTCPTransport("127.0.0.1:15080")
 	require.NoError(t, err)
+	transport.SetLogger(logutil.NewTestLogger(t))
 	transport.Start()
 	defer transport.Close()
 
@@ -177,6 +184,7 @@ func TestTCPBasicSendReceive(t *testing.T) {
 func TestTCPMultipleMessagesSameConn(t *testing.T) {
 	transport, err := NewTCPTransport("127.0.0.1:15081")
 	require.NoError(t, err)
+	transport.SetLogger(logutil.NewTestLogger(t))
 	transport.Start()
 	defer transport.Close()
 
@@ -199,6 +207,7 @@ func TestTCPMultipleMessagesSameConn(t *testing.T) {
 func TestTCPRespondBack(t *testing.T) {
 	transport, err := NewTCPTransport("127.0.0.1:15082")
 	require.NoError(t, err)
+	transport.SetLogger(logutil.NewTestLogger(t))
 	transport.Start()
 	defer transport.Close()
 
@@ -226,6 +235,7 @@ func TestTCPRespondBack(t *testing.T) {
 func TestTCPRespondOnWrongConnFails(t *testing.T) {
 	transport, err := NewTCPTransport("127.0.0.1:15083")
 	require.NoError(t, err)
+	transport.SetLogger(logutil.NewTestLogger(t))
 	transport.Start()
 	defer transport.Close()
 
@@ -245,6 +255,7 @@ func TestTCPRespondOnWrongConnFails(t *testing.T) {
 func TestTCPCloseWaitsForHandlers(t *testing.T) {
 	transport, err := NewTCPTransport("127.0.0.1:15084")
 	require.NoError(t, err)
+	transport.SetLogger(logutil.NewTestLogger(t))
 	transport.Start()
 
 	conn := dialTCP(t, "127.0.0.1:15084")
@@ -275,6 +286,7 @@ func TestTCPCloseWaitsForHandlers(t *testing.T) {
 func TestTCPGracefulCloseNoConns(t *testing.T) {
 	transport, err := NewTCPTransport("127.0.0.1:15085")
 	require.NoError(t, err)
+	transport.SetLogger(logutil.NewTestLogger(t))
 	transport.Start()
 
 	require.NoError(t, transport.Close())
@@ -288,6 +300,7 @@ func TestTCPGracefulCloseNoConns(t *testing.T) {
 func TestTCPInvalidSIPDisconnects(t *testing.T) {
 	transport, err := NewTCPTransport("127.0.0.1:15086")
 	require.NoError(t, err)
+	transport.SetLogger(logutil.NewTestLogger(t))
 	transport.Start()
 	defer transport.Close()
 
@@ -310,6 +323,7 @@ func TestTCPInvalidSIPDisconnects(t *testing.T) {
 func TestTCPConcurrentConnections(t *testing.T) {
 	transport, err := NewTCPTransport("127.0.0.1:15087")
 	require.NoError(t, err)
+	transport.SetLogger(logutil.NewTestLogger(t))
 	transport.Start()
 	defer transport.Close()
 
@@ -432,6 +446,7 @@ func TestTargetFromContactDefaultTransportUDP(t *testing.T) {
 func TestUDPTransport_Send_Exceeds1300Bytes(t *testing.T) {
 	transport, err := NewUDPTransport("127.0.0.1:15090")
 	require.NoError(t, err)
+	transport.SetLogger(logutil.NewTestLogger(t))
 	transport.Start()
 	defer transport.Close()
 
@@ -454,6 +469,7 @@ func TestUDPTransport_Send_Exceeds1300Bytes(t *testing.T) {
 func TestUDPTransport_Send_WithinLimit(t *testing.T) {
 	transport, err := NewUDPTransport("127.0.0.1:15091")
 	require.NoError(t, err)
+	transport.SetLogger(logutil.NewTestLogger(t))
 	transport.Start()
 	defer transport.Close()
 

@@ -35,7 +35,7 @@ func TestBridgeForwardsBidirectional(t *testing.T) {
 	clientB := mustRTP(t)
 	defer clientB.Close()
 
-	bridge := media.NewBridge(serverA, serverB)
+	bridge := media.NewBridge(t.Context(), serverA, serverB)
 	bridge.SetARemote(v4Addr(t, clientA))
 	bridge.SetBRemote(v4Addr(t, clientB))
 	bridge.Start()
@@ -102,7 +102,7 @@ func TestBridgeStartWithoutAddresses(t *testing.T) {
 	b := mustRTP(t)
 	defer b.Close()
 
-	bridge := media.NewBridge(a, b)
+	bridge := media.NewBridge(t.Context(), a, b)
 	bridge.Start()
 	bridge.Stop()
 }
@@ -117,7 +117,7 @@ func TestBridgeStopCancels(t *testing.T) {
 	serverB := mustRTP(t)
 	defer serverB.Close()
 
-	bridge := media.NewBridge(serverA, serverB)
+	bridge := media.NewBridge(t.Context(), serverA, serverB)
 	bridge.SetARemote(v4Addr(t, clientA))
 	bridge.SetBRemote(v4Addr(t, clientB))
 	bridge.Start()

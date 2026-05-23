@@ -58,7 +58,7 @@ func TestRegistrar_RegisterSingleContact(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
 	if res == nil || res.StatusCode() != 200 {
@@ -85,7 +85,7 @@ func TestRegistrar_QueryBindings(t *testing.T) {
 	reg := NewRegistrar()
 	tx := &mockTx{}
 
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -102,7 +102,7 @@ func TestRegistrar_QueryBindings(t *testing.T) {
 		"CSeq: 2 REGISTER\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(query, tx)
+	reg.HandleRegister(t.Context(), query, tx)
 
 	res := tx.last()
 	if res == nil || res.StatusCode() != 200 {
@@ -121,7 +121,7 @@ func TestRegistrar_QueryBindings(t *testing.T) {
 func TestRegistrar_Unregister(t *testing.T) {
 	reg := NewRegistrar()
 
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -140,7 +140,7 @@ func TestRegistrar_Unregister(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5>;expires=0\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(unreg, tx)
+	reg.HandleRegister(t.Context(), unreg, tx)
 
 	res := tx.last()
 	if res == nil || res.StatusCode() != 200 {
@@ -156,16 +156,16 @@ func TestRegistrar_Unregister(t *testing.T) {
 func TestRegistrar_UnregisterAll(t *testing.T) {
 	reg := NewRegistrar()
 
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
-		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg1\r\n"+
+reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
 		"Call-ID: call-1\r\n"+
 		"CSeq: 1 REGISTER\r\n"+
-		"Contact: <sip:alice@192.168.1.5>\r\n"+
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
 		"Content-Length: 0\r\n\r\n"), &mockTx{})
 
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg2\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -185,7 +185,7 @@ func TestRegistrar_UnregisterAll(t *testing.T) {
 		"Expires: 0\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(unreg, tx)
+	reg.HandleRegister(t.Context(), unreg, tx)
 
 	res := tx.last()
 	if res == nil || res.StatusCode() != 200 {
@@ -209,7 +209,7 @@ func TestRegistrar_StarWithoutExpiresZero(t *testing.T) {
 		"Contact: *\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	if tx.last().StatusCode() != 400 {
 		t.Fatalf("expected 400 for star without Expires: 0, got %d", tx.last().StatusCode())
@@ -220,7 +220,7 @@ func TestRegistrar_CSeqMonotonic(t *testing.T) {
 	reg := NewRegistrar()
 
 	tx1 := &mockTx{}
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKone\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -234,7 +234,7 @@ func TestRegistrar_CSeqMonotonic(t *testing.T) {
 	}
 
 	tx2 := &mockTx{}
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtwo\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -261,7 +261,7 @@ func TestRegistrar_DefaultExpiry(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5>\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
 	if res.StatusCode() != 200 {
@@ -286,7 +286,7 @@ func TestRegistrar_MultipleContacts(t *testing.T) {
 		"Contact: <sip:alice@10.0.0.1>;expires=1800\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
 	if res.StatusCode() != 200 {
@@ -306,7 +306,7 @@ func TestRegistrar_MultipleContacts(t *testing.T) {
 func TestRegistrar_RefreshBinding(t *testing.T) {
 	reg := NewRegistrar()
 
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -316,7 +316,7 @@ func TestRegistrar_RefreshBinding(t *testing.T) {
 		"Content-Length: 0\r\n\r\n"), &mockTx{})
 
 	tx := &mockTx{}
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKrefresh\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -349,7 +349,7 @@ func TestRegistrar_BadRequestURIMismatch(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	if tx.last().StatusCode() != 400 {
 		t.Fatalf("expected 400 for Request-URI domain mismatch, got %d", tx.last().StatusCode())
@@ -372,7 +372,7 @@ func TestRegistrar_RequestURIWithPort(t *testing.T) {
 		"Contact: <sip:caller@192.168.1.5>;expires=3600\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	if tx.last().StatusCode() != 200 {
 		t.Fatalf("expected 200 for Request-URI with port matching To host, got %d", tx.last().StatusCode())
@@ -394,7 +394,7 @@ func TestRegistrar_RequestURIDomainOnly(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	if tx.last().StatusCode() != 200 {
 		t.Fatalf("expected 200 for domain-only Request-URI, got %d", tx.last().StatusCode())
@@ -413,7 +413,7 @@ func TestRegistrar_MissingCallID(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	if tx.last().StatusCode() != 400 {
 		t.Fatalf("expected 400 for missing Call-ID, got %d", tx.last().StatusCode())
@@ -423,7 +423,7 @@ func TestRegistrar_MissingCallID(t *testing.T) {
 func TestRegistrar_Sweep(t *testing.T) {
 	reg := NewRegistrar()
 
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -437,7 +437,7 @@ func TestRegistrar_Sweep(t *testing.T) {
 	reg.sweep()
 
 	tx := &mockTx{}
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKquery\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -474,7 +474,7 @@ func TestRegistrar_GlobalExpiresHeader(t *testing.T) {
 		"Expires: 1800\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
 	if res.StatusCode() != 200 {
@@ -505,7 +505,7 @@ func TestRegistrar_PerContactOverridesGlobal(t *testing.T) {
 		"Expires: 7200\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
 	if res.StatusCode() != 200 {
@@ -532,7 +532,7 @@ func TestRegistrar_CommaSeparatedContacts(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5>;expires=3600, <sip:alice@10.0.0.1>;expires=1800\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
 	if res.StatusCode() != 200 {
@@ -560,7 +560,7 @@ func TestRegistrar_AddrSpecContact(t *testing.T) {
 		"Contact: sip:alice@192.168.1.5;expires=3600\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
 	if res.StatusCode() != 200 {
@@ -593,7 +593,7 @@ func TestRegistrar_ContactURIParamsPreserved(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5;lr;transport=tcp>;expires=3600\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
 	if res.StatusCode() != 200 {
@@ -613,7 +613,7 @@ func TestRegistrar_ContactURIParamsPreserved(t *testing.T) {
 func TestRegistrar_UnregisterNonExistent(t *testing.T) {
 	reg := NewRegistrar()
 
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -632,7 +632,7 @@ func TestRegistrar_UnregisterNonExistent(t *testing.T) {
 		"Contact: <sip:alice@10.0.0.1>;expires=0\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
 	if res.StatusCode() != 200 {
@@ -652,7 +652,7 @@ func TestRegistrar_IndependentCSeqPerCallID(t *testing.T) {
 
 	// Register via Call-ID "call-a" with CSeq 1
 	tx1 := &mockTx{}
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKa\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -667,7 +667,7 @@ func TestRegistrar_IndependentCSeqPerCallID(t *testing.T) {
 	// Register via Call-ID "call-b" with CSeq 1 — should succeed (different
 	// Call-ID, independent counter).
 	tx2 := &mockTx{}
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKb\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -681,7 +681,7 @@ func TestRegistrar_IndependentCSeqPerCallID(t *testing.T) {
 
 	// Both bindings should exist
 	tx3 := &mockTx{}
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKq\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -700,7 +700,7 @@ func TestRegistrar_IndependentCSeqPerCallID(t *testing.T) {
 	// suppresses retransmissions, but the registrar's own CSeq check MUST
 	// also reject it.
 	tx4 := &mockTx{}
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKa2\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -714,7 +714,7 @@ func TestRegistrar_IndependentCSeqPerCallID(t *testing.T) {
 
 	// call-a CSeq 5 (already skipped 2,3,4; should work as long as > 1)
 	tx5 := &mockTx{}
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKa3\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -742,7 +742,7 @@ func TestRegistrar_ResponseDateIsRFC1123(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
 	date := res.Headers.GetFirst("Date")
@@ -772,7 +772,7 @@ func TestRegistrar_ResponseViaEchoRequest(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
 	if got := res.Headers.GetFirst("Via"); got != via {
@@ -795,7 +795,7 @@ func TestRegistrar_ResponseCSeqMatchesRequest(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
 	if res.CSeq.Seq != 42 || res.CSeq.Method != proto.SIPMethodREGISTER {
@@ -810,7 +810,7 @@ func TestRegistrar_MinimumExpiresInResponse(t *testing.T) {
 	reg := NewRegistrar()
 
 	// Register two contacts with different expires values.
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK1\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -821,7 +821,7 @@ func TestRegistrar_MinimumExpiresInResponse(t *testing.T) {
 		"Content-Length: 0\r\n\r\n"), &mockTx{})
 
 	tx := &mockTx{}
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKq\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -852,7 +852,7 @@ func TestRegistrar_MinimumExpiresInResponse(t *testing.T) {
 func TestRegistrar_ExpiresZeroWithoutStarIsQuery(t *testing.T) {
 	reg := NewRegistrar()
 
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKreg\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -871,7 +871,7 @@ func TestRegistrar_ExpiresZeroWithoutStarIsQuery(t *testing.T) {
 		"Expires: 0\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
 	if res.StatusCode() != 200 {
@@ -889,7 +889,7 @@ func TestRegistrar_ExpiresZeroWithoutStarIsQuery(t *testing.T) {
 func TestRegistrar_PartialUnregisterPreservesOthers(t *testing.T) {
 	reg := NewRegistrar()
 
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK1\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -900,7 +900,7 @@ func TestRegistrar_PartialUnregisterPreservesOthers(t *testing.T) {
 		"Content-Length: 0\r\n\r\n"), &mockTx{})
 
 	tx := &mockTx{}
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK2\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -928,7 +928,7 @@ func TestRegistrar_PartialUnregisterPreservesOthers(t *testing.T) {
 func TestRegistrar_GetBindings(t *testing.T) {
 	reg := NewRegistrar()
 
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -957,7 +957,7 @@ func TestRegistrar_GetBindingsNonexistentAOR(t *testing.T) {
 func TestRegistrar_GetBindingsCopySemantics(t *testing.T) {
 	reg := NewRegistrar()
 
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -992,7 +992,7 @@ func TestRegistrar_ContactWithOB(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5;transport=tcp>;ob;expires=3600\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	bindings := reg.GetBindings("sip:alice@example.com")
 	if len(bindings) != 1 {
@@ -1028,7 +1028,7 @@ func TestRegistrar_ContactWithOBAndRegID(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5;transport=tcp>;ob;reg-id=2;expires=3600\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	bindings := reg.GetBindings("sip:alice@example.com")
 	if len(bindings) != 1 {
@@ -1054,7 +1054,7 @@ func TestRegistrar_ContactWithOBAndRegID(t *testing.T) {
 func TestRegistrar_RemoveBindingsByFlowID(t *testing.T) {
 	reg := NewRegistrar()
 
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK1\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -1063,7 +1063,7 @@ func TestRegistrar_RemoveBindingsByFlowID(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
 		"Content-Length: 0\r\n\r\n"), &mockTx{})
 
-	reg.HandleRegister(sipMessage("REGISTER sip:bob@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:bob@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK2\r\n"+
 		"From: <sip:bob@example.com>;tag=def\r\n"+
 		"To: <sip:bob@example.com>\r\n"+
@@ -1097,7 +1097,7 @@ func TestRegistrar_FlowIDSetOnTCPRegistration(t *testing.T) {
 	}
 	tx := &mockTx{conn: mockConn}
 
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -1119,7 +1119,7 @@ func TestRegistrar_FlowIDSetOnTCPRegistration(t *testing.T) {
 func TestRegistrar_FlowIDEmptyForUDP(t *testing.T) {
 	reg := NewRegistrar()
 
-	reg.HandleRegister(sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+
@@ -1152,7 +1152,7 @@ func TestRegistrar_OBOnlyWithAngleBracket(t *testing.T) {
 		"Contact: sip:alice@192.168.1.5;ob;expires=3600\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	bindings := reg.GetBindings("sip:alice@example.com")
 	if len(bindings) != 1 {
@@ -1177,7 +1177,7 @@ func TestRegistrar_FlowTimer_TCP(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5;transport=tcp>;ob;expires=3600\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
 	if res == nil || res.StatusCode() != 200 {
@@ -1205,7 +1205,7 @@ func TestRegistrar_FlowTimer_UDP(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5;transport=tcp>;ob;expires=3600\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
 	if res == nil || res.StatusCode() != 200 {
@@ -1232,7 +1232,7 @@ func TestRegistrar_FlowTimer_NoSupportedOutbound(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5;transport=tcp>;expires=3600\r\n" +
 		"Content-Length: 0\r\n\r\n")
 
-	reg.HandleRegister(req, tx)
+	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
 	if res == nil || res.StatusCode() != 200 {

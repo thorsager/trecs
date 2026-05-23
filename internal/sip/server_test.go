@@ -1,6 +1,7 @@
 package sip
 
 import (
+	"context"
 	"net"
 	"strconv"
 	"testing"
@@ -16,7 +17,7 @@ func TestServerOPTIONSOverUDP(t *testing.T) {
 	}
 
 	handlerCalled := make(chan struct{})
-	server.On(proto.SIPMethodOPTIONS, func(req *proto.SIPMessage, tx Transaction) {
+	server.On(proto.SIPMethodOPTIONS, func(ctx context.Context, req *proto.SIPMessage, tx Transaction) {
 		trying := proto.NewResponse(req, 100, "Trying")
 		tx.Respond(trying)
 
@@ -133,7 +134,7 @@ func TestServerRoute_MaxForwardsZero(t *testing.T) {
 	}
 
 	handlerCalled := make(chan struct{}, 1)
-	server.On(proto.SIPMethodOPTIONS, func(req *proto.SIPMessage, tx Transaction) {
+	server.On(proto.SIPMethodOPTIONS, func(ctx context.Context, req *proto.SIPMessage, tx Transaction) {
 		close(handlerCalled)
 	})
 
@@ -189,7 +190,7 @@ func TestServerRoute_MaxForwardsDecrement(t *testing.T) {
 	}
 
 	receivedMF := make(chan int, 1)
-	server.On(proto.SIPMethodOPTIONS, func(req *proto.SIPMessage, tx Transaction) {
+	server.On(proto.SIPMethodOPTIONS, func(ctx context.Context, req *proto.SIPMessage, tx Transaction) {
 		mf := req.Headers.GetFirst("Max-Forwards")
 		val, _ := strconv.Atoi(mf)
 		receivedMF <- val
@@ -240,7 +241,7 @@ func TestServerRoute_ACK2xxRoutedToCallback(t *testing.T) {
 	}
 
 	ackReceived := make(chan *proto.SIPMessage, 1)
-	server.OnAck(func(msg *proto.SIPMessage, target Target, transport Transport) {
+	server.OnAck(func(ctx context.Context, msg *proto.SIPMessage, target Target, transport Transport) {
 		ackReceived <- msg
 	})
 

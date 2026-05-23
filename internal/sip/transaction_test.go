@@ -1,10 +1,12 @@
 package sip
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/thorsager/trecs/internal/logutil"
 	"github.com/thorsager/trecs/proto"
 )
 
@@ -112,6 +114,7 @@ func TestNISTInitialState(t *testing.T) {
 		transport: &mockTransport{},
 		manager:   tm,
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 	if tx.state != NISTTrying {
 		t.Fatalf("expected Trying, got %s", tx.state)
@@ -128,6 +131,7 @@ func TestNIST100Trying(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tx.Respond(proto.NewResponse(req, 100, "Trying"))
@@ -150,6 +154,7 @@ func TestNISTProvisionalToProceeding(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tx.Respond(proto.NewResponse(req, 180, "Ringing"))
@@ -172,6 +177,7 @@ func TestNISTMultipleProvisional(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tx.Respond(proto.NewResponse(req, 100, "Trying")) // Trying → Proceeding
@@ -196,6 +202,7 @@ func TestNISTFinalResponseToCompleted(t *testing.T) {
 		transport: trans,
 		manager:   tm,
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	// Add to manager so we can verify cleanup.
@@ -236,6 +243,7 @@ func TestNISTRetransmissionInCompleted(t *testing.T) {
 		manager:   tm,
 		reliable:  true,
 		lastResp:  proto.NewResponse(req, 200, "OK"),
+		logger:    logutil.NewTestLogger(t),
 	}
 	tm.mu.Lock()
 	tm.serverTxs["nist-retrans"] = tx
@@ -259,6 +267,7 @@ func TestNISTRetransmissionInTryingDropped(t *testing.T) {
 		transport: trans,
 		manager:   tm,
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tm.handleRetransmission(tx)
@@ -278,6 +287,7 @@ func TestNISTRespondAfterTerminated(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tx.Respond(proto.NewResponse(req, 200, "OK"))
@@ -297,6 +307,7 @@ func TestNISTCompletedFromProceeding(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tx.Respond(proto.NewResponse(req, 200, "OK"))
@@ -319,6 +330,7 @@ func TestNISTStatusCode300Plus(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  false,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	for _, code := range []int{300, 404, 500, 603} {
@@ -347,6 +359,7 @@ func TestNISTTimerJReliable(t *testing.T) {
 		transport: trans,
 		manager:   tm,
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 	tm.mu.Lock()
 	tm.serverTxs["nist-timer-j"] = tx
@@ -375,6 +388,7 @@ func TestNISTUnreliableTimerJ(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  false,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tx.Respond(proto.NewResponse(req, 200, "OK"))
@@ -399,6 +413,7 @@ func TestNISTProceedingKeepSending1xx(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	for i := 0; i < 3; i++ {
@@ -423,6 +438,7 @@ func TestISTInitialState(t *testing.T) {
 		state:    ISTTrying,
 		manager:  NewTransactionManager(),
 		reliable: true,
+		logger:   logutil.NewTestLogger(t),
 	}
 	if tx.state != ISTTrying {
 		t.Fatalf("expected Trying, got %s", tx.state)
@@ -438,6 +454,7 @@ func TestIST100Trying(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tx.Respond(proto.NewResponse(req, 100, "Trying"))
@@ -459,6 +476,7 @@ func TestISTProvisionalToProceeding(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tx.Respond(proto.NewResponse(req, 180, "Ringing"))
@@ -480,6 +498,7 @@ func TestIST100DoesNotTransition(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tx.Respond(proto.NewResponse(req, 100, "Trying"))
@@ -504,6 +523,7 @@ func TestIST2xxTerminatesImmediately(t *testing.T) {
 		transport: trans,
 		manager:   tm,
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 	tm.mu.Lock()
 	tm.serverTxs["ist-2xx"] = tx
@@ -536,6 +556,7 @@ func TestIST300PlusToCompleted(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tx.Respond(proto.NewResponse(req, 404, "Not Found"))
@@ -557,6 +578,7 @@ func TestISTMultipleFinalResponsesStayCompleted(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tx.Respond(proto.NewResponse(req, 404, "Not Found"))
@@ -587,6 +609,7 @@ func TestISTAckInCompletedToConfirmed(t *testing.T) {
 		transport: trans,
 		manager:   tm,
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 	tm.mu.Lock()
 	tm.serverTxs["ist-ack-good"] = tx
@@ -621,6 +644,7 @@ func TestISTAckInWrongStateNoop(t *testing.T) {
 		state:    ISTTrying,
 		manager:  NewTransactionManager(),
 		reliable: true,
+		logger:   logutil.NewTestLogger(t),
 	}
 
 	tx.ackReceived()
@@ -644,6 +668,7 @@ func TestISTRespondAfterTerminatedNoop(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tx.Respond(proto.NewResponse(req, 200, "OK"))
@@ -666,6 +691,7 @@ func TestISTRespondAfterConfirmedNoop(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tx.Respond(proto.NewResponse(req, 200, "OK"))
@@ -683,6 +709,7 @@ func TestIST100InProceeding(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tx.Respond(proto.NewResponse(req, 100, "Trying"))
@@ -704,6 +731,7 @@ func TestIST2xxFromProceeding(t *testing.T) {
 		transport: trans,
 		manager:   tm,
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 	tm.mu.Lock()
 	tm.serverTxs["ist-proc-2xx"] = tx
@@ -725,6 +753,7 @@ func TestIST300FromProceeding(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tx.Respond(proto.NewResponse(req, 486, "Busy Here"))
@@ -743,6 +772,7 @@ func TestISTTimerHSetOnCompleted(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tx.Respond(proto.NewResponse(req, 404, "Not Found"))
@@ -763,6 +793,7 @@ func TestISTTimerGNotStartedOnReliable(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tx.Respond(proto.NewResponse(req, 404, "Not Found"))
@@ -783,6 +814,7 @@ func TestISTAckStopsTimerH(t *testing.T) {
 		transport: trans,
 		manager:   NewTransactionManager(),
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tx.Respond(proto.NewResponse(req, 404, "Not Found"))
@@ -813,6 +845,7 @@ func TestISTRetransmissionInCompleted(t *testing.T) {
 		manager:   tm,
 		reliable:  true,
 		lastResp:  proto.NewResponse(req, 404, "Not Found"),
+		logger:    logutil.NewTestLogger(t),
 	}
 	tm.mu.Lock()
 	tm.serverTxs["ist-retrans"] = tx
@@ -834,6 +867,7 @@ func TestISTRetransmissionInTryingDropped(t *testing.T) {
 		transport: trans,
 		manager:   tm,
 		reliable:  true,
+		logger:    logutil.NewTestLogger(t),
 	}
 
 	tm.handleRetransmission(tx)
@@ -854,7 +888,7 @@ func TestManagerCreatesNISTForNonInvite(t *testing.T) {
 	ev := MessageEvent{Msg: req, Target: Target{}}
 
 	var created Transaction
-	tm.HandleRequest(ev, trans, func(r *proto.SIPMessage, tx Transaction) {
+	tm.HandleRequest(t.Context(), ev, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
 		created = tx
 	})
 
@@ -873,7 +907,7 @@ func TestManagerCreatesISTForInvite(t *testing.T) {
 	ev := MessageEvent{Msg: req, Target: Target{}}
 
 	var created Transaction
-	tm.HandleRequest(ev, trans, func(r *proto.SIPMessage, tx Transaction) {
+	tm.HandleRequest(t.Context(), ev, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
 		created = tx
 	})
 
@@ -900,7 +934,7 @@ func TestManagerMissingBranchDropped(t *testing.T) {
 	ev := MessageEvent{Msg: msg, Target: Target{}}
 
 	handlerCalled := false
-	tm.HandleRequest(ev, trans, func(r *proto.SIPMessage, tx Transaction) {
+	tm.HandleRequest(t.Context(), ev, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
 		handlerCalled = true
 	})
 
@@ -916,14 +950,14 @@ func TestManagerRetransmissionNIST(t *testing.T) {
 	ev := MessageEvent{Msg: req, Target: Target{}}
 
 	// First request: create and complete.
-	tm.HandleRequest(ev, trans, func(r *proto.SIPMessage, tx Transaction) {
+	tm.HandleRequest(t.Context(), ev, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
 		tx.Respond(proto.NewResponse(r, 200, "OK"))
 	})
 
 	firstSent := trans.sentCount()
 
 	// Second request with same branch: retransmission.
-	tm.HandleRequest(ev, trans, nil)
+	tm.HandleRequest(t.Context(), ev, trans, nil)
 
 	// Should have re-sent the last response.
 	if trans.sentCount() <= firstSent {
@@ -938,14 +972,14 @@ func TestManagerRetransmissionIST(t *testing.T) {
 	ev := MessageEvent{Msg: req, Target: Target{}}
 
 	// First request: create and send 300+ to reach Completed.
-	tm.HandleRequest(ev, trans, func(r *proto.SIPMessage, tx Transaction) {
+	tm.HandleRequest(t.Context(), ev, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
 		tx.Respond(proto.NewResponse(r, 404, "Not Found"))
 	})
 
 	firstSent := trans.sentCount()
 
 	// Second request with same branch: retransmission.
-	tm.HandleRequest(ev, trans, nil)
+	tm.HandleRequest(t.Context(), ev, trans, nil)
 
 	if trans.sentCount() <= firstSent {
 		t.Fatal("expected retransmission to send another response")
@@ -959,7 +993,7 @@ func TestManagerHandleACKMatchesIST(t *testing.T) {
 	ev := MessageEvent{Msg: req, Target: Target{}}
 
 	// Create IST in Completed.
-	tm.HandleRequest(ev, trans, func(r *proto.SIPMessage, tx Transaction) {
+	tm.HandleRequest(t.Context(), ev, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
 		tx.Respond(proto.NewResponse(r, 404, "Not Found"))
 	})
 
@@ -974,7 +1008,7 @@ func TestManagerHandleACKMatchesIST(t *testing.T) {
 	ack, _ := proto.UnmarshalSIPDatagram([]byte(ackRaw))
 	ackEv := MessageEvent{Msg: ack, Target: Target{}}
 
-	tm.HandleACK(ackEv, trans)
+	tm.HandleACK(t.Context(), ackEv, trans)
 
 	// Timer I = 0 for reliable → terminates synchronously.
 	tm.mu.Lock()
@@ -1000,7 +1034,7 @@ func TestManagerHandleACKNoMatch(t *testing.T) {
 	ackEv := MessageEvent{Msg: ack, Target: Target{}}
 
 	// Should not panic.
-	tm.HandleACK(ackEv, trans)
+	tm.HandleACK(t.Context(), ackEv, trans)
 }
 
 func TestManagerHandleACKNonInviteNoop(t *testing.T) {
@@ -1009,7 +1043,7 @@ func TestManagerHandleACKNonInviteNoop(t *testing.T) {
 	req := testRequest(t, proto.SIPMethodOPTIONS, "mgr-ack-nist", true)
 	ev := MessageEvent{Msg: req, Target: Target{}}
 
-	tm.HandleRequest(ev, trans, func(r *proto.SIPMessage, tx Transaction) {
+	tm.HandleRequest(t.Context(), ev, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
 		tx.Respond(proto.NewResponse(r, 200, "OK"))
 	})
 
@@ -1021,7 +1055,7 @@ func TestManagerHandleACKNonInviteNoop(t *testing.T) {
 		"CSeq: 1 ACK\r\n" +
 		"Content-Length: 0\r\n\r\n"
 	ack, _ := proto.UnmarshalSIPDatagram([]byte(ackRaw))
-	tm.HandleACK(MessageEvent{Msg: ack}, trans)
+	tm.HandleACK(t.Context(), MessageEvent{Msg: ack}, trans)
 	// Should not panic, transaction should remain NIST.
 }
 
@@ -1032,7 +1066,7 @@ func TestManagerHandlerCalledForNewRequest(t *testing.T) {
 	ev := MessageEvent{Msg: req, Target: Target{}}
 
 	called := false
-	tm.HandleRequest(ev, trans, func(r *proto.SIPMessage, tx Transaction) {
+	tm.HandleRequest(t.Context(), ev, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
 		called = true
 		if r != req {
 			t.Fatal("expected same request pointer")
@@ -1051,13 +1085,13 @@ func TestManagerHandlerNotCalledForRetransmission(t *testing.T) {
 	ev := MessageEvent{Msg: req, Target: Target{}}
 
 	handlerCount := 0
-	tm.HandleRequest(ev, trans, func(r *proto.SIPMessage, tx Transaction) {
+	tm.HandleRequest(t.Context(), ev, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
 		handlerCount++
 		tx.Respond(proto.NewResponse(r, 200, "OK"))
 	})
 
 	// Retransmission: handler should NOT be called.
-	tm.HandleRequest(ev, trans, func(r *proto.SIPMessage, tx Transaction) {
+	tm.HandleRequest(t.Context(), ev, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
 		handlerCount++
 	})
 
@@ -1079,7 +1113,7 @@ func TestManagerConcurrentRequests(t *testing.T) {
 			branch := "mgr-concurrent-" + itoa(i)
 			req := testRequest(t, proto.SIPMethodOPTIONS, branch, true)
 			ev := MessageEvent{Msg: req, Target: Target{}}
-			tm.HandleRequest(ev, trans, func(r *proto.SIPMessage, tx Transaction) {
+			tm.HandleRequest(t.Context(), ev, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
 				tx.Respond(proto.NewResponse(r, 200, "OK"))
 			})
 		}(i)
@@ -1101,7 +1135,7 @@ func TestManagerHandleACKEmptyBranch(t *testing.T) {
 		"CSeq: 1 ACK\r\n" +
 		"Content-Length: 0\r\n\r\n"
 	ack, _ := proto.UnmarshalSIPDatagram([]byte(raw))
-	tm.HandleACK(MessageEvent{Msg: ack}, &mockTransport{})
+	tm.HandleACK(t.Context(), MessageEvent{Msg: ack}, &mockTransport{})
 	// Should not panic.
 }
 
@@ -1111,7 +1145,7 @@ func TestACKAfterTerminatedNoop(t *testing.T) {
 	req := testRequest(t, proto.SIPMethodINVITE, "ist-ack-after-term", true)
 	ev := MessageEvent{Msg: req, Target: Target{}}
 
-	tm.HandleRequest(ev, trans, func(r *proto.SIPMessage, tx Transaction) {
+	tm.HandleRequest(t.Context(), ev, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
 		tx.Respond(proto.NewResponse(r, 200, "OK"))
 	})
 
@@ -1125,6 +1159,6 @@ func TestACKAfterTerminatedNoop(t *testing.T) {
 		"Content-Length: 0\r\n\r\n"
 	ack, _ := proto.UnmarshalSIPDatagram([]byte(ackRaw))
 	ackEv := MessageEvent{Msg: ack}
-	tm.HandleACK(ackEv, trans)
+	tm.HandleACK(t.Context(), ackEv, trans)
 	// Should not panic, ACK silently dropped.
 }

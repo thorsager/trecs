@@ -5,12 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/thorsager/trecs/internal/logutil"
 	"github.com/thorsager/trecs/proto"
 )
 
@@ -57,6 +58,12 @@ type UDPTransport struct {
 	conn      *net.UDPConn
 	messages  chan MessageEvent
 	closeOnce sync.Once
+	logger    *slog.Logger
+}
+
+// SetLogger sets the logger for trace output.
+func (t *UDPTransport) SetLogger(l *slog.Logger) {
+	t.logger = l
 }
 
 // NewUDPTransport resolves addr and binds a UDP socket.
@@ -98,6 +105,14 @@ func (t *UDPTransport) readLoop() {
 		if err != nil {
 			continue
 		}
+		if t.logger != nil {
+			logutil.Trace(t.logger, "SIP message received",
+				"protocol", "UDP",
+				"local", t.conn.LocalAddr().String(),
+				"remote", addr.String(),
+				"payload", string(buf[:n]),
+			)
+		}
 		t.messages <- MessageEvent{Msg: msg, Target: Target{Addr: addr}}
 	}
 }
@@ -119,6 +134,14 @@ func (t *UDPTransport) Send(msg *proto.SIPMessage, target *Target) error {
 	udpAddr, ok := target.Addr.(*net.UDPAddr)
 	if !ok {
 		return net.InvalidAddrError("UDP transport requires a UDP address")
+	}
+	if t.logger != nil {
+		logutil.Trace(t.logger, "SIP message sent",
+			"protocol", "UDP",
+			"local", t.conn.LocalAddr().String(),
+			"remote", udpAddr.String(),
+			"payload", string(data),
+		)
 	}
 	_, err = t.conn.WriteToUDP(data, udpAddr)
 	return err
@@ -147,6 +170,12 @@ type TCPTransport struct {
 	keepaliveInterval  time.Duration
 	keepaliveCtx       context.Context
 	keepaliveCancel    context.CancelFunc
+	logger             *slog.Logger
+}
+
+// SetLogger sets the logger for trace output.
+func (t *TCPTransport) SetLogger(l *slog.Logger) {
+	t.logger = l
 }
 
 // NewTCPTransport resolves addr and starts a TCP listener.
@@ -241,10 +270,12 @@ func (t *TCPTransport) HandleOutbound(conn net.Conn) (net.Conn, error) {
 // goroutine. It returns when the connection dies or is shut down. Used by
 // both inbound (handleConnection) and outbound (HandleOutbound) paths.
 func (t *TCPTransport) startReader(conn net.Conn, swc *syncWriteConn, fc *FlowConn, flowID string) {
+	log := slog.With("flowID", flowID)
+
 	ctx, cancel := context.WithCancel(t.keepaliveCtx)
 	fc.cancel = cancel
 
-	kt := NewKeepaliveTracker(t.keepaliveInterval)
+	kt := NewKeepaliveTracker(t.keepaliveInterval, log)
 	go kt.Run(ctx, swc, flowID)
 
 	defer cancel()
@@ -263,7 +294,7 @@ func (t *TCPTransport) startReader(conn net.Conn, swc *syncWriteConn, fc *FlowCo
 
 		drained, err := t.drainCRLFKeepalive(br, conn, kt)
 		if err != nil {
-			log.Printf("TCP flow %s read error: %v", flowID, err)
+			log.Error("TCP flow read error", "error", err)
 			return
 		}
 		if drained {
@@ -281,6 +312,16 @@ func (t *TCPTransport) startReader(conn net.Conn, swc *syncWriteConn, fc *FlowCo
 		}
 		kt.UpdateActivity()
 		fc.LastUsed = time.Now()
+
+		if t.logger != nil {
+			logutil.Trace(t.logger, "SIP message received",
+				"protocol", "TCP",
+				"local", conn.LocalAddr().String(),
+				"remote", swc.RemoteAddr().String(),
+				"flowID", flowID,
+				"payload", msg.String(),
+			)
+		}
 
 		select {
 		case t.messages <- MessageEvent{Msg: msg, Target: Target{Addr: swc.RemoteAddr(), Conn: swc, FlowID: flowID}}:
@@ -363,6 +404,14 @@ func (t *TCPTransport) Send(msg *proto.SIPMessage, target *Target) error {
 	if target.Conn == nil {
 		return net.InvalidAddrError("TCP transport requires a connection")
 	}
+	if t.logger != nil {
+		logutil.Trace(t.logger, "SIP message sent",
+			"protocol", "TCP",
+			"local", target.Conn.LocalAddr().String(),
+			"remote", target.Conn.RemoteAddr().String(),
+			"payload", string(data),
+		)
+	}
 	_, err = target.Conn.Write(data)
 	return err
 }
@@ -390,7 +439,7 @@ func TargetFromContact(contactURI string) (*Target, string, error) {
 		if err != nil {
 			return nil, "", err
 		}
-		log.Printf("Outbound TCP connection to %s", addr)
+		slog.Info("Outbound TCP connection", "addr", addr)
 		return &Target{Conn: conn}, "TCP", nil
 	}
 

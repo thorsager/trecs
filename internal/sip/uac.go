@@ -5,10 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/thorsager/trecs/internal/logutil"
 	"github.com/thorsager/trecs/proto"
 )
 
@@ -69,6 +70,8 @@ type UACTransaction struct {
 	timerD    *time.Timer
 	retxCount int
 
+	logger *slog.Logger
+
 	manager *UACManager
 
 	ctx    context.Context
@@ -77,7 +80,7 @@ type UACTransaction struct {
 
 func newUACTransaction(ctx context.Context, method proto.SIPMethod, transport Transport, target *Target) *UACTransaction {
 	ctx, cancel := context.WithCancel(ctx)
-	return &UACTransaction{
+	u := &UACTransaction{
 		Branch:    GenerateBranch(),
 		Method:    method,
 		Responses: make(chan *proto.SIPMessage, 4),
@@ -88,6 +91,8 @@ func newUACTransaction(ctx context.Context, method proto.SIPMethod, transport Tr
 		ctx:       ctx,
 		cancel:    cancel,
 	}
+	u.logger = logutil.FromContext(ctx).With("branch", u.Branch, "transport", TransportName(transport))
+	return u
 }
 
 func (u *UACTransaction) Send(req *proto.SIPMessage) error {
@@ -95,10 +100,15 @@ func (u *UACTransaction) Send(req *proto.SIPMessage) error {
 	u.request = req
 	u.stateMu.Unlock()
 
+	u.logger.Debug("UAC sending request",
+		"method", string(req.Method()),
+		"requestURI", req.RequestURI(),
+		"callID", req.Headers.GetFirst("Call-ID"))
+
 	if err := u.transport.Send(req, u.target); err != nil {
 		return err
 	}
-	log.Printf("[%s] UAC %s → Calling (sent %s)", TransportName(u.transport), u.Branch, u.Method)
+	u.logger.Debug("UAC state transition", "state", "Calling", "method", string(u.Method))
 
 	if !u.reliable {
 		u.startTimerA()
@@ -117,6 +127,7 @@ func (u *UACTransaction) HandleResponse(msg *proto.SIPMessage) {
 	}
 
 	sc := msg.StatusCode()
+	u.logger.Debug("UAC response received", "statusCode", sc, "reason", msg.Status())
 
 	switch {
 	case sc >= 100 && sc < 200:
@@ -126,7 +137,7 @@ func (u *UACTransaction) HandleResponse(msg *proto.SIPMessage) {
 				u.timerA.Stop()
 				u.timerA = nil
 			}
-			log.Printf("[%s] UAC %s → Proceeding (%d)", TransportName(u.transport), u.Branch, sc)
+			u.logger.Debug("UAC state transition", "state", "Proceeding", "statusCode", sc)
 		}
 		select {
 		case u.Responses <- msg:
@@ -136,7 +147,7 @@ func (u *UACTransaction) HandleResponse(msg *proto.SIPMessage) {
 	case sc >= 200 && sc < 300:
 		if u.state == UACStateCalling || u.state == UACStateProceeding {
 			u.transitionToCompleted()
-			log.Printf("[%s] UAC %s → Completed (%d)", TransportName(u.transport), u.Branch, sc)
+			u.logger.Debug("UAC state transition", "state", "Completed", "statusCode", sc)
 		}
 		select {
 		case u.Responses <- msg:
@@ -146,7 +157,7 @@ func (u *UACTransaction) HandleResponse(msg *proto.SIPMessage) {
 	case sc >= 300:
 		if u.state == UACStateCalling || u.state == UACStateProceeding {
 			u.transitionToCompleted()
-			log.Printf("[%s] UAC %s → Completed (%d)", TransportName(u.transport), u.Branch, sc)
+			u.logger.Debug("UAC state transition", "state", "Completed", "statusCode", sc)
 			if u.Method == proto.SIPMethodINVITE {
 				u.sendACK(msg)
 			}
@@ -177,7 +188,7 @@ func (u *UACTransaction) transitionToCompleted() {
 		u.stateMu.Lock()
 		u.state = UACStateTerminated
 		u.stateMu.Unlock()
-		log.Printf("[%s] UAC %s terminated (Timer D)", TransportName(u.transport), u.Branch)
+		u.logger.Debug("UAC terminated", "reason", "Timer D")
 		if u.manager != nil {
 			u.manager.Deregister(u.Branch)
 		}
@@ -201,11 +212,11 @@ func (u *UACTransaction) scheduleTimerA() {
 			return
 		}
 		if err := u.transport.Send(u.request, u.target); err != nil {
-			log.Printf("[%s] UAC retransmit error on %s: %v", TransportName(u.transport), u.Branch, err)
+			u.logger.Error("UAC retransmit error", "error", err)
 			u.stateMu.Unlock()
 			return
 		}
-		log.Printf("[%s] UAC %s retransmit #%d", TransportName(u.transport), u.Branch, u.retxCount+1)
+		u.logger.Debug("UAC retransmit", "count", u.retxCount+1)
 		u.retxCount++
 		u.stateMu.Unlock()
 		u.scheduleTimerA()
@@ -221,7 +232,7 @@ func (u *UACTransaction) startTimerB() {
 			u.timerA = nil
 		}
 		u.stateMu.Unlock()
-		log.Printf("[%s] UAC %s terminated (Timer B)", TransportName(u.transport), u.Branch)
+		u.logger.Debug("UAC terminated", "reason", "Timer B")
 		select {
 		case u.Errors <- TimeoutError{Method: u.Method}:
 		default:
@@ -255,9 +266,9 @@ func (u *UACTransaction) sendACK(resp *proto.SIPMessage) {
 	ack.Headers.Add("Content-Length", "0")
 
 	if err := u.transport.Send(ack, u.target); err != nil {
-		log.Printf("[%s] UAC %s ACK send error: %v", TransportName(u.transport), u.Branch, err)
+		u.logger.Error("UAC ACK send error", "error", err)
 	} else {
-		log.Printf("[%s] UAC %s ACK sent for %d response", TransportName(u.transport), u.Branch, resp.StatusCode())
+		u.logger.Debug("UAC ACK sent", "statusCode", resp.StatusCode())
 	}
 }
 
@@ -329,14 +340,14 @@ func (m *UACManager) Register(branch string, tx *UACTransaction) {
 	m.mu.Lock()
 	m.pending[branch] = tx
 	m.mu.Unlock()
-	log.Printf("UACManager: registered %s [%s]", tx.Method, branch)
+	tx.logger.Debug("UACManager registered", "method", string(tx.Method))
 }
 
 func (m *UACManager) Deregister(branch string) {
 	m.mu.Lock()
 	delete(m.pending, branch)
 	m.mu.Unlock()
-	log.Printf("UACManager: deregistered [%s]", branch)
+	slog.Debug("UACManager deregistered", "branch", branch)
 }
 
 func (m *UACManager) Get(branch string) *UACTransaction {
@@ -351,6 +362,13 @@ func (m *UACManager) HandleResponse(msg *proto.SIPMessage) {
 	if branch == "" {
 		return
 	}
+
+	sc := msg.StatusCode()
+	slog.Debug("UACManager response received",
+		"branch", branch,
+		"statusCode", sc,
+		"reason", msg.Status(),
+		"callID", msg.Headers.GetFirst("Call-ID"))
 
 	m.mu.Lock()
 	tx, exists := m.pending[branch]

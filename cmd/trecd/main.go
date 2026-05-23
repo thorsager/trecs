@@ -3,23 +3,26 @@ package main
 import (
 	"context"
 	"flag"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/thorsager/trecs/internal/b2bua"
 	"github.com/thorsager/trecs/internal/dialplan"
+	"github.com/thorsager/trecs/internal/logutil"
 	"github.com/thorsager/trecs/internal/media"
 	"github.com/thorsager/trecs/internal/sip"
 	"github.com/thorsager/trecs/proto"
 )
 
 var (
-	flagAddr     string
-	flagRTPMin   int
-	flagRTPMax   int
-	flagDialplan string
+	flagAddr      string
+	flagRTPMin    int
+	flagRTPMax    int
+	flagDialplan  string
+	flagLogLevel  string
+	flagLogFormat string
 )
 
 var serverIP = "127.0.0.1"
@@ -29,22 +32,57 @@ func init() {
 	flag.IntVar(&flagRTPMin, "rtp-min", 0, "RTP port range start (0 = OS-assigned)")
 	flag.IntVar(&flagRTPMax, "rtp-max", 0, "RTP port range end (0 = OS-assigned)")
 	flag.StringVar(&flagDialplan, "dialplan", "", "Path to dialplan JSON file")
+	flag.StringVar(&flagLogLevel, "log-level", "info", "Log level (trace, debug, info, warn, error)")
+	flag.StringVar(&flagLogFormat, "log-format", "text", "Log format (text or json)")
 	flag.Parse()
 }
 
 func main() {
+	var lvl slog.Level
+	switch flagLogLevel {
+	case "trace":
+		lvl = logutil.LevelTrace
+	default:
+		if err := lvl.UnmarshalText([]byte(flagLogLevel)); err != nil {
+			lvl = slog.LevelInfo
+		}
+	}
+	var slogHandler slog.Handler
+	opts := &slog.HandlerOptions{
+		Level: lvl,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.LevelKey {
+				if level, ok := a.Value.Any().(slog.Level); ok {
+					switch level {
+					case logutil.LevelTrace:
+						a.Value = slog.StringValue("TRACE")
+					}
+				}
+			}
+			return a
+		},
+	}
+	switch flagLogFormat {
+	case "json":
+		slogHandler = slog.NewJSONHandler(os.Stderr, opts)
+	default:
+		slogHandler = slog.NewTextHandler(os.Stderr, opts)
+	}
+	slog.SetDefault(slog.New(slogHandler))
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	if flagRTPMin > 0 && flagRTPMax > 0 && flagRTPMax >= flagRTPMin {
-		log.Printf("RTP port range: %d-%d", flagRTPMin, flagRTPMax)
+		slog.Info("RTP port range", "min", flagRTPMin, "max", flagRTPMax)
 	} else {
-		log.Printf("RTP port range: OS-assigned")
+		slog.Info("RTP port range: OS-assigned")
 	}
 
 	server, err := sip.NewServer(flagAddr)
 	if err != nil {
-		log.Fatalf("Failed to create server: %v", err)
+		slog.Error("Failed to create server", "error", err)
+		os.Exit(1)
 	}
 
 	reg := sip.NewRegistrar()
@@ -57,9 +95,10 @@ func main() {
 		var err error
 		dp, err = dialplan.NewFromFile(flagDialplan)
 		if err != nil {
-			log.Fatalf("Failed to load dialplan: %v", err)
+			slog.Error("Failed to load dialplan", "error", err)
+			os.Exit(1)
 		}
-		log.Printf("Dialplan loaded from %s", flagDialplan)
+		slog.Info("Dialplan loaded", "path", flagDialplan)
 	}
 
 	h := b2bua.NewHandler(b2bua.Config{
@@ -84,8 +123,8 @@ func main() {
 	server.Start()
 	defer server.Close()
 
-	log.Printf("T-REC SIP server listening on %s (UDP + TCP)", flagAddr)
+	slog.Info("SIP server listening", "addr", flagAddr, "transport", "UDP+TCP")
 
 	<-ctx.Done()
-	log.Println("Shutting down...")
+	slog.Info("Shutting down...")
 }

@@ -5,10 +5,12 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/thorsager/trecs/internal/logutil"
 )
 
 func TestKeepaliveTrackerUpdateActivity(t *testing.T) {
-	kt := NewKeepaliveTracker(50 * time.Millisecond)
+	kt := NewKeepaliveTracker(50*time.Millisecond, logutil.NewTestLogger(t))
 	kt.UpdateActivity()
 
 	time.Sleep(10 * time.Millisecond)
@@ -22,10 +24,10 @@ func TestKeepaliveTrackerRunSendsCRLF(t *testing.T) {
 	defer server.Close()
 	defer client.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	kt := NewKeepaliveTracker(20 * time.Millisecond)
+	kt := NewKeepaliveTracker(20*time.Millisecond, logutil.NewTestLogger(t))
 	go kt.Run(ctx, client, "test-flow")
 
 	buf := make([]byte, 4)
@@ -44,9 +46,9 @@ func TestKeepaliveTrackerStopsOnCancel(t *testing.T) {
 	defer server.Close()
 	defer client.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 
-	kt := NewKeepaliveTracker(10 * time.Millisecond)
+	kt := NewKeepaliveTracker(10*time.Millisecond, logutil.NewTestLogger(t))
 
 	done := make(chan struct{})
 	go func() {
@@ -68,10 +70,10 @@ func TestKeepaliveTrackerUpdatePreventsSend(t *testing.T) {
 	defer server.Close()
 	defer client.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	kt := NewKeepaliveTracker(100 * time.Millisecond)
+	kt := NewKeepaliveTracker(100*time.Millisecond, logutil.NewTestLogger(t))
 	go kt.Run(ctx, client, "test-flow")
 
 	kt.UpdateActivity()

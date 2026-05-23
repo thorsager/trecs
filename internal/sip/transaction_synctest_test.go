@@ -5,6 +5,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/thorsager/trecs/internal/logutil"
 	"github.com/thorsager/trecs/proto"
 )
 
@@ -35,6 +36,7 @@ func TestSynctestNISTTimerJReliable(t *testing.T) {
 			transport: trans,
 			manager:   tm,
 			reliable:  true,
+			logger:    logutil.NewTestLogger(t),
 		}
 		tm.mu.Lock()
 		tm.serverTxs["st-nist-j"] = tx
@@ -70,6 +72,7 @@ func TestSynctestNISTTimerJUnreliable(t *testing.T) {
 			transport: trans,
 			manager:   tm,
 			reliable:  false,
+			logger:    logutil.NewTestLogger(t),
 		}
 		tm.mu.Lock()
 		tm.serverTxs["st-nist-j-udp"] = tx
@@ -98,6 +101,7 @@ func TestSynctestISTTimerHFires(t *testing.T) {
 			transport: trans,
 			manager:   tm,
 			reliable:  true,
+			logger:    logutil.NewTestLogger(t),
 		}
 		tm.mu.Lock()
 		tm.serverTxs["st-ist-h"] = tx
@@ -136,6 +140,7 @@ func TestSynctestISTTimerIUnreliable(t *testing.T) {
 			transport: trans,
 			manager:   tm,
 			reliable:  false,
+			logger:    logutil.NewTestLogger(t),
 		}
 		tm.mu.Lock()
 		tm.serverTxs["st-ist-i-udp"] = tx
@@ -168,6 +173,7 @@ func TestSynctestISTTimerIReliable(t *testing.T) {
 			transport: trans,
 			manager:   tm,
 			reliable:  true,
+			logger:    logutil.NewTestLogger(t),
 		}
 		tm.mu.Lock()
 		tm.serverTxs["st-ist-i-tcp"] = tx
@@ -197,6 +203,7 @@ func TestSynctestISTAckPreventsTimerH(t *testing.T) {
 			transport: trans,
 			manager:   tm,
 			reliable:  true,
+			logger:    logutil.NewTestLogger(t),
 		}
 		tm.mu.Lock()
 		tm.serverTxs["st-ist-ack-h"] = tx
@@ -230,6 +237,7 @@ func TestSynctestISTTimerGRetransmits(t *testing.T) {
 			transport: trans,
 			manager:   NewTransactionManager(),
 			reliable:  false,
+			logger:    logutil.NewTestLogger(t),
 		}
 
 		tx.Respond(proto.NewResponse(req, 404, "Not Found"))
@@ -284,6 +292,7 @@ func TestSynctestISTFullLifecycle(t *testing.T) {
 			transport: trans,
 			manager:   tm,
 			reliable:  false,
+			logger:    logutil.NewTestLogger(t),
 		}
 		tm.mu.Lock()
 		tm.serverTxs["st-ist-full"] = tx
@@ -345,6 +354,7 @@ func TestSynctestNISTFullLifecycle(t *testing.T) {
 			transport: trans,
 			manager:   tm,
 			reliable:  false,
+			logger:    logutil.NewTestLogger(t),
 		}
 		tm.mu.Lock()
 		tm.serverTxs["st-nist-udp"] = tx

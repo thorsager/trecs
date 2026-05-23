@@ -2,7 +2,7 @@ package sip
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
@@ -14,12 +14,14 @@ type KeepaliveTracker struct {
 	mu         sync.Mutex
 	lastActive time.Time
 	interval   time.Duration
+	logger     *slog.Logger
 }
 
-func NewKeepaliveTracker(interval time.Duration) *KeepaliveTracker {
+func NewKeepaliveTracker(interval time.Duration, logger *slog.Logger) *KeepaliveTracker {
 	return &KeepaliveTracker{
 		lastActive: time.Now(),
 		interval:   interval,
+		logger:     logger,
 	}
 }
 
@@ -48,7 +50,7 @@ func (kt *KeepaliveTracker) Run(ctx context.Context, conn net.Conn, flowID strin
 			if idle {
 				_, err := conn.Write([]byte("\r\n\r\n"))
 				if err != nil {
-					log.Printf("Keepalive write error on flow %s: %v", flowID, err)
+					kt.logger.Error("Keepalive write error", "error", err)
 					return
 				}
 			}
