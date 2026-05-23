@@ -19,7 +19,7 @@ Usage: $(basename "$0") [-h] [-s] [-t target] [-d duration] [-p proto]
 End-to-end echo test using sox and pjsua.
 
 Options:
-  -s          Auto-start trecd before the test (requires rtk go)
+  -s          Auto-start trecd before the test (requires go)
   -t target   Server address (default: 127.0.0.1:5061)
   -d duration Call duration in seconds (default: 5)
   -p proto    SIP transport: udp or tcp (default: udp)
@@ -65,7 +65,7 @@ trap cleanup EXIT
 
 if [ "$AUTO_START" = 1 ]; then
     echo "--- starting trecd ---"
-    nohup rtk go run ./cmd/trecd/ -addr "$TARGET" > /tmp/trecd_test_echo.log 2>&1 &
+    nohup go run ./cmd/trecd/ -addr "$TARGET" > /tmp/trecd_test_echo.log 2>&1 &
     TRECD_PID=$!
     sleep 1
     if ! kill -0 "$TRECD_PID" 2>/dev/null; then

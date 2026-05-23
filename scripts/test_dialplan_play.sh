@@ -92,7 +92,7 @@ JSON
 
 if [ "$AUTO_START" = 1 ]; then
     echo "--- building trecd ---"
-    if ! rtk go build -o "$TMPDIR/trecd" "$ROOT/cmd/trecd/" 2>&1; then
+    if ! go build -o "$TMPDIR/trecd" "$ROOT/cmd/trecd/" 2>&1; then
         fail "trecd build failed"
         exit 1
     fi

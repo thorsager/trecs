@@ -55,7 +55,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "--- building trecd ---"
-rtk go build -o /tmp/trecd_test_all "$ROOT/cmd/trecd/" 2>&1
+go build -o /tmp/trecd_test_all "$ROOT/cmd/trecd/" 2>&1
 echo "--- starting trecd on $TARGET with dialplan ---"
 /tmp/trecd_test_all -addr "$TARGET" -dialplan "$DIALPLAN_FILE" &
 TRECD_PID=$!
