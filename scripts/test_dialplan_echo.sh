@@ -129,7 +129,6 @@ PJSUA_LOG="$TMPDIR/pjsua.log"
     echo "sleep $DURATION"
     sleep $((DURATION + 3))
 ) | pjsua \
-    --config-file /dev/null \
     --id "sip:caller@127.0.0.1${SIP_PARAMS}" \
     --registrar "sip:${TARGET}${SIP_PARAMS}" \
     --realm "*" \

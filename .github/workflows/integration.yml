@@ -49,6 +49,8 @@ jobs:
           echo "--- verify pjsua ---"
           which pjsua
           pjsua --version 2>&1 | head -5 || true
+          # Remove default config that causes pjsua to register to sip.pjsip.org
+          rm -f ~/.pjsuarc
 
       - name: Run integration tests
         id: test
