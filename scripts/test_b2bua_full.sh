@@ -10,6 +10,7 @@
 #   - pjsua installed (brew install pjsua-ua)
 #
 set -uo pipefail
+set -x
 
 usage() {
     cat <<EOF
