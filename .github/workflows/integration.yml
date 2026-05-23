@@ -31,7 +31,7 @@ jobs:
         run: |
           git clone --depth 1 --branch 2.16 https://github.com/pjsip/pjproject.git /tmp/pjproject
           cd /tmp/pjproject
-          ./configure --prefix=/usr --disable-sound --disable-video --disable-resample --disable-sdl --disable-ffmpeg --disable-libyuv --disable-libwebrtc 2>&1 | tail -30
+          ./configure --prefix=/usr --disable-sound --disable-video --disable-resample --disable-sdl --disable-ffmpeg --disable-libyuv --disable-libwebrtc --disable-ipv6 2>&1 | tail -30
           make -j$(nproc) 2>&1 | tail -30
           sudo make install
           sudo ldconfig

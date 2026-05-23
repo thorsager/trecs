@@ -129,7 +129,6 @@ PJSUA_LOG="$TMPDIR/pjsua.log"
     echo "sleep $DURATION"
     sleep $((DURATION + 3))
 ) | pjsua \
-    --no-ipv6 \
     --id "sip:caller@127.0.0.1${SIP_PARAMS}" \
     --registrar "sip:${TARGET}${SIP_PARAMS}" \
     --realm "*" \
@@ -176,4 +175,10 @@ fi
 
 echo ""
 echo "=== results: ${PASS} passed, ${FAIL} failed ==="
+
+if [ "$FAIL" -gt 0 ] && [ -f "$PJSUA_LOG" ]; then
+    echo "=== pjsua log ==="
+    head -100 "$PJSUA_LOG" 2>/dev/null || echo "(empty)"
+fi
+
 exit $FAIL

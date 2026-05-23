@@ -134,7 +134,6 @@ ALICE_RECV1="$TMPDIR/alice1_recv.wav"
 
 # Bob (callee) — keep alive for 10s via pipe
 (sleep 10) | pjsua \
-    --no-ipv6 \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
@@ -156,7 +155,6 @@ else
 
     # Alice (caller) — call Bob, stay alive 6s, then exit (BYE)
     (sleep 6) | pjsua \
-        --no-ipv6 \
         --local-port "$ALICE_PORT" \
         --id "sip:alice@${HOST}" \
         --registrar "sip:${TARGET}" \
@@ -204,7 +202,6 @@ ALICE_LOG2="$TMPDIR/alice2.log"
 
 # Bob (callee) — auto-hangup after 3s, keep alive 10s
 (sleep 10) | pjsua \
-    --no-ipv6 \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
@@ -223,7 +220,6 @@ else
 
     # Alice (caller) — stay alive 8s, Bob will hang up first
     (sleep 8) | pjsua \
-        --no-ipv6 \
         --local-port "$ALICE_PORT" \
         --id "sip:alice@${HOST}" \
         --registrar "sip:${TARGET}" \
@@ -269,8 +265,7 @@ BOB_LOG3="$TMPDIR/bob3.log"
 ALICE_LOG3="$TMPDIR/alice3.log"
 
 # Bob (callee) — auto-answer with 486, keep alive 10s
-(sleep 10) | pjsua \
-    --no-ipv6 \
+    (sleep 10) | pjsua \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
@@ -288,7 +283,6 @@ else
 
     # Alice (caller) — call will be rejected
     (sleep 2) | pjsua \
-        --no-ipv6 \
         --local-port "$ALICE_PORT" \
         --id "sip:alice@${HOST}" \
         --registrar "sip:${TARGET}" \
@@ -325,7 +319,6 @@ BOB_RECV4="$TMPDIR/bob4_recv.wav"
 ALICE_RECV4="$TMPDIR/alice4_recv.wav"
 
 (sleep 10) | pjsua \
-    --no-ipv6 \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST};transport=tcp" \
     --registrar "sip:${TARGET};transport=tcp" \
@@ -347,7 +340,6 @@ else
     pass "[S4] Bob started (PID $BOB_PID4, TCP)"
 
     (sleep 6) | pjsua \
-        --no-ipv6 \
         --local-port "$ALICE_PORT" \
         --id "sip:alice@${HOST};transport=tcp" \
         --registrar "sip:${TARGET};transport=tcp" \
@@ -398,7 +390,6 @@ ALICE_RECV5="$TMPDIR/alice5_recv.wav"
 
 # Bob (UDP)
 (sleep 10) | pjsua \
-    --no-ipv6 \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
@@ -420,7 +411,6 @@ else
 
     # Alice (TCP)
     (sleep 6) | pjsua \
-        --no-ipv6 \
         --local-port "$ALICE_PORT" \
         --id "sip:alice@${HOST};transport=tcp" \
         --registrar "sip:${TARGET};transport=tcp" \
@@ -471,7 +461,6 @@ ALICE_RECV6="$TMPDIR/alice6_recv.wav"
 
 # Bob (TCP)
 (sleep 10) | pjsua \
-    --no-ipv6 \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST};transport=tcp" \
     --registrar "sip:${TARGET};transport=tcp" \
@@ -494,7 +483,6 @@ else
 
     # Alice (UDP)
     (sleep 6) | pjsua \
-        --no-ipv6 \
         --local-port "$ALICE_PORT" \
         --id "sip:alice@${HOST}" \
         --registrar "sip:${TARGET}" \
@@ -534,4 +522,17 @@ echo ""
 echo "═══════════════════════════════════════════════════════════════"
 echo "  results: ${PASS} passed, ${FAIL} failed (6 scenarios)"
 echo "═══════════════════════════════════════════════════════════════"
+
+if [ "$FAIL" -gt 0 ]; then
+    echo ""
+    echo "=== pjsua log dump ==="
+    for f in "$TMPDIR"/*.log; do
+        if [ -f "$f" ]; then
+            echo "--- $(basename "$f") ---"
+            head -100 "$f" 2>/dev/null || echo "(empty)"
+            echo ""
+        fi
+    done
+fi
+
 exit $FAIL

@@ -126,7 +126,6 @@ BOB_RECV=$(mktemp /tmp/trec_b2bua_bob_recv.XXXXXX.wav)
     echo "sleep $((DURATION * 3000))"
     sleep $((DURATION + 15))
 ) | pjsua \
-    --no-ipv6 \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
@@ -156,7 +155,6 @@ ALICE_RECV=$(mktemp /tmp/trec_b2bua_alice_recv.XXXXXX.wav)
     echo "sleep $((DURATION * 1000))"
     sleep $((DURATION + 10))
 ) | pjsua \
-    --no-ipv6 \
     --local-port "$ALICE_PORT" \
     --id "sip:alice@${HOST}" \
     --registrar "sip:${TARGET}" \

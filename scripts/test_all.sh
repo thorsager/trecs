@@ -60,13 +60,12 @@ show_pjsua_logs() {
     if [ "$EXIT" -gt 0 ]; then
         echo ""
         echo "=== pjsua diagnostic logs ==="
-        find /tmp -name "pjsua*.log" -newer /tmp/trecd_server.log 2>/dev/null | while read -r f; do
-            echo "--- $f ---"
-            head -50 "$f" 2>/dev/null || echo "(empty)"
-        done
-        find /tmp -path "*/trec_*/*.log" -newer /tmp/trecd_server.log 2>/dev/null | while read -r f; do
-            echo "--- $f ---"
-            head -50 "$f" 2>/dev/null || echo "(empty)"
+        for f in /tmp/trec_b2bua_test.*/*.log /tmp/trec_dp_echo.*/*.log /tmp/trec_dp_play.*/*.log; do
+            if [ -f "$f" ]; then
+                echo "--- $f ---"
+                head -80 "$f" 2>/dev/null || echo "(empty)"
+                echo ""
+            fi
         done
     fi
 }
