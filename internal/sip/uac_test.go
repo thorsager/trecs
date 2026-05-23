@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"gitub.com/thorsager/trec/proto"
+	"github.com/thorsager/trecs/proto"
 )
 
 func TestUAC_CallingToProceeding(t *testing.T) {

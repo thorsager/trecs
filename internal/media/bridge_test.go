@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"gitub.com/thorsager/trec/internal/media"
-	"gitub.com/thorsager/trec/proto"
+	"github.com/thorsager/trecs/internal/media"
+	"github.com/thorsager/trecs/proto"
 )
 
 func mustRTP(t *testing.T) *media.RTPConn {

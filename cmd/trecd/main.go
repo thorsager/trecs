@@ -8,10 +8,10 @@ import (
 	"os/signal"
 	"syscall"
 
-	"gitub.com/thorsager/trec/internal/b2bua"
-	"gitub.com/thorsager/trec/internal/media"
-	"gitub.com/thorsager/trec/internal/sip"
-	"gitub.com/thorsager/trec/proto"
+	"github.com/thorsager/trecs/internal/b2bua"
+	"github.com/thorsager/trecs/internal/media"
+	"github.com/thorsager/trecs/internal/sip"
+	"github.com/thorsager/trecs/proto"
 )
 
 var (

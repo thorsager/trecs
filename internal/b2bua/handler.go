@@ -6,9 +6,9 @@ import (
 	"log"
 	"net"
 
-	"gitub.com/thorsager/trec/internal/media"
-	"gitub.com/thorsager/trec/internal/sip"
-	"gitub.com/thorsager/trec/proto"
+	"github.com/thorsager/trecs/internal/media"
+	"github.com/thorsager/trecs/internal/sip"
+	"github.com/thorsager/trecs/proto"
 )
 
 // Config holds the dependencies needed to create a B2BUA handler.

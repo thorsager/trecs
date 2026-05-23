@@ -1,4 +1,4 @@
-module gitub.com/thorsager/trec
+module github.com/thorsager/trecs
 
 go 1.26.2
 

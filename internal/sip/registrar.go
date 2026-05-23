@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"gitub.com/thorsager/trec/proto"
+	"github.com/thorsager/trecs/proto"
 )
 
 const defaultFlowTimer = 120 // RFC 5626 §5.4: default keepalive interval for reliable transports

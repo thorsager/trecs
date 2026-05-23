@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"gitub.com/thorsager/trec/proto"
+	"github.com/thorsager/trecs/proto"
 )
 
 var validSIP = "OPTIONS sip:server SIP/2.0\r\n" +

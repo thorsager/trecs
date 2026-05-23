@@ -5,7 +5,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"gitub.com/thorsager/trec/proto"
+	"github.com/thorsager/trecs/proto"
 )
 
 func stateNIST(t *testing.T, tx *NonInviteTransaction) NISTState {

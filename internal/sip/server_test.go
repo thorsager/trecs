@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"gitub.com/thorsager/trec/proto"
+	"github.com/thorsager/trecs/proto"
 )
 
 func TestServerOPTIONSOverUDP(t *testing.T) {

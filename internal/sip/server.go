@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"gitub.com/thorsager/trec/proto"
+	"github.com/thorsager/trecs/proto"
 )
 
 // AckCallback is invoked for every incoming ACK after transaction handling.

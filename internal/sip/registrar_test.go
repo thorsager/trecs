@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"gitub.com/thorsager/trec/proto"
+	"github.com/thorsager/trecs/proto"
 )
 
 type mockTx struct {

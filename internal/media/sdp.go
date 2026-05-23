@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"gitub.com/thorsager/trec/proto"
+	"github.com/thorsager/trecs/proto"
 )
 
 // BuildOffer creates an SDP offer from the server's perspective for a

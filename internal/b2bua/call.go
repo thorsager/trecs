@@ -4,8 +4,8 @@ import (
 	"net"
 	"sync"
 
-	"gitub.com/thorsager/trec/internal/media"
-	"gitub.com/thorsager/trec/internal/sip"
+	"github.com/thorsager/trecs/internal/media"
+	"github.com/thorsager/trecs/internal/sip"
 )
 
 // Call represents a B2BUA call, tracking both the Alice and Bob legs.

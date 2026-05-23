@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"gitub.com/thorsager/trec/proto"
+	"github.com/thorsager/trecs/proto"
 )
 
 const bridgeReadTimeout = 1 * time.Second

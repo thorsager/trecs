@@ -3,7 +3,7 @@ package sip
 import (
 	"testing"
 
-	"gitub.com/thorsager/trec/proto"
+	"github.com/thorsager/trecs/proto"
 )
 
 func BenchmarkNISTRespond(b *testing.B) {
