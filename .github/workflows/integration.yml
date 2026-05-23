@@ -31,7 +31,7 @@ jobs:
         id: test
         run: |
           set +e
-          bash scripts/test_all.sh 2>&1 | tee /tmp/test_output.txt
+          bash scripts/test_all.sh 2>&1 | tee test_output.txt
           exit_code=${PIPESTATUS[0]}
           echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
           exit $exit_code
@@ -42,7 +42,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const output = fs.readFileSync('/tmp/test_output.txt', 'utf8');
+            const output = fs.readFileSync('test_output.txt', 'utf8');
             const exitCode = '${{ steps.test.outputs.exit_code }}';
             const status = exitCode === '0' ? '✅ All integration tests passed' : `❌ ${exitCode} test suite(s) failed`;
 
