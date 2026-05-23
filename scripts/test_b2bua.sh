@@ -112,6 +112,8 @@ fi
 # Avoid 15060/15061 (used by other processes if present).
 ALICE_PORT=35062
 BOB_PORT=35063
+BOB_RTP=12000
+ALICE_RTP=12100
 HOST="127.0.0.1"
 
 # ── Start Bob (callee) ────────────────────────────────────────────
@@ -126,6 +128,7 @@ BOB_RECV=$(mktemp /tmp/trec_b2bua_bob_recv.XXXXXX.wav)
     echo "sleep $((DURATION * 3000))"
     sleep $((DURATION + 15))
 ) | pjsua \
+    --rtp-port $BOB_RTP $((BOB_RTP + 99)) \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
@@ -155,6 +158,7 @@ ALICE_RECV=$(mktemp /tmp/trec_b2bua_alice_recv.XXXXXX.wav)
     echo "sleep $((DURATION * 1000))"
     sleep $((DURATION + 10))
 ) | pjsua \
+    --rtp-port $ALICE_RTP $((ALICE_RTP + 99)) \
     --local-port "$ALICE_PORT" \
     --id "sip:alice@${HOST}" \
     --registrar "sip:${TARGET}" \
