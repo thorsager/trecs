@@ -1,14 +1,14 @@
-BIN    := trecd
+BIN    := trecsd
 GO     := go
 LDFLAGS:=
 
 build: $(BIN)
 
-$(BIN): cmd/trecd/main.go
-	$(GO) build -o $@ $(LDFLAGS) ./cmd/trecd
+$(BIN): cmd/trecsd/main.go
+	$(GO) build -o $@ $(LDFLAGS) ./cmd/trecsd
 
 install:
-	$(GO) install $(LDFLAGS) ./cmd/trecd
+	$(GO) install $(LDFLAGS) ./cmd/trecsd
 
 clean:
 	rm -f $(BIN)

@@ -1,4 +1,4 @@
-# T-REC
+# TRECS
 
 Project for basic telephony (SIP for now) recording.
 
@@ -22,7 +22,7 @@ The echo test validates real-time audio loopback over RTP: a SIP client calls th
 go test -v -run TestEcho -timeout 60s ./internal/media/
 ```
 
-This tests both offer modes in-process, no external tools needed.
+This runs `TestEchoEarlyOffer` and `TestEchoDelayedOffer`, testing both offer modes in-process, no external tools needed.
 
 ### Automated end-to-end test with sox + pjsua
 
@@ -77,7 +77,7 @@ pjsua --id "sip:bob@example.com" \
 ```
 
 Breakdown:
-- `--registrar` — points at T-REC's SIP address
+- `--registrar` — points at TRECS' SIP address
 - `--local-port 5062` — avoids conflicting with T-REC on 5061
 - `--no-udp` — forces TCP transport only
 - `--auto-answer 200` — automatically answers inbound calls

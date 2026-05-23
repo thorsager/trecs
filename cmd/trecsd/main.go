@@ -33,7 +33,7 @@ func init() {
 	flag.IntVar(&flagRTPMax, "rtp-max", 0, "RTP port range end (0 = OS-assigned)")
 	flag.StringVar(&flagDialplan, "dialplan", "", "Path to dialplan JSON file")
 	flag.StringVar(&flagLogLevel, "log-level", "info", "Log level (trace, debug, info, warn, error)")
-	flag.StringVar(&flagLogFormat, "log-format", "text", "Log format (text or json)")
+	flag.StringVar(&flagLogFormat, "log-format", "text", "Log format (text, json, or compact)")
 	flag.Parse()
 }
 
@@ -65,6 +65,8 @@ func main() {
 	switch flagLogFormat {
 	case "json":
 		slogHandler = slog.NewJSONHandler(os.Stderr, opts)
+	case "compact":
+		slogHandler = logutil.NewCompactHandler(os.Stderr, &logutil.CompactHandlerOptions{Level: lvl})
 	default:
 		slogHandler = slog.NewTextHandler(os.Stderr, opts)
 	}
