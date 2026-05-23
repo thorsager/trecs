@@ -25,13 +25,30 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y sipsak
           sudo apt-get install -y libsox-dev sox
-          sudo apt-get install -y build-essential git
-          git clone --depth 1 https://github.com/pjsip/pjproject.git /tmp/pjproject
+          sudo apt-get install -y build-essential git pkg-config libasound2-dev libssl-dev libv4l-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libopus-dev libgsm1-dev libspeexdsp-dev
+
+      - name: Build and install pjsip
+        run: |
+          git clone --depth 1 --branch 2.16 https://github.com/pjsip/pjproject.git /tmp/pjproject
           cd /tmp/pjproject
-          ./configure --prefix=/usr --disable-sound --disable-video --disable-resample --disable-sdl --disable-ffmpeg --disable-libyuv
-          make -j$(nproc)
+          ./configure --prefix=/usr --disable-sound --disable-video --disable-resample --disable-sdl --disable-ffmpeg --disable-libyuv --disable-libwebrtc 2>&1 | tail -30
+          make -j$(nproc) 2>&1 | tail -30
           sudo make install
           sudo ldconfig
+          # Find and install pjsua binary
+          PJSUA_BIN=$(find /tmp/pjproject/pjsip-apps/bin -name "pjsua*" -type f 2>/dev/null | head -1)
+          if [ -n "$PJSUA_BIN" ]; then
+            echo "Found pjsua: $PJSUA_BIN"
+            sudo cp "$PJSUA_BIN" /usr/bin/pjsua
+            sudo chmod +x /usr/bin/pjsua
+          else
+            echo "ERROR: pjsua binary not found in build tree"
+            find /tmp/pjproject -name "pjsua*" 2>/dev/null | head -10
+            exit 1
+          fi
+          echo "--- verify pjsua ---"
+          which pjsua
+          pjsua --version 2>&1 | head -5 || true
 
       - name: Run integration tests
         id: test
