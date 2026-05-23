@@ -55,6 +55,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Show pjsua logs on failure
+show_pjsua_logs() {
+    if [ "$EXIT" -gt 0 ]; then
+        echo ""
+        echo "=== pjsua diagnostic logs ==="
+        find /tmp -name "pjsua*.log" -newer /tmp/trecd_server.log 2>/dev/null | while read -r f; do
+            echo "--- $f ---"
+            head -50 "$f" 2>/dev/null || echo "(empty)"
+        done
+        find /tmp -path "*/trec_*/*.log" -newer /tmp/trecd_server.log 2>/dev/null | while read -r f; do
+            echo "--- $f ---"
+            head -50 "$f" 2>/dev/null || echo "(empty)"
+        done
+    fi
+}
+trap 'show_pjsua_logs; cleanup' EXIT
+
 echo "--- building trecd ---"
 go build -o /tmp/trecd_test_all "$ROOT/cmd/trecsd/" 2>&1
 echo "--- starting trecd on $TARGET with dialplan ---"
