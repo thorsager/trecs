@@ -52,6 +52,8 @@ FAIL=0
 pass() { echo "  ✓ $1"; ((PASS++)); }
 fail() { echo "  ✗ $1"; ((FAIL++)); }
 
+file_size() { stat -c %s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null; }
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMPDIR=$(mktemp -d /tmp/trec_dp_play.XXXXXX) || { echo "FAIL: mktemp"; exit 1; }
 
@@ -69,13 +71,13 @@ trap cleanup EXIT
 TONE_FILE="$TMPDIR/tone.wav"
 echo "=== sox tone generation ==="
 sox -n -b 16 -r 8000 -c 1 "$TONE_FILE" synth 3 sine 660 2>&1
-if [ -f "$TONE_FILE" ] && [ "$(stat -f%z "$TONE_FILE")" -gt 44 ]; then
-    pass "tone file ($(stat -f%z "$TONE_FILE") bytes)"
+if [ -f "$TONE_FILE" ] && [ "$(file_size "$TONE_FILE")" -gt 44 ]; then
+    pass "tone file ($(file_size "$TONE_FILE") bytes)"
 else
     fail "tone file missing or too small"
     exit 1
 fi
-TONE_BYTES=$(( $(stat -f%z "$TONE_FILE") - 44 ))
+TONE_BYTES=$(( $(file_size "$TONE_FILE") - 44 ))
 
 # ── Create dialplan pointing to the tone file ─────────────────────
 
@@ -164,7 +166,7 @@ else
 fi
 
 if [ -f "$RECV_FILE" ]; then
-    RECV_BYTES=$(( $(stat -f%z "$RECV_FILE") - 44 ))
+    RECV_BYTES=$(( $(file_size "$RECV_FILE") - 44 ))
     if [ "$RECV_BYTES" -gt 0 ]; then
         pass "received audio ($RECV_BYTES bytes)"
         DUR=$(sox --info -D "$RECV_FILE" 2>/dev/null || echo 0)

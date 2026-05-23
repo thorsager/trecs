@@ -49,6 +49,8 @@ FAIL=0
 pass() { echo "  ✓ $1"; ((PASS++)); }
 fail() { echo "  ✗ $1"; ((FAIL++)); }
 
+file_size() { stat -c %s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null; }
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 cleanup() {
@@ -99,8 +101,8 @@ echo ""
 echo "=== sox tone generation ==="
 echo "--- generating ${DURATION}s 440Hz tone ---"
 sox -n -b 16 -r 8000 -c 1 "$TONE_FILE" synth "$DURATION" sine 440 2>&1
-if [ -f "$TONE_FILE" ] && [ "$(stat -f%z "$TONE_FILE")" -gt 44 ]; then
-    pass "tone file ($(stat -f%z "$TONE_FILE") bytes)"
+if [ -f "$TONE_FILE" ] && [ "$(file_size "$TONE_FILE")" -gt 44 ]; then
+    pass "tone file ($(file_size "$TONE_FILE") bytes)"
 else
     fail "tone file missing or too small"
     exit 1
@@ -206,7 +208,7 @@ done
 
 # Bob's recording has audio data (Alice's tone forwarded through bridge)
 if [ -f "$BOB_RECV" ]; then
-    BOB_WAV_DATA=$(( $(stat -f%z "$BOB_RECV") - 44 ))
+    BOB_WAV_DATA=$(( $(file_size "$BOB_RECV") - 44 ))
     if [ "$BOB_WAV_DATA" -gt 0 ]; then
         pass "Bob received audio ($BOB_WAV_DATA bytes)"
     else
@@ -218,7 +220,7 @@ fi
 
 # Alice's recording (may be silent since Bob uses --null-audio)
 if [ -f "$ALICE_RECV" ]; then
-    ALICE_WAV_DATA=$(( $(stat -f%z "$ALICE_RECV") - 44 ))
+    ALICE_WAV_DATA=$(( $(file_size "$ALICE_RECV") - 44 ))
     if [ "$ALICE_WAV_DATA" -gt 0 ]; then
         pass "Alice received audio ($ALICE_WAV_DATA bytes)"
     fi

@@ -44,10 +44,12 @@ FAIL=0
 pass() { echo "  ✓ $1"; ((PASS++)); }
 fail() { echo "  ✗ $1"; ((FAIL++)); }
 
+file_size() { stat -c %s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null; }
+
 check_audio() {
     local label="$1" file="$2" direction="$3"
     if [ -f "$file" ]; then
-        local data=$(( $(stat -f%z "$file") - 44 ))
+        local data=$(( $(file_size "$file") - 44 ))
         if [ "$data" -gt 0 ]; then
             pass "[${label}] ${direction} received audio ($data bytes)"
         else
@@ -99,14 +101,14 @@ TONE_FILE="$TMPDIR/tone.wav"     # 440Hz — played by Alice
 TONE_FILE2="$TMPDIR/tone2.wav"   # 880Hz — played by Bob
 sox -n -b 16 -r 8000 -c 1 "$TONE_FILE"  synth 4 sine 440 2>&1
 sox -n -b 16 -r 8000 -c 1 "$TONE_FILE2" synth 4 sine 880 2>&1
-if [ -f "$TONE_FILE" ] && [ "$(stat -f%z "$TONE_FILE")" -gt 44 ]; then
-    pass "tone file (440Hz) created ($(stat -f%z "$TONE_FILE") bytes)"
+if [ -f "$TONE_FILE" ] && [ "$(file_size "$TONE_FILE")" -gt 44 ]; then
+    pass "tone file (440Hz) created ($(file_size "$TONE_FILE") bytes)"
 else
     fail "tone file (440Hz) missing"
     exit 1
 fi
-if [ -f "$TONE_FILE2" ] && [ "$(stat -f%z "$TONE_FILE2")" -gt 44 ]; then
-    pass "tone file (880Hz) created ($(stat -f%z "$TONE_FILE2") bytes)"
+if [ -f "$TONE_FILE2" ] && [ "$(file_size "$TONE_FILE2")" -gt 44 ]; then
+    pass "tone file (880Hz) created ($(file_size "$TONE_FILE2") bytes)"
 else
     fail "tone file (880Hz) missing"
     exit 1

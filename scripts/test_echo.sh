@@ -55,6 +55,8 @@ FAIL=0
 pass() { echo "  ✓ $1"; ((PASS++)); }
 fail() { echo "  ✗ $1"; ((FAIL++)); }
 
+file_size() { stat -c %s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null; }
+
 cleanup() {
     if [ "$AUTO_START" = 1 ] && [ -n "${TRECD_PID:-}" ]; then
         kill "$TRECD_PID" 2>/dev/null || true
@@ -82,8 +84,8 @@ echo ""
 echo "=== sox tone generation ==="
 echo "--- generating ${DURATION}s 440Hz tone ---"
 sox -n -b 16 -r 8000 -c 1 "$TONE_FILE" synth "$DURATION" sine 440 2>&1
-if [ -f "$TONE_FILE" ] && [ "$(stat -f%z "$TONE_FILE")" -gt 44 ]; then
-    pass "tone file created ($(stat -f%z "$TONE_FILE") bytes)"
+if [ -f "$TONE_FILE" ] && [ "$(file_size "$TONE_FILE")" -gt 44 ]; then
+    pass "tone file created ($(file_size "$TONE_FILE") bytes)"
 else
     fail "tone file missing or too small"
     rm -f "$TONE_FILE" "$ECHO_FILE"
@@ -141,7 +143,7 @@ else
 fi
 
 if [ -f "$ECHO_FILE" ]; then
-    ECHO_SIZE=$(stat -f%z "$ECHO_FILE" 2>/dev/null || echo 0)
+    ECHO_SIZE=$(file_size "$ECHO_FILE" 2>/dev/null || echo 0)
     WAV_DATA=$((ECHO_SIZE - 44))
     if [ "$WAV_DATA" -gt 0 ]; then
         pass "echoed audio file has data ($WAV_DATA bytes of audio)"
