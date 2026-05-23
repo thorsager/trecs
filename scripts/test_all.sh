@@ -51,13 +51,14 @@ cleanup() {
     fi
     rm -f "$DIALPLAN_FILE"
     rm -f /tmp/trecd_test_all
+    rm -f /tmp/trecd_server.log
 }
 trap cleanup EXIT
 
 echo "--- building trecd ---"
-go build -o /tmp/trecd_test_all "$ROOT/cmd/trecd/" 2>&1
+go build -o /tmp/trecd_test_all "$ROOT/cmd/trecsd/" 2>&1
 echo "--- starting trecd on $TARGET with dialplan ---"
-/tmp/trecd_test_all -addr "$TARGET" -dialplan "$DIALPLAN_FILE" &
+/tmp/trecd_test_all -addr "$TARGET" -dialplan "$DIALPLAN_FILE" 2>/tmp/trecd_server.log &
 TRECD_PID=$!
 sleep 2
 if ! kill -0 "$TRECD_PID" 2>/dev/null; then
