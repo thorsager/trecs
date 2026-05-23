@@ -1,0 +1,86 @@
+name: Integration Tests
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+jobs:
+  integration_tests:
+    name: "Integration tests"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ^1.26
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sipsak
+          sudo apt-get install -y libsox-dev sox
+          sudo apt-get install -y libpjsip-dev pjsip-apps
+
+      - name: Run integration tests
+        id: test
+        run: |
+          set +e
+          bash scripts/test_all.sh 2>&1 | tee /tmp/test_output.txt
+          exit_code=${PIPESTATUS[0]}
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          exit $exit_code
+
+      - name: Post test summary
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.readFileSync('/tmp/test_output.txt', 'utf8');
+            const exitCode = '${{ steps.test.outputs.exit_code }}';
+            const status = exitCode === '0' ? '✅ All integration tests passed' : `❌ ${exitCode} test suite(s) failed`;
+
+            const body = `## Integration Test Results
+
+            ${status}
+
+            <details>
+            <summary>Full output</summary>
+
+            \`\`\`
+            ${output.split('\n').slice(-100).join('\n')}
+            \`\`\`
+
+            </details>`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('## Integration Test Results')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body,
+              });
+            }
