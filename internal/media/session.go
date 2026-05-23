@@ -5,6 +5,8 @@ import (
 	"math/rand"
 	"net"
 	"sync"
+
+	"github.com/thorsager/trecs/internal/sip"
 )
 
 // SessionKey uniquely identifies a SIP dialog for media session lookup.
@@ -23,16 +25,32 @@ const (
 	SessionActive                        // early offer: echo running, or ACK received for delayed
 )
 
-// Session holds the media-related state for one echo call.
+type SessionKind int
+
+const (
+	SessionKindEcho SessionKind = iota
+	SessionKindPlay
+)
+
+// Session holds the media-related state for one call.
 type Session struct {
 	mu          sync.Mutex
 	Key         SessionKey
+	Kind        SessionKind
 	State       SessionState
 	RTPConn     *RTPConn
 	PayloadType uint8
 	ServerAddr  net.Addr
 	RemoteAddr  net.Addr
 	ServerSSRC  uint32
+
+	WavData       *WavData
+	CallerContact string
+	CallerURI     string
+	TargetURI     string
+
+	SipTransport sip.Transport
+	SipTarget    *sip.Target
 
 	ctx    context.Context
 	cancel context.CancelFunc

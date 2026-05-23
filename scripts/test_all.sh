@@ -32,14 +32,39 @@ shift $((OPTIND - 1))
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EXIT=0
 
+DIALPLAN_FILE=$(mktemp /tmp/trec_test_dialplan.XXXXXX.json)
+cat > "$DIALPLAN_FILE" <<JSON
+{
+  "extensions": {
+    "echo": { "action": "echo" },
+    "play": { "action": "play", "file": "$ROOT/EDIS-SCD-02.wav" }
+  }
+}
+JSON
+
 cleanup() {
     echo ""
     echo "=== stopping trecd ==="
-    "$ROOT/scripts/run_trecd.sh" stop
+    if [ -n "${TRECD_PID:-}" ] && kill -0 "$TRECD_PID" 2>/dev/null; then
+        kill "$TRECD_PID" 2>/dev/null || true
+        wait "$TRECD_PID" 2>/dev/null || true
+    fi
+    rm -f "$DIALPLAN_FILE"
+    rm -f /tmp/trecd_test_all
 }
 trap cleanup EXIT
 
-"$ROOT/scripts/run_trecd.sh" start "$TARGET"
+echo "--- building trecd ---"
+rtk go build -o /tmp/trecd_test_all "$ROOT/cmd/trecd/" 2>&1
+echo "--- starting trecd on $TARGET with dialplan ---"
+/tmp/trecd_test_all -addr "$TARGET" -dialplan "$DIALPLAN_FILE" &
+TRECD_PID=$!
+sleep 2
+if ! kill -0 "$TRECD_PID" 2>/dev/null; then
+    echo "trecd failed to start" >&2
+    exit 1
+fi
+echo "trecd started on $TARGET (PID $TRECD_PID)"
 
 echo ""
 echo "=================================================================="
@@ -70,6 +95,30 @@ echo "=================================================================="
 echo "     — B2BUA edge-case tests"
 echo "=================================================================="
 "$ROOT/scripts/test_b2bua_full.sh" -t "$TARGET" || ((EXIT++))
+
+echo ""
+echo "=================================================================="
+echo " 5/8 — Dialplan echo test (UDP)"
+echo "=================================================================="
+"$ROOT/scripts/test_dialplan_echo.sh" -t "$TARGET" -p udp || ((EXIT++))
+
+echo ""
+echo "=================================================================="
+echo " 6/8 — Dialplan echo test (TCP)"
+echo "=================================================================="
+"$ROOT/scripts/test_dialplan_echo.sh" -t "$TARGET" -p tcp || ((EXIT++))
+
+echo ""
+echo "=================================================================="
+echo " 7/8 — Dialplan file playback test (UDP)"
+echo "=================================================================="
+"$ROOT/scripts/test_dialplan_play.sh" -t "$TARGET" -p udp || ((EXIT++))
+
+echo ""
+echo "=================================================================="
+echo " 8/8 — Dialplan file playback test (TCP)"
+echo "=================================================================="
+"$ROOT/scripts/test_dialplan_play.sh" -t "$TARGET" -p tcp || ((EXIT++))
 
 echo ""
 echo "=================================================================="

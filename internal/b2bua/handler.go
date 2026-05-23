@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 
+	"github.com/thorsager/trecs/internal/dialplan"
 	"github.com/thorsager/trecs/internal/media"
 	"github.com/thorsager/trecs/internal/sip"
 	"github.com/thorsager/trecs/proto"
@@ -19,12 +20,13 @@ type Config struct {
 	ServerIP       string
 	ServerAddr     string
 	UACManager     *sip.UACManager
+	Dialplan       dialplan.Dialplan
 	RTPPortMin     int
 	RTPPortMax     int
 }
 
 // Handler implements SIP request handlers for the T-REC B2BUA server,
-// including echo service, B2BUA call bridging, and call teardown.
+// including echo service, file playback, B2BUA call bridging, and call teardown.
 type Handler struct {
 	reg      *sip.Registrar
 	sm       *media.SessionManager
@@ -32,6 +34,7 @@ type Handler struct {
 	serverIP string
 	serverAddr string
 	uacMgr   *sip.UACManager
+	dp       dialplan.Dialplan
 	rtpMin   int
 	rtpMax   int
 	store    *Store
@@ -46,6 +49,7 @@ func NewHandler(cfg Config) *Handler {
 		serverIP:   cfg.ServerIP,
 		serverAddr: cfg.ServerAddr,
 		uacMgr:     cfg.UACManager,
+		dp:         cfg.Dialplan,
 		rtpMin:     cfg.RTPPortMin,
 		rtpMax:     cfg.RTPPortMax,
 		store:      NewStore(),
@@ -64,15 +68,21 @@ func (h *Handler) HandleOptions(req *proto.SIPMessage, tx sip.Transaction) {
 	tx.Respond(res)
 }
 
-// HandleInvite dispatches to either echo service or B2BUA call routing.
+// HandleInvite dispatches to dialplan services or B2BUA call routing.
 func (h *Handler) HandleInvite(req *proto.SIPMessage, tx sip.Transaction) {
 	trying := proto.NewResponse(req, 100, "Trying")
 	tx.Respond(trying)
 
-	user := sip.ExtractUser(req.RequestURI())
-	if user == "echo" {
-		h.handleEchoInvite(req, tx)
-		return
+	if h.dp != nil {
+		if entry, ok := h.dp.Lookup(req); ok {
+			switch entry.Action {
+			case dialplan.ActionEcho:
+				h.handleEchoInvite(req, tx)
+			case dialplan.ActionPlay:
+				h.handleFileInvite(req, tx, entry.File)
+			}
+			return
+		}
 	}
 
 	h.handleB2BUAInvite(req, tx)
@@ -152,6 +162,146 @@ func (h *Handler) handleEchoInvite(req *proto.SIPMessage, tx sip.Transaction) {
 	if sdpOffer != nil {
 		go media.RunEcho(session.Ctx(), rtpConn, payloadType)
 	}
+}
+
+func (h *Handler) handleFileInvite(req *proto.SIPMessage, tx sip.Transaction, filePath string) {
+	serverTag := sip.GenerateTag()
+
+	var sdpOffer *proto.SDP
+	if len(req.Body) > 0 && req.Headers.GetFirst("Content-Type") == "application/sdp" {
+		sdp, err := proto.UnmarshalSDPBytes(req.Body)
+		if err != nil {
+			res := proto.NewResponse(req, 488, "Not Acceptable Here")
+			tx.Respond(res)
+			return
+		}
+		sdpOffer = sdp
+	}
+
+	wav, err := media.LoadWav(filePath)
+	if err != nil {
+		log.Printf("file: failed to load %q: %v", filePath, err)
+		res := proto.NewResponse(req, 500, "Server Internal Error")
+		tx.Respond(res)
+		return
+	}
+
+	rtpConn, err := media.NewRTPConnRange(h.rtpMin, h.rtpMax)
+	if err != nil {
+		res := proto.NewResponse(req, 500, "Server Internal Error")
+		tx.Respond(res)
+		return
+	}
+
+	rtpAddr := rtpConn.LocalAddr().(*net.UDPAddr)
+	payloadType := uint8(proto.PCMU)
+
+	var sdpBody *proto.SDP
+	if sdpOffer != nil {
+		payloadType = media.PickPayloadType(sdpOffer)
+		sdpBody = media.BuildAnswer(sdpOffer, rtpAddr.Port, payloadType, h.serverIP)
+	} else {
+		sdpBody = media.BuildOffer(rtpAddr.Port, payloadType, h.serverIP)
+	}
+
+	from, err := req.From()
+	if err != nil {
+		rtpConn.Close()
+		res := proto.NewResponse(req, 400, "Bad Request")
+		tx.Respond(res)
+		return
+	}
+
+	callID := req.Headers.GetFirst("Call-ID")
+	key := media.SessionKey{
+		CallID:    callID,
+		RemoteTag: from.Tag,
+		LocalTag:  serverTag,
+	}
+
+	session := media.NewSession(key, rtpConn, payloadType, rtpAddr)
+	session.Kind = media.SessionKindPlay
+	session.WavData = wav
+	session.CallerContact = req.Headers.GetFirst("Contact")
+	session.CallerURI = from.URI
+	if to, err := req.To(); err == nil {
+		session.TargetURI = to.URI
+	}
+	txTarget := tx.Target()
+	session.SipTransport = tx.Transport()
+	session.SipTarget = &txTarget
+
+	if sdpOffer != nil {
+		clientIP, clientPort := media.ExtractRTPAddr(sdpOffer)
+		remoteAddr := &net.UDPAddr{IP: net.ParseIP(clientIP), Port: clientPort}
+		session.SetRemoteAddr(remoteAddr)
+		session.SetState(media.SessionActive)
+	} else {
+		session.SetState(media.SessionWaitingAck)
+	}
+
+	h.sm.Add(session)
+
+	res := proto.NewResponse(req, 200, "OK")
+	toHeader := req.Headers.GetFirst("To")
+	res.Headers.Set("To", []string{toHeader + ";tag=" + serverTag})
+
+	sdpBytes, _ := sdpBody.Marshal()
+	res.Body = sdpBytes
+	res.Headers.Set("Content-Type", []string{"application/sdp"})
+	res.Headers["Allow"] = []string{h.server.AllowMethods()}
+
+	tx.Respond(res)
+
+	if sdpOffer != nil {
+		remoteAddr := session.RemoteAddrSafe().(*net.UDPAddr)
+		done := media.RunFilePlayback(session.Ctx(), rtpConn, remoteAddr, payloadType, wav)
+		go func() {
+			<-done
+			if session.Ctx().Err() == nil {
+				h.sendByeToSession(session, callID)
+			}
+		}()
+	}
+}
+
+func (h *Handler) sendByeToSession(session *media.Session, callID string) {
+	_, serverPort, _ := net.SplitHostPort(h.serverAddr)
+	if serverPort == "" {
+		serverPort = "5060"
+	}
+
+	session.Cancel()
+
+	targetURI := session.TargetURI
+	if targetURI == "" {
+		targetURI = "sip:file@" + h.serverIP
+	}
+
+	bye := proto.NewRequest(proto.SIPMethodBYE, sip.StripBrackets(session.CallerContact))
+	viaTransport := sip.TransportName(session.SipTransport)
+	bye.Headers.Add("Via",
+		fmt.Sprintf("SIP/2.0/%s %s:%s;branch=%s", viaTransport, h.serverIP, serverPort, sip.GenerateBranch()))
+	bye.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s", targetURI, session.Key.LocalTag))
+	bye.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s", session.CallerURI, session.Key.RemoteTag))
+	bye.Headers.Add("Call-ID", callID)
+	bye.CSeq = proto.CSeq{Method: proto.SIPMethodBYE, Seq: 2}
+	bye.Headers.Add("Max-Forwards", "70")
+	bye.Headers.Add("Content-Length", "0")
+
+	if session.SipTransport == nil || session.SipTarget == nil {
+		log.Printf("file: no transport/target for BYE %s", callID)
+		h.sm.Remove(session.Key)
+		return
+	}
+
+	if err := session.SipTransport.Send(bye, session.SipTarget); err != nil {
+		log.Printf("file: failed to send BYE for %s: %v", callID, err)
+	} else {
+		log.Printf("file: sent BYE for %s (playback complete)", callID)
+	}
+
+	h.sm.Remove(session.Key)
 }
 
 func (h *Handler) handleB2BUAInvite(req *proto.SIPMessage, tx sip.Transaction) {
@@ -560,7 +710,19 @@ func (h *Handler) HandleAck(msg *proto.SIPMessage, target sip.Target, transport 
 		remoteAddr := &net.UDPAddr{IP: net.ParseIP(clientIP), Port: clientPort}
 		session.SetRemoteAddr(remoteAddr)
 		session.SetState(media.SessionActive)
-		go media.RunEcho(session.Ctx(), session.RTPConn, session.PayloadType)
+
+		switch session.Kind {
+		case media.SessionKindPlay:
+			done := media.RunFilePlayback(session.Ctx(), session.RTPConn, remoteAddr, session.PayloadType, session.WavData)
+			go func() {
+				<-done
+				if session.Ctx().Err() == nil {
+					h.sendByeToSession(session, session.Key.CallID)
+				}
+			}()
+		default:
+			go media.RunEcho(session.Ctx(), session.RTPConn, session.PayloadType)
+		}
 	}
 }
 

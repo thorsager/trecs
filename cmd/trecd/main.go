@@ -9,15 +9,17 @@ import (
 	"syscall"
 
 	"github.com/thorsager/trecs/internal/b2bua"
+	"github.com/thorsager/trecs/internal/dialplan"
 	"github.com/thorsager/trecs/internal/media"
 	"github.com/thorsager/trecs/internal/sip"
 	"github.com/thorsager/trecs/proto"
 )
 
 var (
-	flagAddr   string
-	flagRTPMin int
-	flagRTPMax int
+	flagAddr     string
+	flagRTPMin   int
+	flagRTPMax   int
+	flagDialplan string
 )
 
 var serverIP = "127.0.0.1"
@@ -26,6 +28,7 @@ func init() {
 	flag.StringVar(&flagAddr, "addr", ":5060", "SIP listen address")
 	flag.IntVar(&flagRTPMin, "rtp-min", 0, "RTP port range start (0 = OS-assigned)")
 	flag.IntVar(&flagRTPMax, "rtp-max", 0, "RTP port range end (0 = OS-assigned)")
+	flag.StringVar(&flagDialplan, "dialplan", "", "Path to dialplan JSON file")
 	flag.Parse()
 }
 
@@ -49,6 +52,16 @@ func main() {
 
 	server.SetFlowDeadCallback(reg.RemoveBindingsByFlowID)
 
+	var dp dialplan.Dialplan
+	if flagDialplan != "" {
+		var err error
+		dp, err = dialplan.NewFromFile(flagDialplan)
+		if err != nil {
+			log.Fatalf("Failed to load dialplan: %v", err)
+		}
+		log.Printf("Dialplan loaded from %s", flagDialplan)
+	}
+
 	h := b2bua.NewHandler(b2bua.Config{
 		Registrar:      reg,
 		SessionManager: media.NewSessionManager(),
@@ -56,6 +69,7 @@ func main() {
 		ServerIP:       serverIP,
 		ServerAddr:     flagAddr,
 		UACManager:     sip.NewUACManager(),
+		Dialplan:       dp,
 		RTPPortMin:     flagRTPMin,
 		RTPPortMax:     flagRTPMax,
 	})
