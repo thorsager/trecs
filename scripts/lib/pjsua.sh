@@ -53,21 +53,21 @@ run_pjsua() {
     [ "$timeout_secs" -lt 30 ] && timeout_secs=30
     [ -z "$pidfile" ] && pidfile="${logfile}.pid"
 
-    # 2. Setup FIFO (Named Pipe)
+    # 2. Write pjsua args to a temporary config file (more reliable than CLI in CI)
+    local config_file="${logfile}.cfg"
+    printf '%s\n' "$@" > "$config_file"
+
+    # 3. Setup FIFO (Named Pipe)
     local fifo="${logfile}.fifo"
     rm -f "$fifo"
     mkfifo "$fifo"
 
-    # 3. The "Keeper"
-    # This holds the FIFO open for writing so pjsua doesn't close on start.
-    # We use a background loop that we can kill later.
+    # 4. The "Keeper"
     ( while true; do sleep 100; done ) > "$fifo" &
     local keeper_pid=$!
 
-    # 4. Start PJSUA
-    # It reads from the FIFO. We use "$@" to pass all remaining PJSIP flags.
-    # The < /dev/null is NOT used here because we want it to read from the FIFO.
-    pjsua --no-cli-console --null-audio "$@" < "$fifo" > "$logfile" 2>&1 &
+    # 5. Start PJSUA with config file
+    pjsua --no-cli-console --null-audio --config-file "$config_file" < "$fifo" > "$logfile" 2>&1 &
     local pjsua_pid=$!
     echo "$pjsua_pid" > "$pidfile"
 
@@ -98,9 +98,9 @@ run_pjsua() {
     wait "$pjsua_pid" 2>/dev/null || true
     local rc=$?
 
-    # Cleanup all background helpers
+    # Cleanup all background helpers and config file
     kill "$watcher_pid" "$controller_pid" "$keeper_pid" 2>/dev/null || true
-    rm -f "$pidfile" "$fifo"
+    rm -f "$pidfile" "$fifo" "$config_file"
 
     # Normalize exit code
     [ $rc -gt 128 ] && rc=124
