@@ -150,7 +150,6 @@ run_pjsua 10 "$BOB_LOG1" \
     --rtp-port "$RTP_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
-    --realm "*" \
     --auto-answer 200 \
     --rec-file "$BOB_RECV1" \
     --auto-rec \
@@ -174,7 +173,6 @@ else
         --rtp-port "$RTP_PORT" \
         --id "sip:alice@${HOST}" \
         --registrar "sip:${TARGET}" \
-        --realm "*" \
         --play-file "$TONE_FILE" \
         --auto-play \
         --rec-file "$ALICE_RECV1" \
