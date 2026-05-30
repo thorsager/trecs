@@ -145,6 +145,7 @@ ALICE_RECV1="$TMPDIR/alice1_recv.wav"
 # Bob (callee) — keep alive for 10s
 next_ports
 run_pjsua 10 "$BOB_LOG1" \
+    --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
     --local-port "$LOCAL_PORT" \
     --rtp-port "$RTP_PORT" \
     --id "sip:bob@${HOST}" \
@@ -168,6 +169,7 @@ else
     # Alice (caller) — call Bob, stay alive 6s, then exit (BYE)
     next_ports
     run_pjsua 8 "$ALICE_LOG1" \
+        --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
         --local-port "$LOCAL_PORT" \
         --rtp-port "$RTP_PORT" \
         --id "sip:alice@${HOST}" \
@@ -217,6 +219,7 @@ ALICE_LOG2="$TMPDIR/alice2.log"
 # Bob (callee) — auto-hangup after 3s, keep alive 10s
 next_ports
 run_pjsua 10 "$BOB_LOG2" \
+    --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
     --local-port "$LOCAL_PORT" \
     --rtp-port "$RTP_PORT" \
     --id "sip:bob@${HOST}" \
@@ -237,6 +240,7 @@ else
     # Alice (caller) — stay alive 8s, Bob will hang up first
     next_ports
     run_pjsua 8 "$ALICE_LOG2" \
+        --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
         --local-port "$LOCAL_PORT" \
         --rtp-port "$RTP_PORT" \
         --id "sip:alice@${HOST}" \
@@ -285,6 +289,7 @@ ALICE_LOG3="$TMPDIR/alice3.log"
 # Bob (callee) — auto-answer with 486, keep alive 10s
 next_ports
 run_pjsua 10 "$BOB_LOG3" \
+    --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
     --local-port "$LOCAL_PORT" \
     --rtp-port "$RTP_PORT" \
     --id "sip:bob@${HOST}" \
@@ -304,6 +309,7 @@ else
     # Alice (caller) — call will be rejected
     next_ports
     run_pjsua 2 "$ALICE_LOG3" \
+        --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
         --local-port "$LOCAL_PORT" \
         --rtp-port "$RTP_PORT" \
         --id "sip:alice@${HOST}" \
@@ -340,6 +346,7 @@ ALICE_RECV4="$TMPDIR/alice4_recv.wav"
 
 next_ports
 run_pjsua 10 "$BOB_LOG4" \
+    --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
     --local-port "$LOCAL_PORT" \
     --rtp-port "$RTP_PORT" \
     --id "sip:bob@${HOST};transport=tcp" \
@@ -362,6 +369,7 @@ else
 
     next_ports
     run_pjsua 6 "$ALICE_LOG4" \
+        --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
         --local-port "$LOCAL_PORT" \
         --rtp-port "$RTP_PORT" \
         --id "sip:alice@${HOST};transport=tcp" \
@@ -414,6 +422,7 @@ ALICE_RECV5="$TMPDIR/alice5_recv.wav"
 # Bob (UDP)
 next_ports
 run_pjsua 10 "$BOB_LOG5" \
+    --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
     --local-port "$LOCAL_PORT" \
     --rtp-port "$RTP_PORT" \
     --id "sip:bob@${HOST}" \
@@ -437,6 +446,7 @@ else
     # Alice (TCP)
     next_ports
     run_pjsua 6 "$ALICE_LOG5" \
+        --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
         --local-port "$LOCAL_PORT" \
         --rtp-port "$RTP_PORT" \
         --id "sip:alice@${HOST};transport=tcp" \
@@ -489,6 +499,7 @@ ALICE_RECV6="$TMPDIR/alice6_recv.wav"
 # Bob (TCP)
 next_ports
 run_pjsua 10 "$BOB_LOG6" \
+    --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
     --local-port "$LOCAL_PORT" \
     --rtp-port "$RTP_PORT" \
     --id "sip:bob@${HOST};transport=tcp" \
@@ -513,6 +524,7 @@ else
     # Alice (UDP)
     next_ports
     run_pjsua 6 "$ALICE_LOG6" \
+        --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
         --local-port "$LOCAL_PORT" \
         --rtp-port "$RTP_PORT" \
         --id "sip:alice@${HOST}" \
