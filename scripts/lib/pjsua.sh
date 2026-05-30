@@ -55,9 +55,9 @@ run_pjsua() {
 
     # 2. Write pjsua args to a temporary config file (more reliable than CLI in CI)
     local config_file="${logfile}.cfg"
-    printf '%s\n' "$@" > "$config_file"
-    #echo "--no-cli-console" >> "$config_file"
-    #echo "--no-audio" >> "$config_file"
+    echo "--log-level 5" >> "$config_file"
+    printf '%s\n' "$@" >> "$config_file"
+    echo "--no-cli-console" >> "$config_file"
 
     # 3. Setup FIFO (Named Pipe)
     local fifo="${logfile}.fifo"

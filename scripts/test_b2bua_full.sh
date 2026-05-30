@@ -76,7 +76,7 @@ cleanup_all() {
 }
 trap cleanup_all EXIT
 
-LOCAL_PORT=10000
+LOCAL_PORT=12000
 RTP_PORT=4000
 
 next_ports() {
