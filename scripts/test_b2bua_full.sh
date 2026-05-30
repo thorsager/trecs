@@ -191,8 +191,8 @@ else
             pass "[S1] $who — call CONFIRMED"
         else
             fail "[S1] $who — call not CONFIRMED"
-            echo "--- $log (last 50 lines) ---"
-            tail -50 "$log" 2>/dev/null || echo "(empty)"
+            echo "--- $log ---"
+            cat "$log" 2>/dev/null || echo "(empty)"
             echo ""
             exit 
         fi
