@@ -53,6 +53,7 @@ run_pjsua() {
     [ -z "$pidfile" ] && pidfile="${logfile}.pid"
 
     # Keep stdin open a bit past duration so pjsua can finish cleanly
+    echo "DEBUG: pjsua_args are: '$*'" >&2
     (
         echo "sleep $duration"
         sleep $(( duration + 3 ))
