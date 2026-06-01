@@ -53,26 +53,19 @@ run_pjsua() {
     [ "$timeout_secs" -lt 30 ] && timeout_secs=30
     [ -z "$pidfile" ] && pidfile="${logfile}.pid"
 
-    # 2. Write pjsua args to a temporary config file (more reliable than CLI in CI)
-    local config_file="${logfile}.cfg"
-    echo "--log-level 5" >> "$config_file"
-    printf '%s\n' "$@" >> "$config_file"
-    echo "--no-cli-console" >> "$config_file"
-
-    # 3. Setup FIFO (Named Pipe)
+    # 2. Setup FIFO (Named Pipe) for CLI command input
     local fifo="${logfile}.fifo"
     rm -f "$fifo"
     mkfifo "$fifo"
 
-    # 4. The "Keeper"
+    # 3. The "Keeper" — holds the FIFO write-end open so pjsua doesn't see EOF
+    #    until we explicitly write "quit".
     ( while true; do sleep 100; done ) > "$fifo" &
     local keeper_pid=$!
 
-    # 5. Start PJSUA with config file
-    echo "--- config: $config_file ---"
-    cat $config_file
-    echo "---"
-    pjsua --config-file="$config_file" < "$fifo" > "$logfile" 2>&1 &
+    # 4. Start PJSUA with CLI arguments (not config file — config file format
+    #    differs from CLI syntax and causes silent failures in CI).
+    pjsua "$@" < "$fifo" > "$logfile" 2>&1 &
     local pjsua_pid=$!
     echo "$pjsua_pid" > "$pidfile"
 
@@ -81,7 +74,7 @@ run_pjsua() {
         sleep "$duration"
         # Send the quit command into the FIFO
         echo "quit" > "$fifo" 2>/dev/null
-        
+
         # Give it a moment to exit gracefully before killing the keeper
         sleep 2
         kill "$keeper_pid" 2>/dev/null
@@ -103,9 +96,9 @@ run_pjsua() {
     wait "$pjsua_pid" 2>/dev/null || true
     local rc=$?
 
-    # Cleanup all background helpers and config file
+    # Cleanup all background helpers
     kill "$watcher_pid" "$controller_pid" "$keeper_pid" 2>/dev/null || true
-    rm -f "$pidfile" "$fifo" "$config_file"
+    rm -f "$pidfile" "$fifo"
 
     # Normalize exit code
     [ $rc -gt 128 ] && rc=124
