@@ -178,6 +178,11 @@ func (t *TCPTransport) SetLogger(l *slog.Logger) {
 	t.logger = l
 }
 
+// LocalAddr returns the bound TCP address.
+func (t *TCPTransport) LocalAddr() net.Addr {
+	return t.listener.Addr()
+}
+
 // NewTCPTransport resolves addr and starts a TCP listener.
 func NewTCPTransport(addr string) (*TCPTransport, error) {
 	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
