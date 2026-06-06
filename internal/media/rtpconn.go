@@ -44,16 +44,16 @@ func NewRTPConn() (*RTPConn, error) {
 
 // NewRTPConnRange binds a UDP socket for RTP media within the given port range.
 // If the range is invalid (min > max) or both are 0, an OS-assigned port is used.
-func NewRTPConnRange(min, max int) (*RTPConn, error) {
-	if min > 0 && max > 0 && max >= min {
-		for port := min; port <= max; port++ {
+func NewRTPConnRange(minPort, maxPort int) (*RTPConn, error) {
+	if minPort > 0 && maxPort > 0 && maxPort >= minPort {
+		for port := minPort; port <= maxPort; port++ {
 			addr := &net.UDPAddr{IP: net.IPv4zero, Port: port}
 			conn, err := net.ListenUDP("udp", addr)
 			if err == nil {
 				return &RTPConn{conn: conn}, nil
 			}
 		}
-		return nil, fmt.Errorf("no available RTP port in range %d-%d", min, max)
+		return nil, fmt.Errorf("no available RTP port in range %d-%d", minPort, maxPort)
 	}
 	addr := &net.UDPAddr{IP: net.IPv4zero, Port: 0}
 	conn, err := net.ListenUDP("udp", addr)

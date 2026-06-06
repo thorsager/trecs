@@ -10,41 +10,39 @@ import (
 
 // Call represents a B2BUA call, tracking both the Alice and Bob legs.
 type Call struct {
-	AliceCallID    string
-	BobCallID      string
-	Bridge         *media.Bridge
-	AliceSess      *media.Session
-	BobSess        *media.Session
-	BobConn        net.Conn
-	BobRTPAddr     net.Addr
-	BridgeReady    bool
-
-	BobContactURI  string
-	BobTransport   sip.Transport
-	BobTarget      *sip.Target
-	BobCalleeTag   string
-	BobRemoteTag   string
-	AliceFromTag   string
-	AliceServerTag string
+	BobConn         net.Conn
+	AliceTransport  sip.Transport
+	BobTransport    sip.Transport
+	BobRTPAddr      net.Addr
+	BobTarget       *sip.Target
+	BobSess         *media.Session
+	AliceSess       *media.Session
+	BobDialog       *sip.Dialog
+	AliceDialog     *sip.Dialog
+	Bridge          *media.Bridge
+	AliceTarget     *sip.Target
+	BobCalleeTag    string
+	BobRemoteTag    string
+	AliceFromTag    string
+	AliceServerTag  string
 	AliceContactURI string
-	AliceTarget    *sip.Target
-
-	AliceDialog    *sip.Dialog
-	BobDialog      *sip.Dialog
-	AliceTransport sip.Transport
+	AliceCallID     string
+	BobContactURI   string
+	BobCallID       string
+	BridgeReady     bool
 }
 
 // Store provides safe concurrent access to active B2BUA calls.
 type Store struct {
-	mu      sync.Mutex
-	calls   map[string]*Call
+	calls      map[string]*Call
 	bobToAlice map[string]string
+	mu         sync.Mutex
 }
 
 // NewStore creates an empty B2BUA call store.
 func NewStore() *Store {
 	return &Store{
-		calls:   make(map[string]*Call),
+		calls:      make(map[string]*Call),
 		bobToAlice: make(map[string]string),
 	}
 }

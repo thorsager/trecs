@@ -30,7 +30,7 @@ func BenchmarkParseSIP_Invite(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		r := newTestReader(input)
 		msg, err := UnmarshalSIP(r)
 		if err != nil {
@@ -58,7 +58,7 @@ func BenchmarkParseSIP_Register(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		r := newTestReader(input)
 		msg, err := UnmarshalSIP(r)
 		if err != nil {
@@ -92,7 +92,7 @@ func BenchmarkParseSIP_Response(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		r := newTestReader(input)
 		msg, err := UnmarshalSIP(r)
 		if err != nil {
@@ -119,7 +119,7 @@ func BenchmarkParseSIP_Minimal(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		r := newTestReader(input)
 		msg, err := UnmarshalSIP(r)
 		if err != nil {
@@ -134,11 +134,11 @@ func BenchmarkParseSIP_Minimal(b *testing.B) {
 func BenchmarkParseSIP_ManyHeaders(b *testing.B) {
 	var sb strings.Builder
 	sb.WriteString("INVITE sip:bob@biloxi.com SIP/2.0\r\n")
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		sb.WriteString("X-Extension-Header-")
-		sb.WriteString(string(rune('A' + i%26)))
+		sb.WriteRune(rune('A' + i%26))
 		sb.WriteString(": value-")
-		sb.WriteString(string(rune('0' + i%10)))
+		sb.WriteRune(rune('0' + i%10))
 		sb.WriteString("\r\n")
 	}
 	sb.WriteString("To: Bob <sip:bob@biloxi.com>\r\n")
@@ -152,7 +152,7 @@ func BenchmarkParseSIP_ManyHeaders(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		r := newTestReader(input)
 		msg, err := UnmarshalSIP(r)
 		if err != nil {
@@ -168,7 +168,7 @@ func BenchmarkParseSIPAddress_NameAddr(b *testing.B) {
 	raw := `"Alice" <sip:alice@atlanta.com>;tag=1928301774`
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := UnmarshalSIPAddress(raw)
 		if err != nil {
 			b.Fatal(err)
@@ -180,7 +180,7 @@ func BenchmarkParseSIPAddress_AddrSpec(b *testing.B) {
 	raw := `sip:alice@atlanta.com;tag=887s`
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := UnmarshalSIPAddress(raw)
 		if err != nil {
 			b.Fatal(err)
@@ -192,7 +192,7 @@ func BenchmarkParseSIPAddress_BareURI(b *testing.B) {
 	raw := `sip:alice@atlanta.com`
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := UnmarshalSIPAddress(raw)
 		if err != nil {
 			b.Fatal(err)
@@ -208,7 +208,7 @@ func BenchmarkCanonicalHeaderKey(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		for _, k := range keys {
 			_ = canonicalHeaderKey(k)
 		}
@@ -219,7 +219,7 @@ func BenchmarkParseCSeq(b *testing.B) {
 	values := []string{"1 INVITE", "314159 INVITE", "1 REGISTER", "101 OPTIONS", "2147483647 INVITE"}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		for _, v := range values {
 			_, err := unmarshalCSeq([]string{v})
 			if err != nil {
@@ -230,11 +230,13 @@ func BenchmarkParseCSeq(b *testing.B) {
 }
 
 func BenchmarkParseMethod(b *testing.B) {
-	methods := []string{"INVITE", "REGISTER", "OPTIONS", "BYE", "CANCEL", "ACK", "PRACK", "SUBSCRIBE",
-		"NOTIFY", "PUBLISH", "INFO", "REFER", "MESSAGE", "UPDATE"}
+	methods := []string{
+		"INVITE", "REGISTER", "OPTIONS", "BYE", "CANCEL", "ACK", "PRACK", "SUBSCRIBE",
+		"NOTIFY", "PUBLISH", "INFO", "REFER", "MESSAGE", "UPDATE",
+	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		for _, m := range methods {
 			_, err := unmarshalMethod(m)
 			if err != nil {
@@ -249,7 +251,7 @@ func BenchmarkReadLine(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		r := bufio.NewReader(strings.NewReader(input))
 		line, err := readLine(r)
 		if err != nil {
@@ -282,7 +284,7 @@ func BenchmarkSIPMessage_GetFirst(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		h := msg.Headers.GetFirst("From")
 		if h == "" {
 			b.Fatal("empty header")
@@ -309,7 +311,7 @@ func BenchmarkSIPMessage_Method(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		m := msg.Method()
 		if m == "" {
 			b.Fatal("zero method")
@@ -328,7 +330,7 @@ func BenchmarkParseRTP_Minimal(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := UnmarshalRTP(data)
 		if err != nil {
 			b.Fatal(err)
@@ -349,7 +351,7 @@ func BenchmarkParseRTP_WithPayload(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := UnmarshalRTP(data)
 		if err != nil {
 			b.Fatal(err)
@@ -372,7 +374,7 @@ func BenchmarkParseRTP_WithCSRC(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := UnmarshalRTP(data)
 		if err != nil {
 			b.Fatal(err)
@@ -395,7 +397,7 @@ func BenchmarkParseRTP_OneByteExtension(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := UnmarshalRTP(data)
 		if err != nil {
 			b.Fatal(err)
@@ -434,7 +436,7 @@ func BenchmarkParseRTCP_Compound(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		packets, err := UnmarshalRTCP(compound)
 		if err != nil {
 			b.Fatal(err)
@@ -458,7 +460,7 @@ func BenchmarkParseRTCP_SenderReport(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		packets, err := UnmarshalRTCP(data)
 		if err != nil {
 			b.Fatal(err)
@@ -479,7 +481,7 @@ func BenchmarkParseRTCP_ReceiverReport(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		packets, err := UnmarshalRTCP(data)
 		if err != nil {
 			b.Fatal(err)
@@ -501,7 +503,7 @@ func BenchmarkParseRTCP_SDES(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		packets, err := UnmarshalRTCP(data)
 		if err != nil {
 			b.Fatal(err)
@@ -529,7 +531,7 @@ func BenchmarkParseRTP_Marshal(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := orig.Marshal()
 		if err != nil {
 			b.Fatal(err)
@@ -557,7 +559,7 @@ func BenchmarkParseRTP_RoundTrip(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := UnmarshalRTP(data)
 		if err != nil {
 			b.Fatal(err)
@@ -577,7 +579,7 @@ func BenchmarkRTPMarshal_Minimal(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.Marshal()
 		if err != nil {
 			b.Fatal(err)
@@ -598,7 +600,7 @@ func BenchmarkRTPMarshal_WithPayload(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.Marshal()
 		if err != nil {
 			b.Fatal(err)
@@ -620,7 +622,7 @@ func BenchmarkRTPMarshal_WithCSRC(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.Marshal()
 		if err != nil {
 			b.Fatal(err)
@@ -647,7 +649,7 @@ func BenchmarkRTPMarshal_OneByteExtension(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.Marshal()
 		if err != nil {
 			b.Fatal(err)
@@ -672,7 +674,7 @@ func BenchmarkRTPMarshal_TwoByteExtension(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.Marshal()
 		if err != nil {
 			b.Fatal(err)
@@ -683,19 +685,19 @@ func BenchmarkRTPMarshal_TwoByteExtension(b *testing.B) {
 func BenchmarkRTPMarshal_WithPadding(b *testing.B) {
 	p := &RTPPacket{
 		Header: RTPHeader{
-			Version:     2,
-			Padding:     true,
-			PaddingSize: 4,
-			PayloadType: 0,
+			Version:        2,
+			Padding:        true,
+			PaddingSize:    4,
+			PayloadType:    0,
 			SequenceNumber: 1,
-			Timestamp:   0,
-			SSRC:        0x12345678,
+			Timestamp:      0,
+			SSRC:           0x12345678,
 		},
 		Payload: []byte{0x01, 0x02},
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.Marshal()
 		if err != nil {
 			b.Fatal(err)
@@ -716,7 +718,7 @@ func BenchmarkRTPMarshalTo_Minimal(b *testing.B) {
 	buf := make([]byte, p.MarshalSize())
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.MarshalTo(buf)
 		if err != nil {
 			b.Fatal(err)
@@ -738,7 +740,7 @@ func BenchmarkRTPMarshalTo_WithPayload(b *testing.B) {
 	buf := make([]byte, p.MarshalSize())
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.MarshalTo(buf)
 		if err != nil {
 			b.Fatal(err)
@@ -761,7 +763,7 @@ func BenchmarkRTPMarshalTo_WithCSRC(b *testing.B) {
 	buf := make([]byte, p.MarshalSize())
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.MarshalTo(buf)
 		if err != nil {
 			b.Fatal(err)
@@ -789,7 +791,7 @@ func BenchmarkRTPMarshalTo_OneByteExtension(b *testing.B) {
 	buf := make([]byte, p.MarshalSize())
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.MarshalTo(buf)
 		if err != nil {
 			b.Fatal(err)
@@ -815,7 +817,7 @@ func BenchmarkRTPMarshalTo_TwoByteExtension(b *testing.B) {
 	buf := make([]byte, p.MarshalSize())
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.MarshalTo(buf)
 		if err != nil {
 			b.Fatal(err)
@@ -836,7 +838,7 @@ func BenchmarkParseRTCP_Marshal(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := UnmarshalRTCP(data)
 		if err != nil {
 			b.Fatal(err)
@@ -848,7 +850,7 @@ func BenchmarkRTCPMarshal_SR_Minimal(b *testing.B) {
 	p := &SenderReport{SSRC: 0x902f9e2e, NTPTime: 0xdf3cf7581c604540, RTPTime: 0x11223344, PacketCount: 17, OctetCount: 3400}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.Marshal()
 		if err != nil {
 			b.Fatal(err)
@@ -866,7 +868,7 @@ func BenchmarkRTCPMarshal_SR_WithReports(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.Marshal()
 		if err != nil {
 			b.Fatal(err)
@@ -879,7 +881,7 @@ func BenchmarkRTCPMarshalTo_SR_Minimal(b *testing.B) {
 	buf := make([]byte, p.MarshalSize())
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.MarshalTo(buf)
 		if err != nil {
 			b.Fatal(err)
@@ -891,7 +893,7 @@ func BenchmarkRTCPMarshal_RR_Minimal(b *testing.B) {
 	p := &ReceiverReport{SSRC: 0x11111111}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.Marshal()
 		if err != nil {
 			b.Fatal(err)
@@ -909,7 +911,7 @@ func BenchmarkRTCPMarshal_RR_WithReports(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.Marshal()
 		if err != nil {
 			b.Fatal(err)
@@ -922,7 +924,7 @@ func BenchmarkRTCPMarshalTo_RR_Minimal(b *testing.B) {
 	buf := make([]byte, p.MarshalSize())
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.MarshalTo(buf)
 		if err != nil {
 			b.Fatal(err)
@@ -938,7 +940,7 @@ func BenchmarkRTCPMarshal_SDES_Single(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.Marshal()
 		if err != nil {
 			b.Fatal(err)
@@ -956,7 +958,7 @@ func BenchmarkRTCPMarshal_SDES_MultiChunk(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.Marshal()
 		if err != nil {
 			b.Fatal(err)
@@ -973,7 +975,7 @@ func BenchmarkRTCPMarshalTo_SDES_Single(b *testing.B) {
 	buf := make([]byte, p.MarshalSize())
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.MarshalTo(buf)
 		if err != nil {
 			b.Fatal(err)
@@ -985,7 +987,7 @@ func BenchmarkRTCPMarshal_BYE_Minimal(b *testing.B) {
 	p := &Goodbye{Sources: []uint32{0xDEADBEEF}}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.Marshal()
 		if err != nil {
 			b.Fatal(err)
@@ -997,7 +999,7 @@ func BenchmarkRTCPMarshal_BYE_WithReason(b *testing.B) {
 	p := &Goodbye{Sources: []uint32{0xDEADBEEF, 0xCAFEBABE}, Reason: "camera off"}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.Marshal()
 		if err != nil {
 			b.Fatal(err)
@@ -1010,7 +1012,7 @@ func BenchmarkRTCPMarshalTo_BYE_Minimal(b *testing.B) {
 	buf := make([]byte, p.MarshalSize())
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.MarshalTo(buf)
 		if err != nil {
 			b.Fatal(err)
@@ -1022,7 +1024,7 @@ func BenchmarkRTCPMarshal_APP(b *testing.B) {
 	p := &ApplicationDefined{SubType: 3, SSRC: 0x55555555, Name: "TEST", Data: []byte{0x01, 0x02, 0x03, 0x04}}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.Marshal()
 		if err != nil {
 			b.Fatal(err)
@@ -1035,7 +1037,7 @@ func BenchmarkRTCPMarshalTo_APP(b *testing.B) {
 	buf := make([]byte, p.MarshalSize())
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.MarshalTo(buf)
 		if err != nil {
 			b.Fatal(err)
@@ -1050,7 +1052,7 @@ func BenchmarkRTCPMarshal_Compound(b *testing.B) {
 	packets := []RTCPPacket{sr, sdes, bye}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := MarshalRTCP(packets)
 		if err != nil {
 			b.Fatal(err)
@@ -1071,7 +1073,7 @@ func BenchmarkRTCPMarshal_CompoundTo(b *testing.B) {
 	buf := make([]byte, total)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		n := 0
 		for _, p := range packets {
 			nn, err := p.MarshalTo(buf[n:])
@@ -1098,7 +1100,7 @@ func BenchmarkParseSIP_CompactHeaders(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		r := newTestReader(input)
 		msg, err := UnmarshalSIP(r)
 		if err != nil {
@@ -1118,7 +1120,7 @@ func BenchmarkSIPMarshalSize_Request(b *testing.B) {
 	msg := sipBenchRequest()
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = msg.MarshalSize()
 	}
 }
@@ -1127,7 +1129,7 @@ func BenchmarkSIPMarshalSize_Response(b *testing.B) {
 	msg := sipBenchResponse()
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = msg.MarshalSize()
 	}
 }
@@ -1136,7 +1138,7 @@ func BenchmarkSIPMarshalCompactSize_Request(b *testing.B) {
 	msg := sipBenchRequest()
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = msg.MarshalCompactSize()
 	}
 }
@@ -1145,7 +1147,7 @@ func BenchmarkSIPMarshalCompactSize_Response(b *testing.B) {
 	msg := sipBenchResponse()
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = msg.MarshalCompactSize()
 	}
 }
@@ -1154,7 +1156,7 @@ func BenchmarkSIPString(b *testing.B) {
 	msg := sipBenchRequest()
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = msg.String()
 	}
 }
@@ -1162,7 +1164,7 @@ func BenchmarkSIPString(b *testing.B) {
 func BenchmarkSIPNewRequest(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = NewRequest(SIPMethodINVITE, "sip:bob@example.com")
 	}
 }
@@ -1171,7 +1173,7 @@ func BenchmarkSIPNewResponse(b *testing.B) {
 	req := sipBenchRequest()
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = NewResponse(req, 200, "OK")
 	}
 }
@@ -1194,7 +1196,7 @@ func BenchmarkParseRTP_TwoByteExtension(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := UnmarshalRTP(data)
 		if err != nil {
 			b.Fatal(err)
@@ -1215,7 +1217,7 @@ func BenchmarkParseRTP_WithPadding(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := UnmarshalRTP(data)
 		if err != nil {
 			b.Fatal(err)
@@ -1235,7 +1237,7 @@ func BenchmarkRTPMarshalSize_Minimal(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = p.MarshalSize()
 	}
 }
@@ -1253,7 +1255,7 @@ func BenchmarkRTPMarshalSize_WithPayload(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = p.MarshalSize()
 	}
 }
@@ -1261,20 +1263,20 @@ func BenchmarkRTPMarshalSize_WithPayload(b *testing.B) {
 func BenchmarkRTPMarshalTo_WithPadding(b *testing.B) {
 	p := &RTPPacket{
 		Header: RTPHeader{
-			Version:     2,
-			Padding:     true,
-			PaddingSize: 4,
-			PayloadType: 0,
+			Version:        2,
+			Padding:        true,
+			PaddingSize:    4,
+			PayloadType:    0,
 			SequenceNumber: 1,
-			Timestamp:   0,
-			SSRC:        0x12345678,
+			Timestamp:      0,
+			SSRC:           0x12345678,
 		},
 		Payload: []byte{0x01, 0x02},
 	}
 	buf := make([]byte, p.MarshalSize())
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := p.MarshalTo(buf)
 		if err != nil {
 			b.Fatal(err)
@@ -1306,7 +1308,7 @@ func BenchmarkParseRTP_RoundTrip_Extensions(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := UnmarshalRTP(data)
 		if err != nil {
 			b.Fatal(err)
@@ -1325,7 +1327,7 @@ func BenchmarkParseRTCP_BYE(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		packets, err := UnmarshalRTCP(data)
 		if err != nil {
 			b.Fatal(err)
@@ -1345,7 +1347,7 @@ func BenchmarkParseRTCP_APP(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		packets, err := UnmarshalRTCP(data)
 		if err != nil {
 			b.Fatal(err)
@@ -1386,7 +1388,7 @@ func BenchmarkParseRTCP_CompoundFull(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		packets, err := UnmarshalRTCP(compound)
 		if err != nil {
 			b.Fatal(err)
@@ -1401,7 +1403,7 @@ func BenchmarkRTCPMarshalSize_SR(b *testing.B) {
 	p := &SenderReport{SSRC: 0x902f9e2e, NTPTime: 0xdf3cf7581c604540, RTPTime: 0x11223344, PacketCount: 17, OctetCount: 3400}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = p.MarshalSize()
 	}
 }
@@ -1416,7 +1418,7 @@ func BenchmarkRTCPMarshalSize_RR(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_ = p.MarshalSize()
 	}
 }

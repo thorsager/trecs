@@ -37,7 +37,7 @@ cat > "$DIALPLAN_FILE" <<JSON
 {
   "extensions": {
     "echo": { "action": "echo" },
-    "play": { "action": "play", "file": "$ROOT/EDIS-SCD-02.wav" }
+    "play": { "action": "play", "file": "$ROOT/testdata/EDIS-SCD-02.wav" }
   }
 }
 JSON
@@ -51,13 +51,30 @@ cleanup() {
     fi
     rm -f "$DIALPLAN_FILE"
     rm -f /tmp/trecd_test_all
+    rm -f /tmp/trecd_server.log
 }
 trap cleanup EXIT
 
+# Show pjsua logs on failure
+show_pjsua_logs() {
+    if [ "$EXIT" -gt 0 ]; then
+        echo ""
+        echo "=== pjsua diagnostic logs ==="
+        for f in /tmp/trec_b2bua_test.*/*.log /tmp/trec_dp_echo.*/*.log /tmp/trec_dp_play.*/*.log; do
+            if [ -f "$f" ]; then
+                echo "--- $f ---"
+                head -80 "$f" 2>/dev/null || echo "(empty)"
+                echo ""
+            fi
+        done
+    fi
+}
+trap 'show_pjsua_logs; cleanup' EXIT
+
 echo "--- building trecd ---"
-rtk go build -o /tmp/trecd_test_all "$ROOT/cmd/trecd/" 2>&1
+go build -o /tmp/trecd_test_all "$ROOT/cmd/trecsd/" 2>&1
 echo "--- starting trecd on $TARGET with dialplan ---"
-/tmp/trecd_test_all -addr "$TARGET" -dialplan "$DIALPLAN_FILE" &
+/tmp/trecd_test_all -addr "$TARGET" -dialplan "$DIALPLAN_FILE" 2>/tmp/trecd_server.log &
 TRECD_PID=$!
 sleep 2
 if ! kill -0 "$TRECD_PID" 2>/dev/null; then

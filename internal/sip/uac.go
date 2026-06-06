@@ -32,7 +32,7 @@ func GenerateCallID() string {
 type UACState int
 
 const (
-	UACStateCalling    UACState = iota
+	UACStateCalling UACState = iota
 	UACStateProceeding
 	UACStateCompleted
 	UACStateTerminated
@@ -54,28 +54,24 @@ func (s UACState) String() string {
 }
 
 type UACTransaction struct {
-	Branch    string
-	Method    proto.SIPMethod
-	Responses chan *proto.SIPMessage
-	Errors    chan error
-
-	state     UACState
-	stateMu   sync.Mutex
-	request   *proto.SIPMessage
 	transport Transport
+	ctx       context.Context
+	timerD    *time.Timer
+	Errors    chan error
+	cancel    context.CancelFunc
+	manager   *UACManager
+	request   *proto.SIPMessage
+	Responses chan *proto.SIPMessage
 	target    *Target
-	reliable  bool
+	logger    *slog.Logger
 	timerA    *time.Timer
 	timerB    *time.Timer
-	timerD    *time.Timer
+	Branch    string
+	Method    proto.SIPMethod
 	retxCount int
-
-	logger *slog.Logger
-
-	manager *UACManager
-
-	ctx    context.Context
-	cancel context.CancelFunc
+	state     UACState
+	stateMu   sync.Mutex
+	reliable  bool
 }
 
 func newUACTransaction(ctx context.Context, method proto.SIPMethod, transport Transport, target *Target) *UACTransaction {
@@ -309,8 +305,8 @@ func (e TimeoutError) Error() string {
 }
 
 type UACManager struct {
-	mu      sync.Mutex
 	pending map[string]*UACTransaction
+	mu      sync.Mutex
 }
 
 func NewUACManager() *UACManager {

@@ -43,7 +43,7 @@ func TransportName(t Transport) string {
 type NISTState int
 
 const (
-	NISTTrying     NISTState = iota
+	NISTTrying NISTState = iota
 	NISTProceeding
 	NISTCompleted
 	NISTTerminated
@@ -66,17 +66,17 @@ func (s NISTState) String() string {
 
 // NonInviteTransaction implements the NIST state machine.
 type NonInviteTransaction struct {
-	mu        sync.Mutex
+	transport Transport
+	lastResp  *proto.SIPMessage
+	manager   *TransactionManager
+	timerJ    *time.Timer
+	logger    *slog.Logger
+	target    Target
 	branch    string
 	method    proto.SIPMethod
 	state     NISTState
-	lastResp  *proto.SIPMessage
-	target    Target
-	transport Transport
-	manager   *TransactionManager
-	timerJ    *time.Timer
+	mu        sync.Mutex
 	reliable  bool
-	logger    *slog.Logger
 }
 
 // Respond implements Transaction per RFC 3261 §17.2.3.
@@ -153,7 +153,7 @@ func (tx *NonInviteTransaction) Transport() Transport {
 type ISTState int
 
 const (
-	ISTTrying     ISTState = iota
+	ISTTrying ISTState = iota
 	ISTProceeding
 	ISTCompleted
 	ISTConfirmed
@@ -179,19 +179,19 @@ func (s ISTState) String() string {
 
 // InviteTransaction implements the IST state machine per RFC 3261 §17.2.1.
 type InviteTransaction struct {
-	mu        sync.Mutex
-	branch    string
-	lastResp  *proto.SIPMessage
-	target    Target
 	transport Transport
-	manager   *TransactionManager
-	state     ISTState
 	timerH    *time.Timer
-	timerI    *time.Timer
-	timerG    *time.Timer
-	reliable  bool
-	gCount    int
 	logger    *slog.Logger
+	lastResp  *proto.SIPMessage
+	timerG    *time.Timer
+	manager   *TransactionManager
+	timerI    *time.Timer
+	target    Target
+	branch    string
+	state     ISTState
+	gCount    int
+	mu        sync.Mutex
+	reliable  bool
 }
 
 // Respond implements Transaction per RFC 3261 §17.2.1.
@@ -345,8 +345,8 @@ func (tx *InviteTransaction) Transport() Transport {
 
 // TransactionManager tracks active server transactions via Via branch.
 type TransactionManager struct {
-	mu        sync.Mutex
 	serverTxs map[string]Transaction
+	mu        sync.Mutex
 }
 
 func NewTransactionManager() *TransactionManager {
@@ -422,14 +422,14 @@ func (tm *TransactionManager) handleRetransmission(tx Transaction) {
 		defer t.mu.Unlock()
 		if t.state == NISTCompleted && t.lastResp != nil {
 			t.logger.Debug("Retransmission of non-INVITE, re-sending final response", "method", string(t.method))
-			t.transport.Send(t.lastResp, &t.target)
+			t.transport.Send(t.lastResp, &t.target) //nolint:errcheck
 		}
 	case *InviteTransaction:
 		t.mu.Lock()
 		defer t.mu.Unlock()
 		if t.state == ISTCompleted && t.lastResp != nil {
 			t.logger.Debug("Retransmission of INVITE, re-sending final response")
-			t.transport.Send(t.lastResp, &t.target)
+			t.transport.Send(t.lastResp, &t.target) //nolint:errcheck
 		}
 	}
 }

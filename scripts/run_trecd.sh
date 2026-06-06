@@ -19,7 +19,7 @@ cmd_start() {
         exit 1
     fi
     cd "$(dirname "$0")/.."
-    go build -o trecd ./cmd/trecd
+    go build -o trecd ./cmd/trecsd
     nohup ./trecd -addr "$ADDR" > "$LOGFILE" 2>&1 &
     echo $! > "$PIDFILE"
     sleep 1

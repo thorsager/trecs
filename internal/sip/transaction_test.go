@@ -12,8 +12,8 @@ import (
 
 // mockTransport records sent messages for verification.
 type mockTransport struct {
-	mu   sync.Mutex
 	sent []*proto.SIPMessage
+	mu   sync.Mutex
 }
 
 func (m *mockTransport) Send(msg *proto.SIPMessage, target *Target) error {
@@ -180,7 +180,7 @@ func TestNISTMultipleProvisional(t *testing.T) {
 		logger:    logutil.NewTestLogger(t),
 	}
 
-	tx.Respond(proto.NewResponse(req, 100, "Trying")) // Trying → Proceeding
+	tx.Respond(proto.NewResponse(req, 100, "Trying"))  // Trying → Proceeding
 	tx.Respond(proto.NewResponse(req, 180, "Ringing")) // stays Proceeding
 
 	if tx.state != NISTProceeding {
@@ -416,7 +416,7 @@ func TestNISTProceedingKeepSending1xx(t *testing.T) {
 		logger:    logutil.NewTestLogger(t),
 	}
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		tx.Respond(proto.NewResponse(req, 183, "Session Progress"))
 	}
 
@@ -1106,7 +1106,7 @@ func TestManagerConcurrentRequests(t *testing.T) {
 
 	var wg sync.WaitGroup
 	n := 20
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

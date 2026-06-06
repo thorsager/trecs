@@ -1,6 +1,7 @@
 package media_test
 
 import (
+	"bytes"
 	"net"
 	"testing"
 	"time"
@@ -75,7 +76,7 @@ func TestBridgeForwardsBidirectional(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clientB ReadRTP (expecting A→B): %v", err)
 	}
-	if string(pktFromA.Payload) != string([]byte{0x01, 0x02, 0x03}) {
+	if !bytes.Equal(pktFromA.Payload, []byte{0x01, 0x02, 0x03}) {
 		t.Fatalf("A→B payload mismatch: got %v", pktFromA.Payload)
 	}
 	if pktFromA.Header.PayloadType != 0 {
@@ -88,7 +89,7 @@ func TestBridgeForwardsBidirectional(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clientA ReadRTP (expecting B→A): %v", err)
 	}
-	if string(pktFromB.Payload) != string([]byte{0x04, 0x05, 0x06}) {
+	if !bytes.Equal(pktFromB.Payload, []byte{0x04, 0x05, 0x06}) {
 		t.Fatalf("B→A payload mismatch: got %v", pktFromB.Payload)
 	}
 	if pktFromB.Header.PayloadType != 8 {

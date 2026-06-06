@@ -55,6 +55,8 @@ FAIL=0
 pass() { echo "  ✓ $1"; ((PASS++)); }
 fail() { echo "  ✗ $1"; ((FAIL++)); }
 
+file_size() { stat -c %s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null; }
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMPDIR=$(mktemp -d /tmp/trec_dp_echo.XXXXXX) || { echo "FAIL: mktemp"; exit 1; }
 
@@ -82,7 +84,7 @@ JSON
 
 if [ "$AUTO_START" = 1 ]; then
     echo "--- building trecd ---"
-    if ! rtk go build -o "$TMPDIR/trecd" "$ROOT/cmd/trecd/" 2>&1; then
+    if ! go build -o "$TMPDIR/trecd" "$ROOT/cmd/trecsd/" 2>&1; then
         fail "trecd build failed"
         exit 1
     fi
@@ -107,8 +109,8 @@ RECV_FILE="$TMPDIR/recv.wav"
 echo ""
 echo "=== sox tone generation ==="
 sox -n -b 16 -r 8000 -c 1 "$TONE_FILE" synth "$DURATION" sine 440 2>&1
-if [ -f "$TONE_FILE" ] && [ "$(stat -f%z "$TONE_FILE")" -gt 44 ]; then
-    pass "tone file ($(stat -f%z "$TONE_FILE") bytes)"
+if [ -f "$TONE_FILE" ] && [ "$(file_size "$TONE_FILE")" -gt 44 ]; then
+    pass "tone file ($(file_size "$TONE_FILE") bytes)"
 else
     fail "tone file missing or too small"
     exit 1
@@ -127,10 +129,12 @@ PJSUA_LOG="$TMPDIR/pjsua.log"
     echo "sleep $DURATION"
     sleep $((DURATION + 3))
 ) | pjsua \
+    --rtp-port 13000 \
     --id "sip:caller@127.0.0.1${SIP_PARAMS}" \
     --registrar "sip:${TARGET}${SIP_PARAMS}" \
     --realm "*" \
     --play-file "$TONE_FILE" \
+    --null-audio \
     --auto-play \
     --auto-rec \
     --rec-file "$RECV_FILE" \
@@ -161,7 +165,7 @@ else
 fi
 
 if [ -f "$RECV_FILE" ]; then
-    WAV_DATA=$(( $(stat -f%z "$RECV_FILE") - 44 ))
+    WAV_DATA=$(( $(file_size "$RECV_FILE") - 44 ))
     if [ "$WAV_DATA" -gt 0 ]; then
         pass "dialplan echo: received audio ($WAV_DATA bytes)"
     else
@@ -173,4 +177,10 @@ fi
 
 echo ""
 echo "=== results: ${PASS} passed, ${FAIL} failed ==="
+
+if [ "$FAIL" -gt 0 ] && [ -f "$PJSUA_LOG" ]; then
+    echo "=== pjsua log ==="
+    head -100 "$PJSUA_LOG" 2>/dev/null || echo "(empty)"
+fi
+
 exit $FAIL

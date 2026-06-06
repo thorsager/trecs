@@ -14,9 +14,15 @@ clean:
 	rm -f $(BIN)
 
 test:
-	$(GO) test -count=1 ./...
+	$(GO) test -count=1 -skip=TestIntegration ./...
+
+integrationtest:
+	$(GO) test -count=1 ./integrationtest/
 
 bench:
 	$(GO) test ./... -bench=. -benchmem -benchtime=1000ms
 
-.PHONY: build install clean test bench
+lint:
+	golangci-lint run
+
+.PHONY: build install clean test integrationtest bench lint

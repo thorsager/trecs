@@ -5,7 +5,7 @@ import (
 )
 
 func TestLoadWav(t *testing.T) {
-	w, err := LoadWav("../../EDIS-SCD-02.wav")
+	w, err := LoadWav("../../testdata/EDIS-SCD-02.wav")
 	if err != nil {
 		t.Fatalf("LoadWav: %v", err)
 	}

@@ -11,8 +11,8 @@ import (
 )
 
 type mockTx struct {
-	responses []*proto.SIPMessage
 	conn      net.Conn
+	responses []*proto.SIPMessage
 }
 
 func (tx *mockTx) Respond(res *proto.SIPMessage) {
@@ -156,7 +156,7 @@ func TestRegistrar_Unregister(t *testing.T) {
 func TestRegistrar_UnregisterAll(t *testing.T) {
 	reg := NewRegistrar()
 
-reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
+	reg.HandleRegister(t.Context(), sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n"+
 		"From: <sip:alice@example.com>;tag=abc\r\n"+
 		"To: <sip:alice@example.com>\r\n"+

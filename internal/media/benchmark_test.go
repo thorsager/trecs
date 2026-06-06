@@ -39,7 +39,7 @@ func BenchmarkRTPConnReadWrite(b *testing.B) {
 	b.ResetTimer()
 
 	// Write before each read to ensure data is available.
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if err := a.WriteRTP(sent, addr); err != nil {
 			b.Fatal(err)
 		}
@@ -79,7 +79,7 @@ func BenchmarkRTPConn_ReadRTP(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		// Send before each read to ensure data is available.
 		sender.WriteRTP(pkt, rAddr)
 		receiver.SetReadDeadline(time.Now().Add(time.Second))
@@ -118,7 +118,7 @@ func BenchmarkRTPConn_WriteRTP(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if err := sender.WriteRTP(pkt, rAddr); err != nil {
 			b.Fatal(err)
 		}
@@ -160,7 +160,7 @@ func BenchmarkRTPConn_EchoLoop(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if err := client.WriteRTP(pkt, serverAddr); err != nil {
 			b.Fatal(err)
 		}
@@ -229,7 +229,7 @@ func BenchmarkBridgeForward(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		clientB.SetReadDeadline(time.Now().Add(time.Second))
 		got, _, err := clientB.ReadRTP()
 		if err != nil {
@@ -282,7 +282,7 @@ func BenchmarkBridge_ForwardLoop(b *testing.B) {
 	sAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: serverA.LocalAddr().(*net.UDPAddr).Port}
 
 	// Pre-fill to ensure bridge goroutine is pumping.
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		clientA.WriteRTP(pkt, sAddr)
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -290,7 +290,7 @@ func BenchmarkBridge_ForwardLoop(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		clientA.WriteRTP(pkt, sAddr)
 		clientB.SetReadDeadline(time.Now().Add(time.Second))
 		got, _, err := clientB.ReadRTP()
@@ -326,7 +326,7 @@ func BenchmarkRTPConnReadWrite_SmallPayload(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if err := a.WriteRTP(sent, addr); err != nil {
 			b.Fatal(err)
 		}
@@ -364,7 +364,7 @@ func BenchmarkRTPConnReadWrite_LargePayload(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if err := a.WriteRTP(sent, addr); err != nil {
 			b.Fatal(err)
 		}
@@ -411,7 +411,7 @@ func BenchmarkRTPConnReadWrite_WithExtensions(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if err := a.WriteRTP(sent, addr); err != nil {
 			b.Fatal(err)
 		}

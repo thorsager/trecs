@@ -91,6 +91,7 @@ echo "Press Ctrl-C to stop."
 echo ""
 
 pjsua \
+    --rtp-port 16000 \
     --id "sip:edison@127.0.0.1:${LOCAL_PORT}" \
     --local-port "$LOCAL_PORT" \
     --registrar "sip:${TARGET}${SIP_PARAMS}" \

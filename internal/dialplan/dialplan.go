@@ -10,8 +10,8 @@ const (
 )
 
 type Entry struct {
-	Action Action
 	File   string
+	Action Action
 }
 
 type Dialplan interface {

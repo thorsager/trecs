@@ -29,16 +29,16 @@ type Config struct {
 // Handler implements SIP request handlers for the T-REC B2BUA server,
 // including echo service, file playback, B2BUA call bridging, and call teardown.
 type Handler struct {
-	reg      *sip.Registrar
-	sm       *media.SessionManager
-	server   *sip.Server
-	serverIP string
+	reg        *sip.Registrar
+	sm         *media.SessionManager
+	server     *sip.Server
+	serverIP   string
 	serverAddr string
-	uacMgr   *sip.UACManager
-	dp       dialplan.Dialplan
-	rtpMin   int
-	rtpMax   int
-	store    *Store
+	uacMgr     *sip.UACManager
+	dp         dialplan.Dialplan
+	rtpMin     int
+	rtpMax     int
+	store      *Store
 }
 
 // NewHandler creates a new B2BUA handler with the given configuration.
@@ -294,7 +294,7 @@ func (h *Handler) handleFileInvite(ctx context.Context, req *proto.SIPMessage, t
 		go func() {
 			<-done
 			if session.Ctx().Err() == nil {
-				h.sendByeToSession(logutil.NewContext(context.Background(), callLog), session, callID)
+				h.sendByeToSession(logutil.NewContext(session.Ctx(), callLog), session, callID)
 			}
 		}()
 	}

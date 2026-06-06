@@ -15,18 +15,17 @@ import (
 const bridgeReadTimeout = 1 * time.Second
 
 type Bridge struct {
-	AConn    *RTPConn
-	BConn    *RTPConn
-	aRemote  net.Addr
-	bRemote  net.Addr
+	aRemote net.Addr
+	bRemote net.Addr
+	ctx     context.Context
+	AConn   *RTPConn
+	BConn   *RTPConn
+	cancel  context.CancelFunc
+	logger  *slog.Logger
+	mu      sync.Mutex
 	ASToBSS uint32
 	BSToASS uint32
-	started  bool
-	mu       sync.Mutex
-
-	ctx    context.Context
-	cancel context.CancelFunc
-	logger *slog.Logger
+	started bool
 }
 
 func NewBridge(ctx context.Context, aConn, bConn *RTPConn) *Bridge {
@@ -34,8 +33,8 @@ func NewBridge(ctx context.Context, aConn, bConn *RTPConn) *Bridge {
 	return &Bridge{
 		AConn:   aConn,
 		BConn:   bConn,
-		ASToBSS: rand.Uint32(),
-		BSToASS: rand.Uint32(),
+		ASToBSS: rand.Uint32(), //nolint:gosec // SSRC doesn't need cryptographic randomness
+		BSToASS: rand.Uint32(), //nolint:gosec // SSRC doesn't need cryptographic randomness
 		ctx:     ctx,
 		cancel:  cancel,
 		logger:  logutil.FromContext(ctx),
@@ -68,8 +67,8 @@ func (b *Bridge) Start() {
 	b.started = true
 	b.mu.Unlock()
 
-	go b.forward(b.AConn, b.BConn, b.bRemote, b.ASToBSS, "A→B")
-	go b.forward(b.BConn, b.AConn, b.aRemote, b.BSToASS, "B→A")
+	go b.forward(b.AConn, b.BConn, b.bRemote, b.ASToBSS)
+	go b.forward(b.BConn, b.AConn, b.aRemote, b.BSToASS)
 	b.logger.Info("Bridge started: A↔B")
 }
 
@@ -77,7 +76,7 @@ func (b *Bridge) Stop() {
 	b.cancel()
 }
 
-func (b *Bridge) forward(src, dst *RTPConn, remote net.Addr, ssrc uint32, dir string) {
+func (b *Bridge) forward(src, dst *RTPConn, remote net.Addr, ssrc uint32) {
 	var seq uint16
 	var timestamp uint32
 	out := &proto.RTPPacket{

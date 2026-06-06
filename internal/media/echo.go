@@ -14,10 +14,10 @@ const (
 )
 
 // RunEcho loops reading RTP packets from conn and echoing the payload back
-// to the sender with fresh headers. It exits when ctx is cancelled or conn
+// to the sender with fresh headers. It exits when ctx is canceled or conn
 // encounters a read error.
 func RunEcho(ctx context.Context, conn *RTPConn, payloadType uint8) {
-	serverSSRC := rand.Uint32()
+	serverSSRC := rand.Uint32() //nolint:gosec // SSRC doesn't need cryptographic randomness
 	var seq uint16
 	var timestamp uint32
 	out := &proto.RTPPacket{

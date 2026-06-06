@@ -190,11 +190,11 @@ type mockTCPAddrConn struct {
 	remote net.Addr
 }
 
-func (m *mockTCPAddrConn) Read(b []byte) (int, error)    { return 0, nil }
-func (m *mockTCPAddrConn) Write(b []byte) (int, error)   { return len(b), nil }
-func (m *mockTCPAddrConn) Close() error                   { return nil }
-func (m *mockTCPAddrConn) LocalAddr() net.Addr            { return m.local }
-func (m *mockTCPAddrConn) RemoteAddr() net.Addr           { return m.remote }
-func (m *mockTCPAddrConn) SetDeadline(t time.Time) error  { return nil }
-func (m *mockTCPAddrConn) SetReadDeadline(t time.Time) error { return nil }
+func (m *mockTCPAddrConn) Read(b []byte) (int, error)         { return 0, nil }
+func (m *mockTCPAddrConn) Write(b []byte) (int, error)        { return len(b), nil }
+func (m *mockTCPAddrConn) Close() error                       { return nil }
+func (m *mockTCPAddrConn) LocalAddr() net.Addr                { return m.local }
+func (m *mockTCPAddrConn) RemoteAddr() net.Addr               { return m.remote }
+func (m *mockTCPAddrConn) SetDeadline(t time.Time) error      { return nil }
+func (m *mockTCPAddrConn) SetReadDeadline(t time.Time) error  { return nil }
 func (m *mockTCPAddrConn) SetWriteDeadline(t time.Time) error { return nil }

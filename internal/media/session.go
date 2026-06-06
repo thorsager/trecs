@@ -20,9 +20,9 @@ type SessionKey struct {
 type SessionState int
 
 const (
-	SessionCreated   SessionState = iota // initial
-	SessionWaitingAck                    // delayed offer: 200 OK sent, waiting for ACK
-	SessionActive                        // early offer: echo running, or ACK received for delayed
+	SessionCreated    SessionState = iota // initial
+	SessionWaitingAck                     // delayed offer: 200 OK sent, waiting for ACK
+	SessionActive                         // early offer: echo running, or ACK received for delayed
 )
 
 type SessionKind int
@@ -34,26 +34,23 @@ const (
 
 // Session holds the media-related state for one call.
 type Session struct {
-	mu          sync.Mutex
-	Key         SessionKey
-	Kind        SessionKind
-	State       SessionState
-	RTPConn     *RTPConn
-	PayloadType uint8
-	ServerAddr  net.Addr
-	RemoteAddr  net.Addr
-	ServerSSRC  uint32
-
+	ctx           context.Context
+	ServerAddr    net.Addr
+	RemoteAddr    net.Addr
+	SipTransport  sip.Transport
 	WavData       *WavData
+	cancel        context.CancelFunc
+	RTPConn       *RTPConn
+	SipTarget     *sip.Target
+	Key           SessionKey
+	TargetURI     string
 	CallerContact string
 	CallerURI     string
-	TargetURI     string
-
-	SipTransport sip.Transport
-	SipTarget    *sip.Target
-
-	ctx    context.Context
-	cancel context.CancelFunc
+	State         SessionState
+	Kind          SessionKind
+	mu            sync.Mutex
+	ServerSSRC    uint32
+	PayloadType   uint8
 }
 
 // SetRemoteAddr is safe for concurrent access.
@@ -93,13 +90,13 @@ func NewSession(parent context.Context, key SessionKey, rtpConn *RTPConn, payloa
 		RTPConn:     rtpConn,
 		PayloadType: payloadType,
 		ServerAddr:  serverAddr,
-		ServerSSRC:  rand.Uint32(),
+		ServerSSRC:  rand.Uint32(), //nolint:gosec // SSRC doesn't need cryptographic randomness
 		ctx:         ctx,
 		cancel:      cancel,
 	}
 }
 
-// Ctx returns the session's context. It is cancelled when Cancel is called.
+// Ctx returns the session's context. It is canceled when Cancel is called.
 func (s *Session) Ctx() context.Context {
 	return s.ctx
 }
@@ -111,8 +108,8 @@ func (s *Session) Cancel() {
 
 // SessionManager tracks active echo sessions keyed by dialog ID.
 type SessionManager struct {
-	mu       sync.Mutex
 	sessions map[SessionKey]*Session
+	mu       sync.Mutex
 }
 
 // NewSessionManager creates a new empty session manager.

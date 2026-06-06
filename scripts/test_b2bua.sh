@@ -49,6 +49,8 @@ FAIL=0
 pass() { echo "  ✓ $1"; ((PASS++)); }
 fail() { echo "  ✗ $1"; ((FAIL++)); }
 
+file_size() { stat -c %s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null; }
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 cleanup() {
@@ -71,7 +73,7 @@ trap cleanup EXIT
 
 if [ "$AUTO_START" = 1 ]; then
     echo "--- building trecd ---"
-    if ! rtk go build -o /tmp/trecd_b2bua_test "$ROOT/cmd/trecd/" 2>&1; then
+    if ! go build -o /tmp/trecd_b2bua_test "$ROOT/cmd/trecsd/" 2>&1; then
         fail "trecd build failed"
         exit 1
     fi
@@ -99,8 +101,8 @@ echo ""
 echo "=== sox tone generation ==="
 echo "--- generating ${DURATION}s 440Hz tone ---"
 sox -n -b 16 -r 8000 -c 1 "$TONE_FILE" synth "$DURATION" sine 440 2>&1
-if [ -f "$TONE_FILE" ] && [ "$(stat -f%z "$TONE_FILE")" -gt 44 ]; then
-    pass "tone file ($(stat -f%z "$TONE_FILE") bytes)"
+if [ -f "$TONE_FILE" ] && [ "$(file_size "$TONE_FILE")" -gt 44 ]; then
+    pass "tone file ($(file_size "$TONE_FILE") bytes)"
 else
     fail "tone file missing or too small"
     exit 1
@@ -108,8 +110,10 @@ fi
 
 # ── Pick ports for the two pjsua instances ────────────────────────
 # Avoid 15060/15061 (used by other processes if present).
-ALICE_PORT=15062
-BOB_PORT=15063
+ALICE_PORT=35062
+BOB_PORT=35063
+BOB_RTP=12000
+ALICE_RTP=12100
 HOST="127.0.0.1"
 
 # ── Start Bob (callee) ────────────────────────────────────────────
@@ -124,6 +128,7 @@ BOB_RECV=$(mktemp /tmp/trec_b2bua_bob_recv.XXXXXX.wav)
     echo "sleep $((DURATION * 3000))"
     sleep $((DURATION + 15))
 ) | pjsua \
+    --rtp-port $BOB_RTP \
     --local-port "$BOB_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
@@ -153,6 +158,7 @@ ALICE_RECV=$(mktemp /tmp/trec_b2bua_alice_recv.XXXXXX.wav)
     echo "sleep $((DURATION * 1000))"
     sleep $((DURATION + 10))
 ) | pjsua \
+    --rtp-port $ALICE_RTP \
     --local-port "$ALICE_PORT" \
     --id "sip:alice@${HOST}" \
     --registrar "sip:${TARGET}" \
@@ -206,7 +212,7 @@ done
 
 # Bob's recording has audio data (Alice's tone forwarded through bridge)
 if [ -f "$BOB_RECV" ]; then
-    BOB_WAV_DATA=$(( $(stat -f%z "$BOB_RECV") - 44 ))
+    BOB_WAV_DATA=$(( $(file_size "$BOB_RECV") - 44 ))
     if [ "$BOB_WAV_DATA" -gt 0 ]; then
         pass "Bob received audio ($BOB_WAV_DATA bytes)"
     else
@@ -218,7 +224,7 @@ fi
 
 # Alice's recording (may be silent since Bob uses --null-audio)
 if [ -f "$ALICE_RECV" ]; then
-    ALICE_WAV_DATA=$(( $(stat -f%z "$ALICE_RECV") - 44 ))
+    ALICE_WAV_DATA=$(( $(file_size "$ALICE_RECV") - 44 ))
     if [ "$ALICE_WAV_DATA" -gt 0 ]; then
         pass "Alice received audio ($ALICE_WAV_DATA bytes)"
     fi

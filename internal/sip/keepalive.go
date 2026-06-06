@@ -11,10 +11,10 @@ import (
 const DefaultKeepaliveInterval = 10 * time.Second
 
 type KeepaliveTracker struct {
-	mu         sync.Mutex
 	lastActive time.Time
-	interval   time.Duration
 	logger     *slog.Logger
+	interval   time.Duration
+	mu         sync.Mutex
 }
 
 func NewKeepaliveTracker(interval time.Duration, logger *slog.Logger) *KeepaliveTracker {

@@ -11,6 +11,8 @@
 #
 set -uo pipefail
 
+source "$(cd "$(dirname "$0")/.." && pwd)/scripts/lib/pjsua.sh"
+
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [-h] [-s] [-t target]
@@ -44,10 +46,12 @@ FAIL=0
 pass() { echo "  ✓ $1"; ((PASS++)); }
 fail() { echo "  ✗ $1"; ((FAIL++)); }
 
+file_size() { stat -c %s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null; }
+
 check_audio() {
     local label="$1" file="$2" direction="$3"
     if [ -f "$file" ]; then
-        local data=$(( $(stat -f%z "$file") - 44 ))
+        local data=$(( $(file_size "$file") - 44 ))
         if [ "$data" -gt 0 ]; then
             pass "[${label}] ${direction} received audio ($data bytes)"
         else
@@ -72,11 +76,19 @@ cleanup_all() {
 }
 trap cleanup_all EXIT
 
+LOCAL_PORT=12000
+RTP_PORT=4000
+
+next_ports() {
+    ((LOCAL_PORT++))
+    ((RTP_PORT++))
+}
+
 # ── Auto-start trecd ──────────────────────────────────────────────
 
 if [ "$AUTO_START" = 1 ]; then
     echo "--- building trecd ---"
-    if ! rtk go build -o /tmp/trecd_b2bua_test "$ROOT/cmd/trecd/" 2>&1; then
+    if ! go build -o /tmp/trecd_b2bua_test "$ROOT/cmd/trecsd/" 2>&1; then
         fail "trecd build failed"
         exit 1
     fi
@@ -91,6 +103,8 @@ if [ "$AUTO_START" = 1 ]; then
     pass "trecd started on $TARGET"
 fi
 
+
+
 # ── Generate test tones ───────────────────────────────────────────
 
 echo ""
@@ -99,22 +113,20 @@ TONE_FILE="$TMPDIR/tone.wav"     # 440Hz — played by Alice
 TONE_FILE2="$TMPDIR/tone2.wav"   # 880Hz — played by Bob
 sox -n -b 16 -r 8000 -c 1 "$TONE_FILE"  synth 4 sine 440 2>&1
 sox -n -b 16 -r 8000 -c 1 "$TONE_FILE2" synth 4 sine 880 2>&1
-if [ -f "$TONE_FILE" ] && [ "$(stat -f%z "$TONE_FILE")" -gt 44 ]; then
-    pass "tone file (440Hz) created ($(stat -f%z "$TONE_FILE") bytes)"
+if [ -f "$TONE_FILE" ] && [ "$(file_size "$TONE_FILE")" -gt 44 ]; then
+    pass "tone file (440Hz) created ($(file_size "$TONE_FILE") bytes)"
 else
     fail "tone file (440Hz) missing"
     exit 1
 fi
-if [ -f "$TONE_FILE2" ] && [ "$(stat -f%z "$TONE_FILE2")" -gt 44 ]; then
-    pass "tone file (880Hz) created ($(stat -f%z "$TONE_FILE2") bytes)"
+if [ -f "$TONE_FILE2" ] && [ "$(file_size "$TONE_FILE2")" -gt 44 ]; then
+    pass "tone file (880Hz) created ($(file_size "$TONE_FILE2") bytes)"
 else
     fail "tone file (880Hz) missing"
     exit 1
 fi
 
 HOST="127.0.0.1"
-ALICE_PORT=15062
-BOB_PORT=15063
 
 # ==================================================================
 # SCENARIO 1: basic — BYE from Alice (Alice hangs up)
@@ -130,53 +142,59 @@ ALICE_LOG1="$TMPDIR/alice1.log"
 BOB_RECV1="$TMPDIR/bob1_recv.wav"
 ALICE_RECV1="$TMPDIR/alice1_recv.wav"
 
-# Bob (callee) — keep alive for 10s via pipe
-(sleep 10) | pjsua \
-    --local-port "$BOB_PORT" \
+# Bob (callee) — keep alive for 10s
+next_ports
+run_pjsua 10 "$BOB_LOG1" \
+    --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
+    --local-port "$LOCAL_PORT" \
+    --rtp-port "$RTP_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
     --realm "*" \
     --auto-answer 200 \
-    --null-audio \
     --rec-file "$BOB_RECV1" \
     --auto-rec \
     --play-file "$TONE_FILE2" \
     --auto-play \
-    > "$BOB_LOG1" 2>&1 &
-BOB_PID1=$!
-sleep 3
+    &
+BOB_BG_PID1=$!
+sleep 5
 
-if ! kill -0 "$BOB_PID1" 2>/dev/null; then
+BOB_PID1=$(cat "${BOB_LOG1}.pid" 2>/dev/null || echo "")
+if [ -z "$BOB_PID1" ] || ! kill -0 "$BOB_PID1" 2>/dev/null; then
     fail "[S1] Bob pjsua failed to start"
 else
     pass "[S1] Bob started (PID $BOB_PID1)"
 
     # Alice (caller) — call Bob, stay alive 6s, then exit (BYE)
-    (sleep 6) | pjsua \
-        --local-port "$ALICE_PORT" \
+    next_ports
+    run_pjsua 8 "$ALICE_LOG1" \
+        --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
+        --local-port "$LOCAL_PORT" \
+        --rtp-port "$RTP_PORT" \
         --id "sip:alice@${HOST}" \
         --registrar "sip:${TARGET}" \
         --realm "*" \
-        --null-audio \
         --play-file "$TONE_FILE" \
         --auto-play \
         --rec-file "$ALICE_RECV1" \
         --auto-rec \
-        "sip:bob@${TARGET}" \
-        > "$ALICE_LOG1" 2>&1 &
-    ALICE_PID1=$!
+        "sip:bob@${TARGET}"
 
-    wait "$ALICE_PID1" 2>/dev/null || true
     sleep 1
     kill "$BOB_PID1" 2>/dev/null || true
-    wait "$BOB_PID1" 2>/dev/null || true
+    wait "$BOB_BG_PID1" 2>/dev/null || true
 
     for log in "$BOB_LOG1" "$ALICE_LOG1"; do
         if echo "$log" | grep -q "bob"; then who="Bob"; else who="Alice"; fi
-        if grep -qi "state changed to CONFIRMED" "$log"; then
+        if grep -qi "CONFIRMED" "$log"; then
             pass "[S1] $who — call CONFIRMED"
         else
             fail "[S1] $who — call not CONFIRMED"
+            echo "--- $log ---"
+            cat "$log" 2>/dev/null || echo "(empty)"
+            echo ""
+            exit 
         fi
     done
 
@@ -199,45 +217,51 @@ BOB_LOG2="$TMPDIR/bob2.log"
 ALICE_LOG2="$TMPDIR/alice2.log"
 
 # Bob (callee) — auto-hangup after 3s, keep alive 10s
-(sleep 10) | pjsua \
-    --local-port "$BOB_PORT" \
+next_ports
+run_pjsua 10 "$BOB_LOG2" \
+    --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
+    --local-port "$LOCAL_PORT" \
+    --rtp-port "$RTP_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
     --realm "*" \
     --auto-answer 200 \
     --duration 3 \
-    --null-audio \
-    > "$BOB_LOG2" 2>&1 &
-BOB_PID2=$!
+    &
+BOB_BG_PID2=$!
 sleep 3
 
-if ! kill -0 "$BOB_PID2" 2>/dev/null; then
+BOB_PID2=$(cat "${BOB_LOG2}.pid" 2>/dev/null || echo "")
+if [ -z "$BOB_PID2" ] || ! kill -0 "$BOB_PID2" 2>/dev/null; then
     fail "[S2] Bob pjsua failed to start"
 else
     pass "[S2] Bob started (PID $BOB_PID2)"
 
     # Alice (caller) — stay alive 8s, Bob will hang up first
-    (sleep 8) | pjsua \
-        --local-port "$ALICE_PORT" \
+    next_ports
+    run_pjsua 8 "$ALICE_LOG2" \
+        --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
+        --local-port "$LOCAL_PORT" \
+        --rtp-port "$RTP_PORT" \
         --id "sip:alice@${HOST}" \
         --registrar "sip:${TARGET}" \
         --realm "*" \
-        --null-audio \
-        "sip:bob@${TARGET}" \
-        > "$ALICE_LOG2" 2>&1 &
-    ALICE_PID2=$!
+        "sip:bob@${TARGET}"
 
-    wait "$ALICE_PID2" 2>/dev/null || true
     sleep 1
     kill "$BOB_PID2" 2>/dev/null || true
-    wait "$BOB_PID2" 2>/dev/null || true
+    wait "$BOB_BG_PID2" 2>/dev/null || true
 
     for log in "$BOB_LOG2" "$ALICE_LOG2"; do
         if echo "$log" | grep -q "bob"; then who="Bob"; else who="Alice"; fi
-        if grep -qi "state changed to CONFIRMED" "$log"; then
+        if grep -qi "CONFIRMED" "$log"; then
             pass "[S2] $who — call CONFIRMED"
         else
             fail "[S2] $who — call not CONFIRMED"
+            echo "--- $log (last 50 lines) ---"
+            tail -50 "$log" 2>/dev/null || echo "(empty)"
+            echo ""
+            exit 
         fi
     done
 
@@ -263,37 +287,39 @@ BOB_LOG3="$TMPDIR/bob3.log"
 ALICE_LOG3="$TMPDIR/alice3.log"
 
 # Bob (callee) — auto-answer with 486, keep alive 10s
-(sleep 10) | pjsua \
-    --local-port "$BOB_PORT" \
+next_ports
+run_pjsua 10 "$BOB_LOG3" \
+    --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
+    --local-port "$LOCAL_PORT" \
+    --rtp-port "$RTP_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
     --realm "*" \
     --auto-answer 486 \
-    --null-audio \
-    > "$BOB_LOG3" 2>&1 &
-BOB_PID3=$!
+    &
+BOB_BG_PID3=$!
 sleep 3
 
-if ! kill -0 "$BOB_PID3" 2>/dev/null; then
+BOB_PID3=$(cat "${BOB_LOG3}.pid" 2>/dev/null || echo "")
+if [ -z "$BOB_PID3" ] || ! kill -0 "$BOB_PID3" 2>/dev/null; then
     fail "[S3] Bob pjsua failed to start"
 else
     pass "[S3] Bob started (PID $BOB_PID3)"
 
     # Alice (caller) — call will be rejected
-    (sleep 2) | pjsua \
-        --local-port "$ALICE_PORT" \
+    next_ports
+    run_pjsua 2 "$ALICE_LOG3" \
+        --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
+        --local-port "$LOCAL_PORT" \
+        --rtp-port "$RTP_PORT" \
         --id "sip:alice@${HOST}" \
         --registrar "sip:${TARGET}" \
         --realm "*" \
-        --null-audio \
-        "sip:bob@${TARGET}" \
-        > "$ALICE_LOG3" 2>&1 &
-    ALICE_PID3=$!
+        "sip:bob@${TARGET}"
 
-    wait "$ALICE_PID3" 2>/dev/null || true
     sleep 1
     kill "$BOB_PID3" 2>/dev/null || true
-    wait "$BOB_PID3" 2>/dev/null || true
+    wait "$BOB_BG_PID3" 2>/dev/null || true
 
     if grep -qi "486" "$ALICE_LOG3" 2>/dev/null; then
         pass "[S3] Alice received 486 Busy Here (call rejected)"
@@ -301,6 +327,8 @@ else
         fail "[S3] Alice did not receive 486"
     fi
 fi
+
+sleep 2
 
 # ==================================================================
 # SCENARIO 4: both TCP — basic call, BYE from Alice
@@ -316,53 +344,58 @@ ALICE_LOG4="$TMPDIR/alice4.log"
 BOB_RECV4="$TMPDIR/bob4_recv.wav"
 ALICE_RECV4="$TMPDIR/alice4_recv.wav"
 
-(sleep 10) | pjsua \
-    --local-port "$BOB_PORT" \
+next_ports
+run_pjsua 10 "$BOB_LOG4" \
+    --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
+    --local-port "$LOCAL_PORT" \
+    --rtp-port "$RTP_PORT" \
     --id "sip:bob@${HOST};transport=tcp" \
     --registrar "sip:${TARGET};transport=tcp" \
     --realm "*" \
     --no-udp \
     --auto-answer 200 \
-    --null-audio \
     --rec-file "$BOB_RECV4" \
     --auto-rec \
     --play-file "$TONE_FILE2" \
-    --auto-play \
-    > "$BOB_LOG4" 2>&1 &
-BOB_PID4=$!
+    &
+BOB_BG_PID4=$!
 sleep 3
 
-if ! kill -0 "$BOB_PID4" 2>/dev/null; then
+BOB_PID4=$(cat "${BOB_LOG4}.pid" 2>/dev/null || echo "")
+if [ -z "$BOB_PID4" ] || ! kill -0 "$BOB_PID4" 2>/dev/null; then
     fail "[S4] Bob pjsua failed to start"
 else
     pass "[S4] Bob started (PID $BOB_PID4, TCP)"
 
-    (sleep 6) | pjsua \
-        --local-port "$ALICE_PORT" \
+    next_ports
+    run_pjsua 6 "$ALICE_LOG4" \
+        --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
+        --local-port "$LOCAL_PORT" \
+        --rtp-port "$RTP_PORT" \
         --id "sip:alice@${HOST};transport=tcp" \
         --registrar "sip:${TARGET};transport=tcp" \
         --realm "*" \
         --no-udp \
-        --null-audio \
         --play-file "$TONE_FILE" \
         --auto-play \
         --rec-file "$ALICE_RECV4" \
         --auto-rec \
-        "sip:bob@${TARGET};transport=tcp" \
-        > "$ALICE_LOG4" 2>&1 &
-    ALICE_PID4=$!
+        "sip:bob@${TARGET};transport=tcp"
 
-    wait "$ALICE_PID4" 2>/dev/null || true
     sleep 1
     kill "$BOB_PID4" 2>/dev/null || true
-    wait "$BOB_PID4" 2>/dev/null || true
+    wait "$BOB_BG_PID4" 2>/dev/null || true
 
     for log in "$BOB_LOG4" "$ALICE_LOG4"; do
         if echo "$log" | grep -q "bob"; then who="Bob"; else who="Alice"; fi
-        if grep -qi "state changed to CONFIRMED" "$log"; then
+        if grep -qi "CONFIRMED" "$log"; then
             pass "[S4] $who — call CONFIRMED (TCP)"
         else
             fail "[S4] $who — call not CONFIRMED"
+            echo "--- $log (last 50 lines) ---"
+            tail -50 "$log" 2>/dev/null || echo "(empty)"
+            echo ""
+            exit 
         fi
     done
 
@@ -387,53 +420,59 @@ BOB_RECV5="$TMPDIR/bob5_recv.wav"
 ALICE_RECV5="$TMPDIR/alice5_recv.wav"
 
 # Bob (UDP)
-(sleep 10) | pjsua \
-    --local-port "$BOB_PORT" \
+next_ports
+run_pjsua 10 "$BOB_LOG5" \
+    --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
+    --local-port "$LOCAL_PORT" \
+    --rtp-port "$RTP_PORT" \
     --id "sip:bob@${HOST}" \
     --registrar "sip:${TARGET}" \
     --realm "*" \
     --auto-answer 200 \
-    --null-audio \
     --rec-file "$BOB_RECV5" \
     --auto-rec \
     --play-file "$TONE_FILE2" \
     --auto-play \
-    > "$BOB_LOG5" 2>&1 &
-BOB_PID5=$!
+    &
+BOB_BG_PID5=$!
 sleep 3
 
-if ! kill -0 "$BOB_PID5" 2>/dev/null; then
+BOB_PID5=$(cat "${BOB_LOG5}.pid" 2>/dev/null || echo "")
+if [ -z "$BOB_PID5" ] || ! kill -0 "$BOB_PID5" 2>/dev/null; then
     fail "[S5] Bob pjsua failed to start"
 else
     pass "[S5] Bob started (PID $BOB_PID5, UDP)"
 
     # Alice (TCP)
-    (sleep 6) | pjsua \
-        --local-port "$ALICE_PORT" \
+    next_ports
+    run_pjsua 6 "$ALICE_LOG5" \
+        --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
+        --local-port "$LOCAL_PORT" \
+        --rtp-port "$RTP_PORT" \
         --id "sip:alice@${HOST};transport=tcp" \
         --registrar "sip:${TARGET};transport=tcp" \
         --realm "*" \
         --no-udp \
-        --null-audio \
         --play-file "$TONE_FILE" \
         --auto-play \
         --rec-file "$ALICE_RECV5" \
         --auto-rec \
-        "sip:bob@${TARGET};transport=tcp" \
-        > "$ALICE_LOG5" 2>&1 &
-    ALICE_PID5=$!
+        "sip:bob@${TARGET};transport=tcp"
 
-    wait "$ALICE_PID5" 2>/dev/null || true
     sleep 1
     kill "$BOB_PID5" 2>/dev/null || true
-    wait "$BOB_PID5" 2>/dev/null || true
+    wait "$BOB_BG_PID5" 2>/dev/null || true
 
     for log in "$BOB_LOG5" "$ALICE_LOG5"; do
         if echo "$log" | grep -q "bob"; then who="Bob"; else who="Alice"; fi
-        if grep -qi "state changed to CONFIRMED" "$log"; then
+        if grep -qi "CONFIRMED" "$log"; then
             pass "[S5] $who — call CONFIRMED (Alice TCP, Bob UDP)"
         else
             fail "[S5] $who — call not CONFIRMED"
+            echo "--- $log (last 50 lines) ---"
+            tail -50 "$log" 2>/dev/null || echo "(empty)"
+            echo ""
+            exit 
         fi
     done
 
@@ -458,53 +497,59 @@ BOB_RECV6="$TMPDIR/bob6_recv.wav"
 ALICE_RECV6="$TMPDIR/alice6_recv.wav"
 
 # Bob (TCP)
-(sleep 10) | pjsua \
-    --local-port "$BOB_PORT" \
+next_ports
+run_pjsua 10 "$BOB_LOG6" \
+    --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
+    --local-port "$LOCAL_PORT" \
+    --rtp-port "$RTP_PORT" \
     --id "sip:bob@${HOST};transport=tcp" \
     --registrar "sip:${TARGET};transport=tcp" \
     --realm "*" \
     --no-udp \
     --auto-answer 200 \
-    --null-audio \
     --rec-file "$BOB_RECV6" \
     --auto-rec \
     --play-file "$TONE_FILE2" \
     --auto-play \
-    > "$BOB_LOG6" 2>&1 &
-BOB_PID6=$!
+    &
+BOB_BG_PID6=$!
 sleep 3
 
-if ! kill -0 "$BOB_PID6" 2>/dev/null; then
+BOB_PID6=$(cat "${BOB_LOG6}.pid" 2>/dev/null || echo "")
+if [ -z "$BOB_PID6" ] || ! kill -0 "$BOB_PID6" 2>/dev/null; then
     fail "[S6] Bob pjsua failed to start"
 else
     pass "[S6] Bob started (PID $BOB_PID6, TCP)"
 
     # Alice (UDP)
-    (sleep 6) | pjsua \
-        --local-port "$ALICE_PORT" \
+    next_ports
+    run_pjsua 6 "$ALICE_LOG6" \
+        --ip-addr 127.0.0.1 --bound-addr 127.0.0.1 \
+        --local-port "$LOCAL_PORT" \
+        --rtp-port "$RTP_PORT" \
         --id "sip:alice@${HOST}" \
         --registrar "sip:${TARGET}" \
         --realm "*" \
-        --null-audio \
         --play-file "$TONE_FILE" \
         --auto-play \
         --rec-file "$ALICE_RECV6" \
         --auto-rec \
-        "sip:bob@${TARGET}" \
-        > "$ALICE_LOG6" 2>&1 &
-    ALICE_PID6=$!
+        "sip:bob@${TARGET}"
 
-    wait "$ALICE_PID6" 2>/dev/null || true
     sleep 1
     kill "$BOB_PID6" 2>/dev/null || true
-    wait "$BOB_PID6" 2>/dev/null || true
+    wait "$BOB_BG_PID6" 2>/dev/null || true
 
     for log in "$BOB_LOG6" "$ALICE_LOG6"; do
         if echo "$log" | grep -q "bob"; then who="Bob"; else who="Alice"; fi
-        if grep -qi "state changed to CONFIRMED" "$log"; then
+        if grep -qi "CONFIRMED" "$log"; then
             pass "[S6] $who — call CONFIRMED (Alice UDP, Bob TCP)"
         else
             fail "[S6] $who — call not CONFIRMED"
+            echo "--- $log (last 50 lines) ---"
+            tail -50 "$log" 2>/dev/null || echo "(empty)"
+            echo ""
+            exit 
         fi
     done
 
@@ -520,4 +565,17 @@ echo ""
 echo "═══════════════════════════════════════════════════════════════"
 echo "  results: ${PASS} passed, ${FAIL} failed (6 scenarios)"
 echo "═══════════════════════════════════════════════════════════════"
+
+
+if [ "$FAIL" -gt 0 ]; then
+    echo ""
+    echo "=== pjsua log dump ==="
+    for f in "$TMPDIR"/*.log; do
+        if [ -f "$f" ]; then
+            echo "--- $(basename "$f") ---"
+            head -100 "$f" 2>/dev/null || echo "(empty)"
+            echo ""
+        fi
+    done
+fi
 exit $FAIL

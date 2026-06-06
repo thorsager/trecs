@@ -57,10 +57,10 @@ func TestSDP_AllSessionFields(t *testing.T) {
 		assert.Equal(t, "2882844526 -1h 2898848070 0", sdp.TimeZone)
 		assert.NotNil(t, sdp.Encryption)
 		assert.Equal(t, "prompt", sdp.Encryption.Method)
-		assert.Equal(t, "", sdp.Encryption.Key)
+		assert.Empty(t, sdp.Encryption.Key)
 		assert.Len(t, sdp.Attributes, 1)
 		assert.Equal(t, "recvonly", sdp.Attributes[0].Key)
-		assert.Equal(t, "", sdp.Attributes[0].Value)
+		assert.Empty(t, sdp.Attributes[0].Value)
 	}
 }
 
@@ -85,7 +85,7 @@ func TestSDP_AttributeFlag(t *testing.T) {
 	if assert.NoError(t, err) {
 		assert.Len(t, sdp.Attributes, 1)
 		assert.Equal(t, "recvonly", sdp.Attributes[0].Key)
-		assert.Equal(t, "", sdp.Attributes[0].Value)
+		assert.Empty(t, sdp.Attributes[0].Value)
 	}
 }
 
@@ -216,7 +216,7 @@ func TestSDP_EncryptionMethodOnly(t *testing.T) {
 	if assert.NoError(t, err) {
 		assert.NotNil(t, sdp.Encryption)
 		assert.Equal(t, "prompt", sdp.Encryption.Method)
-		assert.Equal(t, "", sdp.Encryption.Key)
+		assert.Empty(t, sdp.Encryption.Key)
 	}
 }
 
@@ -466,7 +466,7 @@ func BenchmarkSDP_Minimal(b *testing.B) {
 	input := "v=0\r\no=jdoe 2890844526 2890844527 IN IP4 atlanta.example.com\r\ns=SDP Seminar\r\nt=3034423619 3042462419\r\n"
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := UnmarshalSDP(strings.NewReader(input))
 		if err != nil {
 			b.Fatal(err)
@@ -496,7 +496,7 @@ func BenchmarkSDP_FullFeatured(b *testing.B) {
 		"a=rtpmap:0 PCMU/8000\r\n"
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := UnmarshalSDP(strings.NewReader(input))
 		if err != nil {
 			b.Fatal(err)
@@ -507,15 +507,15 @@ func BenchmarkSDP_FullFeatured(b *testing.B) {
 func BenchmarkSDP_ManyMedia(b *testing.B) {
 	var sb strings.Builder
 	sb.WriteString("v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nc=IN IP4 203.0.113.1\r\nt=0 0\r\n")
-	for i := 0; i < 20; i++ {
-		sb.WriteString(fmt.Sprintf("m=audio %d RTP/AVP 0\r\n", 10000+i))
+	for i := range 20 {
+		fmt.Fprintf(&sb, "m=audio %d RTP/AVP 0\r\n", 10000+i)
 		sb.WriteString("a=rtpmap:0 PCMU/8000\r\n")
 		sb.WriteString("a=ptime:20\r\n")
 	}
 	input := sb.String()
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := UnmarshalSDP(strings.NewReader(input))
 		if err != nil {
 			b.Fatal(err)
@@ -585,7 +585,7 @@ func TestSDP_MarshalSize_MatchesActual(t *testing.T) {
 	}
 	data, err := sdp.Marshal()
 	if assert.NoError(t, err) {
-		assert.Equal(t, sdp.MarshalSize(), len(data))
+		assert.Len(t, data, sdp.MarshalSize())
 	}
 }
 
@@ -625,8 +625,8 @@ func TestSDP_Marshal_AllSessionFields(t *testing.T) {
 func BenchmarkSDP_LargeAttributes(b *testing.B) {
 	var sb strings.Builder
 	sb.WriteString("v=0\r\no=- 0 0 IN IP4 host.example.com\r\ns=Test\r\nt=0 0\r\nm=audio 49170 RTP/AVP 8 0 18 101\r\n")
-	for i := 0; i < 50; i++ {
-		sb.WriteString(fmt.Sprintf("a=fmtp:%d bitrate=%d\r\n", i%128, i*1000))
+	for i := range 50 {
+		fmt.Fprintf(&sb, "a=fmtp:%d bitrate=%d\r\n", i%128, i*1000)
 	}
 	sb.WriteString("a=rtpmap:0 PCMU/8000\r\n")
 	sb.WriteString("a=rtpmap:18 G729/8000\r\n")
@@ -634,7 +634,7 @@ func BenchmarkSDP_LargeAttributes(b *testing.B) {
 	input := sb.String()
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := UnmarshalSDP(strings.NewReader(input))
 		if err != nil {
 			b.Fatal(err)
@@ -650,7 +650,7 @@ func BenchmarkSDP_Marshal_Minimal(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := sdp.Marshal()
 		if err != nil {
 			b.Fatal(err)
@@ -684,7 +684,7 @@ func BenchmarkSDP_Marshal_FullFeatured(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := sdp.Marshal()
 		if err != nil {
 			b.Fatal(err)
@@ -701,7 +701,7 @@ func BenchmarkSDP_MarshalTo_Minimal(b *testing.B) {
 	buf := make([]byte, sdp.MarshalSize())
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		_, err := sdp.MarshalTo(buf)
 		if err != nil {
 			b.Fatal(err)
