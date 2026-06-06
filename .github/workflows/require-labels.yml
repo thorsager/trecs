@@ -32,7 +32,7 @@ jobs:
         with:
           mode: minimum
           count: 1
-          labels: "feature, enhancement, fix, bugfix, bug, chore, ci, docs, refactor, test"
-          message: "PR must have at least one category label (feature, enhancement, fix, bugfix, bug, chore, ci, docs, refactor, or test) for release notes."
+          labels: "feature, enhancement, fix, bug, chore, ci, docs, refactor, test"
+          message: "PR must have at least one category label (feature, enhancement, fix, bug, chore, ci, docs, refactor, or test) for release notes."
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
