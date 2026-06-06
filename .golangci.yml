@@ -103,8 +103,6 @@ linters:
         - style
         - performance
         - opinionated
-    gofumpt:
-      extra-rules: true
     misspell:
       locale: US
     gosec:
@@ -197,5 +195,8 @@ formatters:
     - gofmt
     - gofumpt
     - goimports
+  settings:
+    gofumpt:
+      extra-rules: false
   exclusions:
     generated: lax

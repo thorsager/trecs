@@ -49,7 +49,8 @@ func putU32BEAppend(buf []byte, v uint32) []byte {
 }
 
 func putU64BEAppend(buf []byte, v uint64) []byte {
-	return append(buf,
+	return append(
+		buf,
 		byte(v>>56), byte(v>>48), byte(v>>40), byte(v>>32),
 		byte(v>>24), byte(v>>16), byte(v>>8), byte(v),
 	)
