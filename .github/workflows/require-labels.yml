@@ -11,7 +11,8 @@ permissions:
   pull-requests: read
 
 jobs:
-  require-label:
+  name: Version lable
+  require-version:
     runs-on: ubuntu-latest
     steps:
       - uses: mheap/github-action-required-labels@v5
@@ -20,5 +21,18 @@ jobs:
           count: 1
           labels: "major, minor, patch"
           message: "PR must have one of: major, minor, or patch label for release-drafter versioning."
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  require-category:
+    name: Category lable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: mheap/github-action-required-labels@v5
+        with:
+          mode: minimum
+          count: 1
+          labels: "feature, enhancement, fix, bugfix, bug, chore, ci, docs, refactor, test"
+          message: "PR must have at least one category label (feature, enhancement, fix, bugfix, bug, chore, ci, docs, refactor, or test) for release notes."
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
