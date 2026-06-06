@@ -15,8 +15,8 @@ var bufioReaderPool = sync.Pool{
 
 // UnmarshalError represents a SIP parsing failure and may wrap an underlying cause.
 type UnmarshalError struct {
-	Msg   string
 	Cause error
+	Msg   string
 }
 
 func (e *UnmarshalError) Error() string {
@@ -52,16 +52,16 @@ func readContinuedLine(r *bufio.Reader) (string, error) {
 		return line, err
 	}
 	for {
-		b, err := r.Peek(1)
-		if err != nil || (b[0] != ' ' && b[0] != '\t') {
+		b, peekErr := r.Peek(1)
+		if peekErr != nil || (b[0] != ' ' && b[0] != '\t') {
 			break
 		}
 		line = strings.TrimRight(line, " \t\r")
 		cont, err := readLine(r)
 		if err != nil {
-			break
+			return line, err
 		}
 		line += cont
 	}
-	return line, nil
+	return line, nil //nolint:nilerr // Peek error (e.g. EOF) just means no continuation
 }

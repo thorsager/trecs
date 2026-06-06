@@ -8,7 +8,7 @@ import (
 type DialogState int
 
 const (
-	DialogStateEarly      DialogState = iota
+	DialogStateEarly DialogState = iota
 	DialogStateConfirmed
 	DialogStateTerminated
 )
@@ -33,6 +33,7 @@ type DialogID struct {
 }
 
 type Dialog struct {
+	CreatedAt    time.Time
 	ID           DialogID
 	LocalURI     string
 	RemoteURI    string
@@ -40,11 +41,9 @@ type Dialog struct {
 	RouteSet     []string
 	LocalSeq     int
 	RemoteSeq    int
+	state        DialogState
+	mu           sync.RWMutex
 	Secure       bool
-	CreatedAt    time.Time
-
-	mu    sync.RWMutex
-	state DialogState
 }
 
 func NewDialog(id DialogID, localURI, remoteURI, remoteTarget string) *Dialog {

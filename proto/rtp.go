@@ -2,6 +2,7 @@ package proto
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 )
 
@@ -15,37 +16,37 @@ const (
 	ExtensionProfileTwoByte uint16 = 0x1000
 
 	// Payload type constants for common audio codecs (RFC 3551).
-	PCMU             = 0
-	PCMA             = 8
-	TelephoneEvent   = 101
+	PCMU           = 0
+	PCMA           = 8
+	TelephoneEvent = 101
 )
 
 // RTPExtension represents a single RTP header extension element.
 type RTPExtension struct {
-	ID      uint8
 	Payload []byte
+	ID      uint8
 }
 
 // RTPHeader represents the fixed and variable parts of an RTP packet header.
 type RTPHeader struct {
+	CSRC             []uint32
+	Extensions       []RTPExtension
+	Timestamp        uint32
+	SSRC             uint32
+	SequenceNumber   uint16
+	ExtensionProfile uint16
 	Version          uint8
 	Padding          bool
 	Marker           bool
 	PayloadType      uint8
-	SequenceNumber   uint16
-	Timestamp        uint32
-	SSRC             uint32
-	CSRC             []uint32
 	Extension        bool
-	ExtensionProfile uint16
-	Extensions       []RTPExtension
 	PaddingSize      byte
 }
 
 // RTPPacket represents a parsed RTP data packet.
 type RTPPacket struct {
-	Header  RTPHeader
 	Payload []byte
+	Header  RTPHeader
 }
 
 func (p RTPPacket) String() string {
@@ -89,7 +90,7 @@ func UnmarshalRTPTo(data []byte, pkt *RTPPacket) error {
 		} else {
 			h.CSRC = h.CSRC[:cc]
 		}
-		for i := 0; i < cc; i++ {
+		for i := range cc {
 			off := 12 + i*4
 			h.CSRC[i] = binary.BigEndian.Uint32(data[off:])
 		}
@@ -159,11 +160,6 @@ func UnmarshalRTP(data []byte) (RTPPacket, error) {
 	return pkt, nil
 }
 
-// unmarshalExtensions parses RTP header extension data based on the profile.
-func unmarshalExtensions(profile uint16, data []byte) ([]RTPExtension, error) {
-	return unmarshalExtensionsTo(profile, data, nil)
-}
-
 func unmarshalExtensionsTo(profile uint16, data []byte, exts []RTPExtension) ([]RTPExtension, error) {
 	exts = exts[:0]
 	switch profile {
@@ -177,10 +173,6 @@ func unmarshalExtensionsTo(profile uint16, data []byte, exts []RTPExtension) ([]
 		}
 		return append(exts, RTPExtension{ID: 0, Payload: data}), nil
 	}
-}
-
-func unmarshalOneByteExtensions(data []byte) ([]RTPExtension, error) {
-	return unmarshalOneByteExtensionsTo(data, nil)
 }
 
 func unmarshalOneByteExtensionsTo(data []byte, exts []RTPExtension) ([]RTPExtension, error) {
@@ -204,10 +196,6 @@ func unmarshalOneByteExtensionsTo(data []byte, exts []RTPExtension) ([]RTPExtens
 		i += payloadLen
 	}
 	return exts, nil
-}
-
-func unmarshalTwoByteExtensions(data []byte) ([]RTPExtension, error) {
-	return unmarshalTwoByteExtensionsTo(data, nil)
 }
 
 func unmarshalTwoByteExtensionsTo(data []byte, exts []RTPExtension) ([]RTPExtension, error) {
@@ -270,7 +258,7 @@ func (p *RTPPacket) MarshalSize() int {
 // MarshalTo serializes the RTP packet into the provided buffer.
 func (p *RTPPacket) MarshalTo(buf []byte) (int, error) {
 	if len(buf) < p.MarshalSize() {
-		return 0, fmt.Errorf("rtp: buffer too small for marshal")
+		return 0, errors.New("rtp: buffer too small for marshal")
 	}
 
 	cc := len(p.Header.CSRC)
@@ -352,12 +340,12 @@ func (p *RTPPacket) MarshalTo(buf []byte) (int, error) {
 			if p.Header.ExtensionProfile == ExtensionProfileOneByte {
 				buf[n] = 0xF0
 				n++
-				for i := 0; i < padCount-1; i++ {
+				for range padCount - 1 {
 					buf[n] = 0
 					n++
 				}
 			} else {
-				for i := 0; i < padCount; i++ {
+				for range padCount {
 					buf[n] = 0
 					n++
 				}

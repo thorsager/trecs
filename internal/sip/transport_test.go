@@ -86,12 +86,12 @@ func TestUDPOrderPreserved(t *testing.T) {
 
 	serverAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:15071")
 	n := 5
-	for i := 0; i < n; i++ {
+	for i := range n {
 		msg := buildSIPRequest(i)
 		client.WriteToUDP([]byte(msg), serverAddr)
 	}
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		ev := readEvent(t, transport.Receive(), 3*time.Second)
 		assert.Equal(t, proto.SIPMethodOPTIONS, ev.Msg.Method(), "event %d", i)
 	}
@@ -192,13 +192,13 @@ func TestTCPMultipleMessagesSameConn(t *testing.T) {
 	defer conn.Close()
 
 	n := 5
-	for i := 0; i < n; i++ {
+	for i := range n {
 		msg := buildSIPRequest(i)
 		_, err := conn.Write([]byte(msg))
 		require.NoError(t, err, "Write %d", i)
 	}
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		ev := readEvent(t, transport.Receive(), 3*time.Second)
 		assert.Equal(t, proto.SIPMethodOPTIONS, ev.Msg.Method(), "event %d", i)
 	}
@@ -331,7 +331,7 @@ func TestTCPConcurrentConnections(t *testing.T) {
 	var received atomic.Int32
 	n := 10
 
-	for i := 0; i < n; i++ {
+	for range n {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -355,7 +355,7 @@ func TestTCPConcurrentConnections(t *testing.T) {
 	wg.Wait()
 	time.Sleep(500 * time.Millisecond)
 
-	assert.Greater(t, received.Load(), int32(0), "expected at least one received message")
+	assert.Positive(t, received.Load(), "expected at least one received message")
 }
 
 // --- TargetFromContact ---

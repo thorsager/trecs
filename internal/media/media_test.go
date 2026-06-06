@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -316,7 +317,7 @@ func TestSDPBuildAnswer_OmittedPayloadType(t *testing.T) {
 		SessionName: "test",
 		Connection:  &proto.ConnectionInfo{NetworkType: "IN", AddressType: "IP4", Address: "10.0.0.1"},
 		Times:       []proto.TimeDescription{{Start: 0, Stop: 0}},
-		MediaDescs:  []proto.MediaDescription{
+		MediaDescs: []proto.MediaDescription{
 			{Type: "audio", Port: 20000, Proto: "RTP/AVP", Fmt: []string{"8"}},
 		},
 	}
@@ -340,7 +341,7 @@ func TestSDPBuildAnswer_DifferentSessionID(t *testing.T) {
 		SessionName: "test",
 		Connection:  &proto.ConnectionInfo{NetworkType: "IN", AddressType: "IP4", Address: "10.0.0.1"},
 		Times:       []proto.TimeDescription{{Start: 0, Stop: 0}},
-		MediaDescs:  []proto.MediaDescription{
+		MediaDescs: []proto.MediaDescription{
 			{Type: "audio", Port: 20000, Proto: "RTP/AVP", Fmt: []string{"0"}},
 		},
 	}
@@ -370,7 +371,7 @@ func TestSDPBuildAnswer_TransportProtocolMatch(t *testing.T) {
 		SessionName: "test",
 		Connection:  &proto.ConnectionInfo{NetworkType: "IN", AddressType: "IP4", Address: "10.0.0.1"},
 		Times:       []proto.TimeDescription{{Start: 0, Stop: 0}},
-		MediaDescs:  []proto.MediaDescription{
+		MediaDescs: []proto.MediaDescription{
 			{Type: "audio", Port: 20000, Proto: "RTP/AVP", Fmt: []string{"0"}},
 		},
 	}
@@ -419,7 +420,7 @@ func TestSDPBuildOffer_LineOrder(t *testing.T) {
 			mPos = i
 		}
 	}
-	assert.Greater(t, cPos, 0, "c= must be present")
+	assert.Positive(t, cPos, "c= must be present")
 	assert.Greater(t, tPos, cPos, "t= must appear after c=")
 	assert.Greater(t, mPos, tPos, "m= must appear after t=")
 }
@@ -454,7 +455,7 @@ func TestRTPConn_LocalAddr(t *testing.T) {
 	require.NotNil(t, addr)
 	udpAddr, ok := addr.(*net.UDPAddr)
 	require.True(t, ok, "LocalAddr should return *net.UDPAddr")
-	assert.True(t, udpAddr.Port > 0, "port should be non-zero")
+	assert.Positive(t, udpAddr.Port, "port should be non-zero")
 }
 
 func TestRTPConn_DoubleClose(t *testing.T) {
@@ -477,7 +478,7 @@ func TestRTPConn_WriteThenRead(t *testing.T) {
 	defer b.Close()
 
 	pkt := &proto.RTPPacket{
-		Header: proto.RTPHeader{Version: 2, PayloadType: 0, SequenceNumber: 1, Timestamp: 100, SSRC: 0xDEAD},
+		Header:  proto.RTPHeader{Version: 2, PayloadType: 0, SequenceNumber: 1, Timestamp: 100, SSRC: 0xDEAD},
 		Payload: []byte{0x01, 0x02, 0x03},
 	}
 
@@ -610,7 +611,7 @@ func TestRTPConn_ReadDeadline(t *testing.T) {
 
 	c.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
 	_, _, err = c.ReadRTP()
-	assert.Error(t, err, "should time out on idle read")
+	require.Error(t, err, "should time out on idle read")
 	assert.True(t, isTimeoutErr(err), "error should be a timeout: %v", err)
 }
 
@@ -673,7 +674,8 @@ func isTimeoutErr(err error) bool {
 	if err == nil {
 		return false
 	}
-	ne, ok := err.(net.Error)
+	var ne net.Error
+	ok := errors.As(err, &ne)
 	return ok && ne.Timeout()
 }
 
@@ -1126,7 +1128,7 @@ func TestEchoEarlyOffer(t *testing.T) {
 	t.Logf("Server tag: %s", toAddr.Tag)
 
 	// Extract server RTP port from SDP answer
-	require.True(t, len(res.Body) > 0, "200 OK should have SDP body")
+	require.NotEmpty(t, res.Body, "200 OK should have SDP body")
 	sdpAnswer, err := proto.UnmarshalSDPBytes(res.Body)
 	require.NoError(t, err)
 	serverIP, serverRTPPort := media.ExtractRTPAddr(sdpAnswer)
@@ -1219,7 +1221,7 @@ func TestEchoDelayedOffer(t *testing.T) {
 	require.NotEmpty(t, toAddr.Tag, "To header should have server tag")
 	t.Logf("Server tag: %s", toAddr.Tag)
 
-	require.True(t, len(res.Body) > 0, "200 OK should have SDP body")
+	require.NotEmpty(t, res.Body, "200 OK should have SDP body")
 	sdpOffer, err := proto.UnmarshalSDPBytes(res.Body)
 	require.NoError(t, err)
 	serverIP, serverRTPPort := media.ExtractRTPAddr(sdpOffer)

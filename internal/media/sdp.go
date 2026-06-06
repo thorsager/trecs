@@ -17,7 +17,7 @@ func BuildOffer(rtpPort int, payloadType uint8, serverIP string) *proto.SDP {
 		Version: 0,
 		Origin: proto.Origin{
 			Username:       "-",
-			SessionID:      fmt.Sprintf("%d", time.Now().UnixNano()),
+			SessionID:      strconv.FormatInt(time.Now().UnixNano(), 10),
 			SessionVersion: "1",
 			NetworkType:    "IN",
 			AddressType:    "IP4",
@@ -35,7 +35,7 @@ func BuildOffer(rtpPort int, payloadType uint8, serverIP string) *proto.SDP {
 				Type:  "audio",
 				Port:  rtpPort,
 				Proto: "RTP/AVP",
-				Fmt:   []string{fmt.Sprintf("%d", payloadType)},
+				Fmt:   []string{strconv.FormatUint(uint64(payloadType), 10)},
 				Attributes: []proto.Attribute{
 					{Key: "rtpmap", Value: fmt.Sprintf("%d PCMU/8000", payloadType)},
 				},
@@ -51,7 +51,7 @@ func BuildAnswer(offer *proto.SDP, rtpPort int, payloadType uint8, serverIP stri
 		Version: 0,
 		Origin: proto.Origin{
 			Username:       "-",
-			SessionID:      fmt.Sprintf("%d", time.Now().UnixNano()),
+			SessionID:      strconv.FormatInt(time.Now().UnixNano(), 10),
 			SessionVersion: "1",
 			NetworkType:    "IN",
 			AddressType:    "IP4",
@@ -69,7 +69,7 @@ func BuildAnswer(offer *proto.SDP, rtpPort int, payloadType uint8, serverIP stri
 				Type:  "audio",
 				Port:  rtpPort,
 				Proto: "RTP/AVP",
-				Fmt:   []string{fmt.Sprintf("%d", payloadType)},
+				Fmt:   []string{strconv.FormatUint(uint64(payloadType), 10)},
 				Attributes: []proto.Attribute{
 					{Key: "rtpmap", Value: fmt.Sprintf("%d PCMU/8000", payloadType)},
 				},
@@ -82,7 +82,8 @@ func BuildAnswer(offer *proto.SDP, rtpPort int, payloadType uint8, serverIP stri
 // It prefers PCMU (0) over PCMA (8). Returns PCMU if nothing matches.
 func PickPayloadType(offer *proto.SDP) uint8 {
 	best := uint8(math.MaxUint8)
-	for _, m := range offer.MediaDescs {
+	for i := range offer.MediaDescs {
+		m := &offer.MediaDescs[i]
 		if m.Type != "audio" {
 			continue
 		}
@@ -105,7 +106,6 @@ func PickPayloadType(offer *proto.SDP) uint8 {
 	return proto.PCMU
 }
 
-
 // ExtractRTPAddr extracts the IP address and port from an SDP for the first
 // audio media line.
 func ExtractRTPAddr(sdp *proto.SDP) (ip string, port int) {
@@ -113,7 +113,8 @@ func ExtractRTPAddr(sdp *proto.SDP) (ip string, port int) {
 	if sdp.Connection != nil && sdp.Connection.Address != "" {
 		ip = sdp.Connection.Address
 	}
-	for _, m := range sdp.MediaDescs {
+	for i := range sdp.MediaDescs {
+		m := &sdp.MediaDescs[i]
 		if m.Type != "audio" {
 			continue
 		}

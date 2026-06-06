@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-
-	"github.com/thorsager/trecs/internal/logutil"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/thorsager/trecs/internal/logutil"
 
 	"github.com/thorsager/trecs/proto"
 )
@@ -20,23 +20,23 @@ const defaultFlowTimer = 120 // RFC 5626 §5.4: default keepalive interval for r
 // Binding represents a single AOR → Contact URI registration binding
 // as defined in RFC 3261 §10.
 type Binding struct {
-	ContactURI  string
-	CallID      string
-	CSeq        int
 	Expires     time.Time
 	LastUpdate  time.Time
+	ContactURI  string
+	CallID      string
 	FlowID      string
+	SIPInstance string
+	CSeq        int
 	RegID       int
 	OB          bool
-	SIPInstance string
 }
 
 // Registrar manages SIP registration bindings per RFC 3261 §10.
 // It is safe for concurrent use.
 type Registrar struct {
+	bindings map[string][]*Binding
+	lastCSeq map[string]int
 	mu       sync.RWMutex
-	bindings map[string][]*Binding // keyed by AOR (To header URI)
-	lastCSeq map[string]int        // keyed by Call-ID
 }
 
 // NewRegistrar creates a new Registrar with no bindings.
@@ -47,7 +47,7 @@ func NewRegistrar() *Registrar {
 	}
 }
 
-// Start runs the binding expiry reaper until ctx is cancelled.
+// Start runs the binding expiry reaper until ctx is canceled.
 // It should be called as a goroutine.
 func (r *Registrar) Start(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
@@ -204,7 +204,7 @@ func sendRegisterResponse(req *proto.SIPMessage, tx Transaction, bindings []*Bin
 	res := proto.NewResponse(req, 200, "OK")
 	res.Headers.Add("Date", time.Now().UTC().Format(time.RFC1123))
 
-	var minExpires int = -1
+	minExpires := -1
 	for _, b := range bindings {
 		remaining := time.Until(b.Expires)
 		if remaining <= 0 {
@@ -222,7 +222,7 @@ func sendRegisterResponse(req *proto.SIPMessage, tx Transaction, bindings []*Bin
 			contact += fmt.Sprintf(";reg-id=%d", b.RegID)
 		}
 		if b.SIPInstance != "" {
-			contact += fmt.Sprintf(";+sip.instance=%s", b.SIPInstance)
+			contact += ";+sip.instance=" + b.SIPInstance
 		}
 		res.Headers.Add("Contact", contact)
 	}
@@ -257,10 +257,10 @@ func containsIgnoreCase(s, substr string) bool {
 
 type parsedContact struct {
 	uri         string
-	expires     int    // -1 = not specified
-	ob          bool
-	regID       int    // -1 = not specified
 	sipInstance string
+	expires     int
+	regID       int
+	ob          bool
 }
 
 func (pc *parsedContact) addHeaderParam(param string) {
@@ -322,7 +322,7 @@ func splitContactValues(raw string) []string {
 	var parts []string
 	depth := 0
 	start := 0
-	for i := 0; i < len(raw); i++ {
+	for i := range len(raw) {
 		switch raw[i] {
 		case '<':
 			depth++
@@ -354,13 +354,13 @@ func parseContactURI(raw string) (parsedContact, error) {
 	open := -1
 	if idx := strings.IndexByte(raw, '<'); idx >= 0 {
 		open = idx
-		close := strings.IndexByte(raw[open+1:], '>')
-		if close < 0 {
+		closeIdx := strings.IndexByte(raw[open+1:], '>')
+		if closeIdx < 0 {
 			return parsedContact{}, fmt.Errorf("unmatched '<' in contact: %s", raw)
 		}
-		close += open + 1
-		c.uri = strings.TrimSpace(raw[open+1 : close])
-		rest := strings.TrimSpace(raw[close+1:])
+		closeIdx += open + 1
+		c.uri = strings.TrimSpace(raw[open+1 : closeIdx])
+		rest := strings.TrimSpace(raw[closeIdx+1:])
 		if rest != "" {
 			for _, p := range strings.Split(rest, ";") {
 				c.addHeaderParam(p)
@@ -415,7 +415,6 @@ func splitAddrSpecContact(raw string) (uri string, expires int) {
 	return
 }
 
-
 func removeBinding(bindings []*Binding, contactURI string) []*Binding {
 	for i, b := range bindings {
 		if b.ContactURI == contactURI {
@@ -425,7 +424,7 @@ func removeBinding(bindings []*Binding, contactURI string) []*Binding {
 	return bindings
 }
 
-func upsertBinding(bindings []*Binding, contactURI, callID string, cseq int, expiresSec int, flowID string, ob bool, regID int, sipInstance string) []*Binding {
+func upsertBinding(bindings []*Binding, contactURI, callID string, cseq, expiresSec int, flowID string, ob bool, regID int, sipInstance string) []*Binding {
 	now := time.Now()
 	for _, b := range bindings {
 		if b.ContactURI == contactURI {

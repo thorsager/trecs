@@ -1,6 +1,7 @@
 package sip
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -204,7 +205,8 @@ func TestUAC_TimerBTimeout(t *testing.T) {
 
 	select {
 	case err := <-uac.Errors:
-		if _, ok := err.(TimeoutError); !ok {
+		var timeoutError TimeoutError
+		if !errors.As(err, &timeoutError) {
 			t.Fatalf("expected TimeoutError, got %T: %v", err, err)
 		}
 	case <-time.After(2 * time.Second):

@@ -49,7 +49,7 @@ func convertToMuLaw16(samples []int16) []byte {
 
 // downsample downsamples audio from inRate to targetRate by linear interpolation.
 // targets must be pre-allocated to ceil(len(in) * targetRate / inRate).
-func downsample(in []int16, inRate uint32, targetRate uint32) []int16 {
+func downsample(in []int16, inRate, targetRate uint32) []int16 {
 	if inRate == targetRate {
 		out := make([]int16, len(in))
 		copy(out, in)
@@ -74,7 +74,7 @@ func downsample(in []int16, inRate uint32, targetRate uint32) []int16 {
 
 // RunFilePlayback reads WAV data, converts to 8000 Hz μ-law, and streams it
 // as RTP packets to the remote address. Returns a done channel that closes when
-// playback completes or the context is cancelled.
+// playback completes or the context is canceled.
 func RunFilePlayback(ctx context.Context, conn *RTPConn, remoteAddr *net.UDPAddr, payloadType uint8, wav *WavData) <-chan struct{} {
 	done := make(chan struct{})
 
@@ -93,7 +93,7 @@ func RunFilePlayback(ctx context.Context, conn *RTPConn, remoteAddr *net.UDPAddr
 
 		muLaw := convertToMuLaw16(resampled)
 
-		serverSSRC := rand.Uint32()
+		serverSSRC := rand.Uint32() //nolint:gosec // SSRC doesn't need cryptographic randomness
 		var seq uint16
 		var timestamp uint32
 
@@ -173,7 +173,7 @@ func mixToMono(samples []int16, channels int) []int16 {
 	out := make([]int16, outLen)
 	for i := range outLen {
 		var sum int32
-		for ch := 0; ch < channels; ch++ {
+		for ch := range channels {
 			sum += int32(samples[i*channels+ch])
 		}
 		out[i] = int16(sum / int32(channels))

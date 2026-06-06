@@ -95,7 +95,7 @@ func assertRegisterOK(t *testing.T, res *sipgo_sip.Response, ts *TestServer) {
 	date := res.GetHeader("Date")
 	require.NotNil(t, date, "Date header must be present")
 	_, err := time.Parse(time.RFC1123, date.Value())
-	assert.NoError(t, err, "Date header must be valid RFC 1123: %s", date.Value())
+	require.NoError(t, err, "Date header must be valid RFC 1123: %s", date.Value())
 
 	via := res.GetHeader("Via")
 	require.NotNil(t, via, "Via header must be present")

@@ -68,7 +68,7 @@ func TestGenerateTag(t *testing.T) {
 
 func TestGenerateTagUniqueness(t *testing.T) {
 	seen := make(map[string]bool)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		tag := GenerateTag()
 		assert.False(t, seen[tag], "duplicate tag generated: %q", tag)
 		seen[tag] = true
@@ -112,7 +112,7 @@ func BenchmarkStripBrackets(b *testing.B) {
 	input := "<sip:alice@example.com:5060;transport=tcp>"
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		StripBrackets(input)
 	}
 }
@@ -121,7 +121,7 @@ func BenchmarkStripBracketsNoBrackets(b *testing.B) {
 	input := "sip:alice@example.com:5060;transport=tcp"
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		StripBrackets(input)
 	}
 }
@@ -130,7 +130,7 @@ func BenchmarkExtractUser(b *testing.B) {
 	uri := "sip:alice@example.com:5060"
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		ExtractUser(uri)
 	}
 }
@@ -139,7 +139,7 @@ func BenchmarkExtractUserNoUser(b *testing.B) {
 	uri := "sip:example.com"
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		ExtractUser(uri)
 	}
 }
@@ -148,7 +148,7 @@ func BenchmarkNormalizeAOR(b *testing.B) {
 	uri := "sip:alice@example.com:5060;transport=tcp"
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		NormalizeAOR(uri)
 	}
 }
@@ -157,7 +157,7 @@ func BenchmarkNormalizeAORNoPort(b *testing.B) {
 	uri := "sip:alice@example.com"
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		NormalizeAOR(uri)
 	}
 }
@@ -165,7 +165,7 @@ func BenchmarkNormalizeAORNoPort(b *testing.B) {
 func BenchmarkGenerateTag(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		GenerateTag()
 	}
 }
@@ -174,7 +174,7 @@ func BenchmarkURIHost(b *testing.B) {
 	uri := "sip:alice@example.com:5060;transport=tcp"
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		uriHost(uri)
 	}
 }
@@ -183,7 +183,7 @@ func BenchmarkURIHostname(b *testing.B) {
 	uri := "sip:alice@example.com:5060;transport=tcp"
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		uriHostname(uri)
 	}
 }
@@ -192,7 +192,7 @@ func BenchmarkExtractSIPURI(b *testing.B) {
 	contactURI := "sip:alice@example.com:5070;transport=tcp"
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		extractSIPURI(contactURI)
 	}
 }
@@ -201,7 +201,7 @@ func BenchmarkExtractSIPURIDefaults(b *testing.B) {
 	contactURI := "sip:alice@example.com"
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		extractSIPURI(contactURI)
 	}
 }

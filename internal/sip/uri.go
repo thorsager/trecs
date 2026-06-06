@@ -13,9 +13,9 @@ import (
 // StripBrackets removes surrounding angle brackets from a URI string.
 // If the string has no brackets it is returned unmodified.
 func StripBrackets(s string) string {
-	if len(s) > 0 && s[0] == '<' {
-		if close := strings.IndexByte(s, '>'); close >= 0 {
-			return s[1:close]
+	if s != "" && s[0] == '<' {
+		if closeIdx := strings.IndexByte(s, '>'); closeIdx >= 0 {
+			return s[1:closeIdx]
 		}
 	}
 	return s
@@ -113,5 +113,5 @@ func extractSIPURI(contactURI string) (host string, port int, transport string) 
 		}
 	}
 
-	return
+	return host, port, transport
 }

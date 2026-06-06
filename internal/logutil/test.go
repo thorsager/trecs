@@ -11,8 +11,8 @@ import (
 // TestHandler is a slog.Handler that routes log output to testing.TB.Log.
 type TestHandler struct {
 	tb    testing.TB
-	attrs []slog.Attr
 	group string
+	attrs []slog.Attr
 }
 
 // NewTestLogger returns a *slog.Logger that writes to t.Log / t.Logf.
@@ -64,14 +64,14 @@ func NewLogger(l *slog.Logger) *Logger {
 // Trace logs at LevelTrace.
 func (l *Logger) Trace(msg string, args ...any) {
 	if l.Enabled(context.Background(), LevelTrace) {
-		l.Logger.Log(context.Background(), LevelTrace, msg, args...)
+		l.Log(context.Background(), LevelTrace, msg, args...)
 	}
 }
 
 // TraceCtx logs at LevelTrace with a context.
 func (l *Logger) TraceCtx(ctx context.Context, msg string, args ...any) {
 	if l.Enabled(ctx, LevelTrace) {
-		l.Logger.Log(ctx, LevelTrace, msg, args...)
+		l.Log(ctx, LevelTrace, msg, args...)
 	}
 }
 
@@ -119,8 +119,9 @@ func (h *TestHandler) WithGroup(name string) slog.Handler {
 
 func formatAttr(a slog.Attr, group string) string {
 	if a.Value.Kind() == slog.KindGroup {
-		var parts []string
-		for _, ga := range a.Value.Group() {
+		group := a.Value.Group()
+		parts := make([]string, 0, len(group))
+		for _, ga := range group {
 			parts = append(parts, formatAttr(ga, a.Key))
 		}
 		return strings.Join(parts, " ")

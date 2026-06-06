@@ -52,11 +52,8 @@ func main() {
 		Level: lvl,
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			if a.Key == slog.LevelKey {
-				if level, ok := a.Value.Any().(slog.Level); ok {
-					switch level {
-					case logutil.LevelTrace:
-						a.Value = slog.StringValue("TRACE")
-					}
+				if level, ok := a.Value.Any().(slog.Level); ok && level == logutil.LevelTrace {
+					a.Value = slog.StringValue("TRACE")
 				}
 			}
 			return a
@@ -84,6 +81,7 @@ func main() {
 	server, err := sip.NewServer(flagAddr)
 	if err != nil {
 		slog.Error("Failed to create server", "error", err)
+		stop()
 		os.Exit(1)
 	}
 
@@ -98,6 +96,7 @@ func main() {
 		dp, err = dialplan.NewFromFile(flagDialplan)
 		if err != nil {
 			slog.Error("Failed to load dialplan", "error", err)
+			stop()
 			os.Exit(1)
 		}
 		slog.Info("Dialplan loaded", "path", flagDialplan)

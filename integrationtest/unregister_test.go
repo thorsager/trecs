@@ -150,9 +150,9 @@ func assertUnregisterOK(t *testing.T, res *sipgo_sip.Response, ts *TestServer) {
 	assert.Equal(t, 200, res.StatusCode, "expected 200 OK for unregister")
 
 	contacts := res.GetHeaders("Contact")
-	assert.Len(t, contacts, 0, "expected no Contacts after unregister")
+	assert.Empty(t, contacts, "expected no Contacts after unregister")
 
 	aor := "sip:alice@" + ts.Domain
 	bindings := ts.Reg.GetBindings(aor)
-	assert.Len(t, bindings, 0, "expected 0 bindings after unregister")
+	assert.Empty(t, bindings, "expected 0 bindings after unregister")
 }

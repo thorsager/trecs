@@ -10,10 +10,10 @@ import (
 
 type FlowKey struct {
 	SourceIP   string
-	SourcePort int
 	DestIP     string
-	DestPort   int
 	Transport  string
+	SourcePort int
+	DestPort   int
 }
 
 func FlowKeyFromConn(conn net.Conn) FlowKey {
@@ -34,16 +34,16 @@ func (k FlowKey) String() string {
 }
 
 type FlowConn struct {
-	Conn     net.Conn
-	Key      FlowKey
 	LastUsed time.Time
+	Conn     net.Conn
 	cancel   context.CancelFunc
+	Key      FlowKey
 }
 
 type FlowPool struct {
-	mu     sync.Mutex
 	flows  map[string]*FlowConn
 	onDead func(flowID string)
+	mu     sync.Mutex
 }
 
 func NewFlowPool(onDead func(flowID string)) *FlowPool {

@@ -36,11 +36,10 @@ const (
 type CompactHandler struct {
 	w      io.Writer
 	opts   CompactHandlerOptions
-	colors bool
-
-	mu     sync.Mutex
 	attrs  []slog.Attr
 	groups []string
+	mu     sync.Mutex
+	colors bool
 }
 
 // CompactHandlerOptions holds options for CompactHandler.
@@ -198,8 +197,9 @@ func levelColor(level slog.Level) string {
 
 func formatCompactAttr(a slog.Attr, groups []string, colors bool) string {
 	if a.Value.Kind() == slog.KindGroup {
-		var parts []string
-		for _, ga := range a.Value.Group() {
+		group := a.Value.Group()
+		parts := make([]string, 0, len(group))
+		for _, ga := range group {
 			groupPrefix := append(groups, a.Key)
 			parts = append(parts, formatCompactAttr(ga, groupPrefix, colors))
 		}

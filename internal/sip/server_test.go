@@ -54,7 +54,7 @@ func TestServerOPTIONSOverUDP(t *testing.T) {
 	// Read both responses: 100 Trying and 200 OK.
 	var gotOK bool
 	clientConn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		buf := make([]byte, 4096)
 		n, _, err := clientConn.ReadFromUDP(buf)
 		if err != nil {

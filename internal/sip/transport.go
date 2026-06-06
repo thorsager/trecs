@@ -16,9 +16,9 @@ import (
 )
 
 const (
-	readBufSize    = 65535
-	tcpKeepAlive   = 5 * time.Minute
-	tcpMaxConns    = 1000
+	readBufSize  = 65535
+	tcpKeepAlive = 5 * time.Minute
+	tcpMaxConns  = 1000
 )
 
 // Target identifies where to send a SIP response.
@@ -57,8 +57,8 @@ type Transport interface {
 type UDPTransport struct {
 	conn      *net.UDPConn
 	messages  chan MessageEvent
-	closeOnce sync.Once
 	logger    *slog.Logger
+	closeOnce sync.Once
 }
 
 // SetLogger sets the logger for trace output.
@@ -160,17 +160,17 @@ const tcpReadTimeout = 1 * time.Second
 
 // TCPTransport implements Transport over TCP.
 type TCPTransport struct {
-	listener           *net.TCPListener
-	messages           chan MessageEvent
-	wg                 sync.WaitGroup
-	closeOnce          sync.Once
-	done               chan struct{}
-	connSem            chan struct{}
-	pool               *FlowPool
-	keepaliveInterval  time.Duration
-	keepaliveCtx       context.Context
-	keepaliveCancel    context.CancelFunc
-	logger             *slog.Logger
+	keepaliveCtx      context.Context
+	listener          *net.TCPListener
+	messages          chan MessageEvent
+	done              chan struct{}
+	connSem           chan struct{}
+	pool              *FlowPool
+	keepaliveCancel   context.CancelFunc
+	logger            *slog.Logger
+	wg                sync.WaitGroup
+	keepaliveInterval time.Duration
+	closeOnce         sync.Once
 }
 
 // SetLogger sets the logger for trace output.
@@ -234,8 +234,8 @@ func (t *TCPTransport) acceptLoop() {
 			continue
 		}
 		tcpConn := conn.(*net.TCPConn)
-		tcpConn.SetKeepAlive(true)
-		tcpConn.SetKeepAlivePeriod(tcpKeepAlive)
+		tcpConn.SetKeepAlive(true)               //nolint:errcheck
+		tcpConn.SetKeepAlivePeriod(tcpKeepAlive) //nolint:errcheck
 		t.wg.Add(1)
 		go t.handleConnection(conn)
 	}
@@ -297,16 +297,12 @@ func (t *TCPTransport) startReader(conn net.Conn, swc *syncWriteConn, fc *FlowCo
 		default:
 		}
 
-		drained, err := t.drainCRLFKeepalive(br, conn, kt)
-		if err != nil {
+		if err := t.drainCRLFKeepalive(br, conn, kt); err != nil {
 			log.Error("TCP flow read error", "error", err)
 			return
 		}
-		if drained {
-			continue
-		}
 
-		conn.SetReadDeadline(time.Now().Add(tcpReadTimeout))
+		conn.SetReadDeadline(time.Now().Add(tcpReadTimeout)) //nolint:errcheck //nolint:errcheck
 		msg, err := proto.UnmarshalSIP(br)
 		if err != nil {
 			var netErr net.Error
@@ -338,59 +334,63 @@ func (t *TCPTransport) startReader(conn net.Conn, swc *syncWriteConn, fc *FlowCo
 	}
 }
 
-func (t *TCPTransport) drainCRLFKeepalive(br *bufio.Reader, conn net.Conn, kt *KeepaliveTracker) (bool, error) {
-	conn.SetReadDeadline(time.Now().Add(tcpReadTimeout))
+func (t *TCPTransport) drainCRLFKeepalive(br *bufio.Reader, conn net.Conn, kt *KeepaliveTracker) error {
+	conn.SetReadDeadline(time.Now().Add(tcpReadTimeout)) //nolint:errcheck
 	for {
 		b, err := br.ReadByte()
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				return false, nil
+			var netErr net.Error
+			if errors.As(err, &netErr) {
+				return nil
 			}
-			return false, err
+			return err
 		}
 		if b != '\r' {
-			br.UnreadByte()
-			return false, nil
+			br.UnreadByte() //nolint:errcheck
+			return nil
 		}
 		next, err := br.ReadByte()
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				br.UnreadByte()
-				return false, nil
+			var netErr net.Error
+			if errors.As(err, &netErr) {
+				br.UnreadByte() //nolint:errcheck
+				return nil
 			}
-			return false, err
+			return err
 		}
 		if next != '\n' {
-			return false, nil
+			return nil
 		}
 		// Read second \r to distinguish keepalive (\r\n\r\n) from stray CRLF (\r\n).
 		b, err = br.ReadByte()
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				br.UnreadByte() // unread the \n
-				return false, nil
+			var netErr net.Error
+			if errors.As(err, &netErr) {
+				br.UnreadByte() //nolint:errcheck // unread the \n
+				return nil
 			}
-			return false, err
+			return err
 		}
 		if b != '\r' {
-			br.UnreadByte()
-			return false, nil
+			br.UnreadByte() //nolint:errcheck
+			return nil
 		}
 		next, err = br.ReadByte()
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				br.UnreadByte() // unread the \r
-				return false, nil
+			var netErr net.Error
+			if errors.As(err, &netErr) {
+				br.UnreadByte() //nolint:errcheck // unread the \r
+				return nil
 			}
-			return false, err
+			return err
 		}
 		if next != '\n' {
-			return false, nil
+			return nil
 		}
 		// Full double-CRLF keepalive. Per RFC 5626 §5.4, respond with pong.
-		conn.SetWriteDeadline(time.Now().Add(tcpReadTimeout))
-		conn.Write([]byte("\r\n"))
-		conn.SetWriteDeadline(time.Time{})
+		conn.SetWriteDeadline(time.Now().Add(tcpReadTimeout)) //nolint:errcheck
+		conn.Write([]byte("\r\n"))                            //nolint:errcheck
+		conn.SetWriteDeadline(time.Time{})                    //nolint:errcheck
 		kt.UpdateActivity()
 	}
 }
@@ -434,13 +434,13 @@ func (t *TCPTransport) Close() error {
 	return err
 }
 
-
 func TargetFromContact(contactURI string) (*Target, string, error) {
 	host, port, transport := extractSIPURI(contactURI)
 
 	if transport == "TCP" {
 		addr := net.JoinHostPort(host, strconv.Itoa(port))
-		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		dialer := &net.Dialer{Timeout: 5 * time.Second}
+		conn, err := dialer.DialContext(context.Background(), "tcp", addr)
 		if err != nil {
 			return nil, "", err
 		}

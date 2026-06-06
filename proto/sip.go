@@ -21,7 +21,7 @@ const (
 	SIPMethodREGISTER SIPMethod = "REGISTER"
 	SIPMethodOPTIONS  SIPMethod = "OPTIONS"
 
-	// Extension methods
+	// Extension methods.
 	SIPMethodPRACK     SIPMethod = "PRACK"     // RFC 3262
 	SIPMethodSUBSCRIBE SIPMethod = "SUBSCRIBE" // RFC 6665
 	SIPMethodNOTIFY    SIPMethod = "NOTIFY"    // RFC 6665
@@ -163,10 +163,10 @@ func (h SIPHeaders) Add(k, v string) {
 // Contact headers. It handles both the name-addr form (display-name in angle
 // brackets) and addr-spec form (bare URI).
 type SIPAddress struct {
+	Params      map[string]string
 	DisplayName string
 	URI         string
 	Tag         string
-	Params      map[string]string
 }
 
 // UnmarshalSIPAddress parses a raw From/To/Contact header value and returns a
@@ -264,15 +264,14 @@ func (c *CSeq) String() string {
 
 // SIPMessage represents a parsed SIP request or response.
 type SIPMessage struct {
-	startLine *startLine
-	CSeq      CSeq
-	Headers   SIPHeaders
-	Body      []byte
-
+	startLine    *startLine
+	Headers      SIPHeaders
+	branch       string
+	CSeq         CSeq
+	Body         []byte
 	reliableOnce sync.Once
+	branchOnce   sync.Once
 	reliable     bool
-	branchOnce sync.Once
-	branch     string
 }
 
 // IsReliableTransport returns true if the message arrived over a reliable
@@ -299,7 +298,7 @@ func unmarshalProto(via string) string {
 // ViaBranch returns the branch parameter from the topmost Via header.
 // The value is computed lazily and cached for subsequent calls.
 func (m *SIPMessage) ViaBranch() string {
-	m.branchOnce.Do(func(){
+	m.branchOnce.Do(func() {
 		m.branch = unmarshalViaBranch(m.Headers.GetFirst("Via"))
 	})
 	return m.branch
@@ -468,12 +467,12 @@ func (m *SIPMessage) To() (*SIPAddress, error) {
 }
 
 type startLine struct {
-	IsRequest  bool
 	Method     SIPMethod
 	Version    string
-	StatusCode int
 	Status     string
 	URI        string
+	StatusCode int
+	IsRequest  bool
 }
 
 func (sl *startLine) String() string {
@@ -588,7 +587,7 @@ func unmarshalHeaders(r *bufio.Reader) (SIPHeaders, error) {
 			k = l
 		}
 		k = canonicalHeaderKey(k)
-		for len(v) > 0 && v[0] == ' ' {
+		for v != "" && v[0] == ' ' {
 			v = v[1:]
 		}
 		h[k] = append(h[k], v)
@@ -706,7 +705,7 @@ func (m *SIPMessage) marshalSize(compact bool) int {
 	}
 	cl := intLen(int64(len(m.Body)))
 	sz += len(clKey) + 2 + cl + 2 // "<key>: <n>\r\n"
-	sz += 2 + len(m.Body) // \r\n separator + body
+	sz += 2 + len(m.Body)         // \r\n separator + body
 	return sz
 }
 
@@ -745,16 +744,20 @@ func (m *SIPMessage) marshalToImpl(buf []byte, compact bool) int {
 	}
 	if m.startLine.IsRequest {
 		pos += copy(buf[pos:], string(m.startLine.Method))
-		buf[pos] = ' '; pos++
+		buf[pos] = ' '
+		pos++
 		pos += copy(buf[pos:], m.startLine.URI)
-		buf[pos] = ' '; pos++
+		buf[pos] = ' '
+		pos++
 		pos += copy(buf[pos:], m.startLine.Version)
 	} else {
 		pos += copy(buf[pos:], m.startLine.Version)
-		buf[pos] = ' '; pos++
+		buf[pos] = ' '
+		pos++
 		pos += copy(buf[pos:], m.startLine.Status)
 	}
-	buf[pos] = '\r'; buf[pos+1] = '\n'
+	buf[pos] = '\r'
+	buf[pos+1] = '\n'
 	pos += 2
 
 	var keysBuf [16]string
@@ -776,28 +779,40 @@ func (m *SIPMessage) marshalToImpl(buf []byte, compact bool) int {
 		}
 		for _, v := range m.Headers[k] {
 			pos += copy(buf[pos:], key)
-			buf[pos] = ':'; buf[pos+1] = ' '; pos += 2
+			buf[pos] = ':'
+			buf[pos+1] = ' '
+			pos += 2
 			pos += copy(buf[pos:], v)
-			buf[pos] = '\r'; buf[pos+1] = '\n'; pos += 2
+			buf[pos] = '\r'
+			buf[pos+1] = '\n'
+			pos += 2
 		}
 	}
 
 	pos += copy(buf[pos:], "CSeq: ")
 	pos += len(strconv.AppendInt(buf[pos:pos], int64(m.CSeq.Seq), 10))
-	buf[pos] = ' '; pos++
+	buf[pos] = ' '
+	pos++
 	pos += copy(buf[pos:], string(m.CSeq.Method))
-	buf[pos] = '\r'; buf[pos+1] = '\n'; pos += 2
+	buf[pos] = '\r'
+	buf[pos+1] = '\n'
+	pos += 2
 
 	clKey := "Content-Length"
 	if compact {
 		clKey = compactKey(clKey)
 	}
 	pos += copy(buf[pos:], clKey)
-	buf[pos] = ':'; buf[pos+1] = ' '; pos += 2
+	buf[pos] = ':'
+	buf[pos+1] = ' '
+	pos += 2
 	pos += len(strconv.AppendInt(buf[pos:pos], int64(len(m.Body)), 10))
-	buf[pos] = '\r'; buf[pos+1] = '\n'; pos += 2
+	buf[pos] = '\r'
+	buf[pos+1] = '\n'
+	pos += 2
 
-	buf[pos] = '\r'; buf[pos+1] = '\n'
+	buf[pos] = '\r'
+	buf[pos+1] = '\n'
 	pos += 2
 
 	pos += copy(buf[pos:], m.Body)
@@ -822,7 +837,7 @@ func (m *SIPMessage) MarshalTo(buf []byte) (int, error) {
 	}
 	sz := m.MarshalSize()
 	if len(buf) < sz {
-		return 0, fmt.Errorf("sip: buffer too small for marshal")
+		return 0, errors.New("sip: buffer too small for marshal")
 	}
 	return m.marshalTo(buf), nil
 }
@@ -853,7 +868,7 @@ func (m *SIPMessage) String() string {
 func (m *SIPMessage) MarshalCompactTo(buf []byte) (int, error) {
 	sz := m.MarshalCompactSize()
 	if len(buf) < sz {
-		return 0, fmt.Errorf("sip: buffer too small for compact marshal")
+		return 0, errors.New("sip: buffer too small for compact marshal")
 	}
 	return m.marshalToCompact(buf), nil
 }

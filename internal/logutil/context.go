@@ -9,8 +9,10 @@ import (
 // It is more verbose than Debug (-4).
 const LevelTrace = slog.Level(-10)
 
-type loggerKey struct{}
-type ctxValuesKey struct{}
+type (
+	loggerKey    struct{}
+	ctxValuesKey struct{}
+)
 
 // ctxValues holds key-value pairs stored in the context for automatic logging.
 type ctxValues struct {

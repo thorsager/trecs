@@ -2,16 +2,17 @@ package media
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 )
 
 type WavData struct {
+	Data          []byte
 	SampleRate    uint32
 	BitsPerSample uint16
 	NumChannels   uint16
-	Data          []byte
 }
 
 func LoadWav(path string) (*WavData, error) {
@@ -26,7 +27,7 @@ func LoadWav(path string) (*WavData, error) {
 		return nil, fmt.Errorf("wav: reading riff header: %w", err)
 	}
 	if string(header[0:4]) != "RIFF" || string(header[8:12]) != "WAVE" {
-		return nil, fmt.Errorf("wav: not a valid WAV file")
+		return nil, errors.New("wav: not a valid WAV file")
 	}
 
 	var w *WavData
@@ -46,7 +47,7 @@ func LoadWav(path string) (*WavData, error) {
 		switch chunkID {
 		case "fmt ":
 			if chunkSize < 16 {
-				return nil, fmt.Errorf("wav: fmt chunk too small")
+				return nil, errors.New("wav: fmt chunk too small")
 			}
 			fmtBuf := make([]byte, chunkSize)
 			if _, err := io.ReadFull(f, fmtBuf); err != nil {
@@ -64,7 +65,7 @@ func LoadWav(path string) (*WavData, error) {
 
 		case "data":
 			if w == nil {
-				return nil, fmt.Errorf("wav: data chunk before fmt chunk")
+				return nil, errors.New("wav: data chunk before fmt chunk")
 			}
 			data = make([]byte, chunkSize)
 			if _, err := io.ReadFull(f, data); err != nil {
@@ -82,10 +83,10 @@ func LoadWav(path string) (*WavData, error) {
 	}
 
 	if w == nil {
-		return nil, fmt.Errorf("wav: no fmt chunk found")
+		return nil, errors.New("wav: no fmt chunk found")
 	}
 	if data == nil {
-		return nil, fmt.Errorf("wav: no data chunk found")
+		return nil, errors.New("wav: no data chunk found")
 	}
 
 	w.Data = data

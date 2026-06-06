@@ -174,16 +174,16 @@ func TestParseRTP_TwoByteExtensions(t *testing.T) {
 	putU32(buf[8:12], 0xCAFEBABE)
 	putU16(buf[12:14], ExtensionProfileTwoByte)
 	putU16(buf[14:16], uint16(extDataSize/4))
-	buf[16] = 0x05       // ID=5
-	buf[17] = 0x03       // len=3
-	buf[18] = 0xAA       // payload byte 1
-	buf[19] = 0xBB       // payload byte 2
-	buf[20] = 0xCC       // payload byte 3
-	buf[21] = 0x01       // ID=1
-	buf[22] = 0x02       // len=2
-	buf[23] = 0xDD       // payload byte 1
-	buf[24] = 0xEE       // payload byte 2
-	buf[25] = 0x00       // padding
+	buf[16] = 0x05 // ID=5
+	buf[17] = 0x03 // len=3
+	buf[18] = 0xAA // payload byte 1
+	buf[19] = 0xBB // payload byte 2
+	buf[20] = 0xCC // payload byte 3
+	buf[21] = 0x01 // ID=1
+	buf[22] = 0x02 // len=2
+	buf[23] = 0xDD // payload byte 1
+	buf[24] = 0xEE // payload byte 2
+	buf[25] = 0x00 // padding
 	buf[26] = 0x00
 	buf[27] = 0x00
 
@@ -216,14 +216,6 @@ func TestParseRTP_RFC3550Extension(t *testing.T) {
 	assert.Equal(t, uint8(0), pkt.Header.Extensions[0].ID)
 	assert.Equal(t, extPayload, pkt.Header.Extensions[0].Payload)
 }
-
-
-
-
-
-
-
-
 
 func TestRTPMarshal_Minimal(t *testing.T) {
 	pkt := &RTPPacket{
@@ -283,13 +275,13 @@ func TestRTPMarshal_PayloadType(t *testing.T) {
 func TestRTPMarshal_Padding(t *testing.T) {
 	pkt := &RTPPacket{
 		Header: RTPHeader{
-			Version:     2,
-			Padding:     true,
-			PaddingSize: 4,
-			PayloadType: 0,
+			Version:        2,
+			Padding:        true,
+			PaddingSize:    4,
+			PayloadType:    0,
 			SequenceNumber: 1,
-			Timestamp:   0,
-			SSRC:        0x12345678,
+			Timestamp:      0,
+			SSRC:           0x12345678,
 		},
 		Payload: []byte{0x01, 0x02},
 	}
@@ -326,8 +318,8 @@ func TestRTPMarshal_CSRC(t *testing.T) {
 		off := 12 + i*4
 		assert.Equal(t, byte(c>>24), data[off+0], "CSRC[%d] byte 0", i)
 		assert.Equal(t, byte(c>>16), data[off+1], "CSRC[%d] byte 1", i)
-		assert.Equal(t, byte(c>>8),  data[off+2], "CSRC[%d] byte 2", i)
-		assert.Equal(t, byte(c),     data[off+3], "CSRC[%d] byte 3", i)
+		assert.Equal(t, byte(c>>8), data[off+2], "CSRC[%d] byte 2", i)
+		assert.Equal(t, byte(c), data[off+3], "CSRC[%d] byte 3", i)
 	}
 	assert.Equal(t, []byte{0xFF}, data[20:], "payload")
 }
@@ -603,8 +595,8 @@ func TestRTPMarshal_AllFeaturesCombined(t *testing.T) {
 	for i, c := range []uint32{0x11111111, 0x22222222, 0x33333333} {
 		assert.Equal(t, byte(c>>24), data[csrcOff+0], "CSRC[%d] byte 0", i)
 		assert.Equal(t, byte(c>>16), data[csrcOff+1], "CSRC[%d] byte 1", i)
-		assert.Equal(t, byte(c>>8),  data[csrcOff+2], "CSRC[%d] byte 2", i)
-		assert.Equal(t, byte(c),     data[csrcOff+3], "CSRC[%d] byte 3", i)
+		assert.Equal(t, byte(c>>8), data[csrcOff+2], "CSRC[%d] byte 2", i)
+		assert.Equal(t, byte(c), data[csrcOff+3], "CSRC[%d] byte 3", i)
 		csrcOff += 4
 	}
 
@@ -672,13 +664,13 @@ func TestRTPMarshalSize_WithPayload(t *testing.T) {
 func TestRTPMarshalSize_WithPadding(t *testing.T) {
 	pkt := &RTPPacket{
 		Header: RTPHeader{
-			Version:     2,
-			Padding:     true,
-			PaddingSize: 8,
-			PayloadType: 0,
+			Version:        2,
+			Padding:        true,
+			PaddingSize:    8,
+			PayloadType:    0,
 			SequenceNumber: 0,
-			Timestamp:   0,
-			SSRC:        0,
+			Timestamp:      0,
+			SSRC:           0,
 		},
 		Payload: []byte{0x01},
 	}
@@ -719,8 +711,6 @@ func TestRTPMarshalSize_WithExtensions(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, len(data), sz, "MarshalSize must match actual marshaled length")
 }
-
-
 
 func TestRTPMarshalTo_BufferTooSmall(t *testing.T) {
 	pkt := &RTPPacket{
@@ -818,20 +808,12 @@ func TestRTPMarshal_RoundTripAllVariants(t *testing.T) {
 				assert.Equal(t, pkt.Header.Extensions[j].Payload, parsed.Header.Extensions[j].Payload, "variants[%d] ext[%d] Payload", i, j)
 			}
 		}
-		assert.Equal(t, len(pkt.Payload), len(parsed.Payload), "variants[%d] Payload len", i)
+		assert.Len(t, parsed.Payload, len(pkt.Payload), "variants[%d] Payload len", i)
 		for j := range pkt.Payload {
 			assert.Equal(t, pkt.Payload[j], parsed.Payload[j], "variants[%d] Payload[%d]", i, j)
 		}
 	}
 }
-
-
-
-
-
-
-
-
 
 func TestRTPMarshal_OneByteExtMaxPayload(t *testing.T) {
 	payload := make([]byte, 16)
@@ -1248,7 +1230,7 @@ func TestMarshal_OneByteExt_TerminatorWritten(t *testing.T) {
 	roundedExtSize := ((extDataSize + 3) / 4) * 4
 	padCount := roundedExtSize - extDataSize
 
-	require.Greater(t, padCount, 0, "test requires padding")
+	require.Positive(t, padCount, "test requires padding")
 	assert.Equal(t, byte(0xF0), data[extDataStart+extDataSize], "terminator at first padding position")
 	for i := 1; i < padCount; i++ {
 		assert.Equal(t, byte(0), data[extDataStart+extDataSize+i], "zero padding at offset %d", i)

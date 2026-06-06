@@ -1419,7 +1419,7 @@ func TestSIPMarshal_DeterministicHeaderOrder(t *testing.T) {
 }
 
 // =============================================================================
-// RFC 3261 Strict Compliance — SIP Message Marshalling
+// RFC 3261 Strict Compliance — SIP Message Marshaling
 // =============================================================================
 
 // -----------------------------------------------------------------------------
@@ -1554,10 +1554,10 @@ func TestRFC3261_Marshal_RequestLine_SIPSURI(t *testing.T) {
 func TestRFC3261_Marshal_StatusLineGrammar(t *testing.T) {
 	msg := &SIPMessage{
 		startLine: &startLine{
-			IsRequest: false,
-			Version:   "SIP/2.0",
+			IsRequest:  false,
+			Version:    "SIP/2.0",
 			StatusCode: 200,
-			Status:    "200 OK",
+			Status:     "200 OK",
 		},
 		Headers: SIPHeaders{
 			"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
@@ -1591,10 +1591,10 @@ func TestRFC3261_Marshal_StatusLine_VariousCodes(t *testing.T) {
 			reason, _ := rfc3261ReasonPhrase(code)
 			msg := &SIPMessage{
 				startLine: &startLine{
-					IsRequest: false,
-					Version:   "SIP/2.0",
+					IsRequest:  false,
+					Version:    "SIP/2.0",
 					StatusCode: code,
-					Status:    fmt.Sprintf("%d %s", code, reason),
+					Status:     fmt.Sprintf("%d %s", code, reason),
 				},
 				Headers: SIPHeaders{
 					"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
@@ -1623,10 +1623,10 @@ func TestRFC3261_Marshal_StatusLine_VariousCodes(t *testing.T) {
 func TestRFC3261_Marshal_StatusLine_MultiWordReason(t *testing.T) {
 	msg := &SIPMessage{
 		startLine: &startLine{
-			IsRequest: false,
-			Version:   "SIP/2.0",
+			IsRequest:  false,
+			Version:    "SIP/2.0",
 			StatusCode: 181,
-			Status:    "181 Call Is Being Forwarded",
+			Status:     "181 Call Is Being Forwarded",
 		},
 		Headers: SIPHeaders{
 			"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
@@ -1851,7 +1851,7 @@ func TestRFC3261_Marshal_ContentLength_AfterCSeq(t *testing.T) {
 	clIdx := strings.Index(s, "Content-Length: ")
 	if assert.Greater(t, cseqIdx, 0) && assert.Greater(t, clIdx, 0) {
 		assert.Less(t, cseqIdx, clIdx,
-			"CSeq must appear before Content-Length in marshalled output")
+			"CSeq must appear before Content-Length in marshaled output")
 	}
 	// Content-Length is the last header before the body separator
 	afterCL := s[clIdx:]
@@ -1861,7 +1861,7 @@ func TestRFC3261_Marshal_ContentLength_AfterCSeq(t *testing.T) {
 }
 
 func TestRFC3261_Marshal_NoExtraContentLength(t *testing.T) {
-	// Even if Headers map has stale Content-Length entries, marshalled output
+	// Even if Headers map has stale Content-Length entries, marshaled output
 	// must have exactly one Content-Length, computed from the body.
 	msg := &SIPMessage{
 		startLine: &startLine{
@@ -2234,9 +2234,9 @@ func TestRFC3261_Marshal_AllMethodsProduceValidWireFormat(t *testing.T) {
 					URI: "sip:user@host", Version: "SIP/2.0",
 				},
 				Headers: SIPHeaders{
-					"From":  {"<sip:a@a>"},
-					"To":    {"<sip:b@b>"},
-					"Via":   {"SIP/2.0/UDP host;branch=z9hG4bK1"},
+					"From":    {"<sip:a@a>"},
+					"To":      {"<sip:b@b>"},
+					"Via":     {"SIP/2.0/UDP host;branch=z9hG4bK1"},
 					"Call-ID": {"call@host"},
 				},
 				CSeq: CSeq{Seq: 1, Method: method},
@@ -2324,7 +2324,7 @@ func sipBenchMinimal() *SIPMessage {
 }
 
 // =============================================================================
-// RFC 3261 Strict Compliance — SIP Compact Marshalling (§7.3.3)
+// RFC 3261 Strict Compliance — SIP Compact Marshaling (§7.3.3)
 // =============================================================================
 
 // -----------------------------------------------------------------------------
@@ -2470,9 +2470,9 @@ func TestRFC3261_MarshalCompact_UnchangedHeaders(t *testing.T) {
 			URI: "sip:user@host", Version: "SIP/2.0",
 		},
 		Headers: SIPHeaders{
-			"CSeq":          {"1 INVITE"},
-			"Max-Forwards":  {"70"},
-			"User-Agent":    {"test"},
+			"CSeq":           {"1 INVITE"},
+			"Max-Forwards":   {"70"},
+			"User-Agent":     {"test"},
 			"Content-Length": {"0"},
 		},
 		CSeq: CSeq{Seq: 1, Method: "INVITE"},

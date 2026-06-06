@@ -30,13 +30,13 @@ func stripAnsi(s string) string {
 
 func TestCompactHandler(t *testing.T) {
 	tests := []struct {
-		name     string
-		level    slog.Level
-		msg      string
-		attrs    []any
-		want     string
-		wantSub  []string
-		notWant  []string
+		name    string
+		msg     string
+		want    string
+		attrs   []any
+		wantSub []string
+		notWant []string
+		level   slog.Level
 	}{
 		{
 			name:  "info log",
@@ -74,10 +74,10 @@ func TestCompactHandler(t *testing.T) {
 			wantSub: []string{"[TRACE] trace multiline", "key=val", "\tline1", "\tline2", "\tline3"},
 		},
 		{
-			name:  "error log",
-			level: slog.LevelError,
-			msg:   "something failed",
-			attrs: []any{"error", "connection refused"},
+			name:    "error log",
+			level:   slog.LevelError,
+			msg:     "something failed",
+			attrs:   []any{"error", "connection refused"},
 			wantSub: []string{"[ERROR] something failed", "error=connection refused"},
 		},
 	}

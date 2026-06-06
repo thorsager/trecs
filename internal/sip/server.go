@@ -22,15 +22,15 @@ type ResponseHandler func(ctx context.Context, msg *proto.SIPMessage, target Tar
 // Server is a SIP server that listens on UDP and TCP, manages transactions,
 // and dispatches requests to registered method handlers.
 type Server struct {
-	udpTransport     *UDPTransport
-	tcpTransport     *TCPTransport
-	txMgr            *TransactionManager
-	handlers         map[proto.SIPMethod]RequestHandler
-	ackCallback      AckCallback
-	responseHandler  ResponseHandler
-	mu               sync.Mutex
-	wg               sync.WaitGroup
-	started          bool
+	udpTransport    *UDPTransport
+	tcpTransport    *TCPTransport
+	txMgr           *TransactionManager
+	handlers        map[proto.SIPMethod]RequestHandler
+	ackCallback     AckCallback
+	responseHandler ResponseHandler
+	mu              sync.Mutex
+	wg              sync.WaitGroup
+	started         bool
 }
 
 // NewServer creates a SIP server listening on addr for both UDP and TCP.
@@ -168,7 +168,7 @@ func (s *Server) route(ctx context.Context, ev MessageEvent, transport Transport
 		if err == nil {
 			if maxFwds <= 0 {
 				res := proto.NewResponse(ev.Msg, 483, "Too Many Hops")
-				transport.Send(res, &ev.Target)
+				transport.Send(res, &ev.Target) //nolint:errcheck
 				return
 			}
 			ev.Msg.Headers.Set("Max-Forwards", []string{strconv.Itoa(maxFwds - 1)})

@@ -2,6 +2,7 @@ package proto
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -69,17 +70,17 @@ type ReceptionReport struct {
 
 // SenderReport (SR, PT=200) provides transmission and reception statistics.
 type SenderReport struct {
-	SSRC             uint32
-	NTPTime          uint64
-	RTPTime          uint32
-	PacketCount      uint32
-	OctetCount       uint32
-	Reports          []ReceptionReport
+	Reports           []ReceptionReport
 	ProfileExtensions []byte
-	hdr              RTCPHeader
+	NTPTime           uint64
+	SSRC              uint32
+	RTPTime           uint32
+	PacketCount       uint32
+	OctetCount        uint32
+	hdr               RTCPHeader
 }
 
-func (p *SenderReport) Header() RTCPHeader       { return p.hdr }
+func (p *SenderReport) Header() RTCPHeader { return p.hdr }
 func (p *SenderReport) DestinationSSRC() []uint32 {
 	out := make([]uint32, len(p.Reports)+1)
 	for i, v := range p.Reports {
@@ -98,13 +99,13 @@ func (p SenderReport) String() string {
 
 // ReceiverReport (RR, PT=201) provides reception statistics.
 type ReceiverReport struct {
-	SSRC              uint32
 	Reports           []ReceptionReport
 	ProfileExtensions []byte
+	SSRC              uint32
 	hdr               RTCPHeader
 }
 
-func (p *ReceiverReport) Header() RTCPHeader       { return p.hdr }
+func (p *ReceiverReport) Header() RTCPHeader { return p.hdr }
 func (p *ReceiverReport) DestinationSSRC() []uint32 {
 	out := make([]uint32, len(p.Reports))
 	for i, v := range p.Reports {
@@ -159,14 +160,14 @@ func (t SDESType) String() string {
 
 // SourceDescriptionItem is a single SDES item describing an attribute of a source.
 type SourceDescriptionItem struct {
-	Type SDESType
 	Text string
+	Type SDESType
 }
 
 // SourceDescriptionChunk groups items for a single source.
 type SourceDescriptionChunk struct {
-	Source uint32
 	Items  []SourceDescriptionItem
+	Source uint32
 }
 
 // SourceDescription (SDES, PT=202) describes one or more sources.
@@ -175,7 +176,7 @@ type SourceDescription struct {
 	hdr    RTCPHeader
 }
 
-func (p *SourceDescription) Header() RTCPHeader       { return p.hdr }
+func (p *SourceDescription) Header() RTCPHeader { return p.hdr }
 func (p *SourceDescription) DestinationSSRC() []uint32 {
 	out := make([]uint32, len(p.Chunks))
 	for i, v := range p.Chunks {
@@ -190,12 +191,12 @@ func (p SourceDescription) String() string {
 
 // Goodbye (BYE, PT=203) indicates that one or more sources are no longer active.
 type Goodbye struct {
-	Sources []uint32
 	Reason  string
+	Sources []uint32
 	hdr     RTCPHeader
 }
 
-func (p *Goodbye) Header() RTCPHeader       { return p.hdr }
+func (p *Goodbye) Header() RTCPHeader { return p.hdr }
 func (p *Goodbye) DestinationSSRC() []uint32 {
 	out := make([]uint32, len(p.Sources))
 	copy(out, p.Sources)
@@ -208,14 +209,14 @@ func (p Goodbye) String() string {
 
 // ApplicationDefined (APP, PT=204) carries application-specific data.
 type ApplicationDefined struct {
-	SubType uint8
-	SSRC    uint32
 	Name    string
 	Data    []byte
+	SSRC    uint32
 	hdr     RTCPHeader
+	SubType uint8
 }
 
-func (p *ApplicationDefined) Header() RTCPHeader      { return p.hdr }
+func (p *ApplicationDefined) Header() RTCPHeader        { return p.hdr }
 func (p *ApplicationDefined) DestinationSSRC() []uint32 { return []uint32{p.SSRC} }
 
 func (p ApplicationDefined) String() string {
@@ -224,12 +225,12 @@ func (p ApplicationDefined) String() string {
 
 // RawRTCP is a fallback for unknown RTCP packet types.
 type RawRTCP struct {
-	HeaderField RTCPHeader
 	Data        []byte
+	HeaderField RTCPHeader
 }
 
-func (p *RawRTCP) Header() RTCPHeader           { return p.HeaderField }
-func (p *RawRTCP) DestinationSSRC() []uint32     { return nil }
+func (p *RawRTCP) Header() RTCPHeader        { return p.HeaderField }
+func (p *RawRTCP) DestinationSSRC() []uint32 { return nil }
 
 func marshalHeaderTo(buf []byte, padding bool, count uint8, typ RTCPPacketType, length uint16) {
 	buf[0] = (rtcpVersion << 6) | (count & 0x1F)
@@ -250,7 +251,7 @@ func (p *SenderReport) MarshalSize() int {
 func (p *SenderReport) MarshalTo(buf []byte) (int, error) {
 	sz := p.MarshalSize()
 	if len(buf) < sz {
-		return 0, fmt.Errorf("rtcp: buffer too small for sender report")
+		return 0, errors.New("rtcp: buffer too small for sender report")
 	}
 	count := uint8(len(p.Reports))
 	marshalHeaderTo(buf, p.hdr.Padding, count, RTCPTypeSR, uint16(sz/4-1))
@@ -294,7 +295,7 @@ func (p *ReceiverReport) MarshalSize() int {
 func (p *ReceiverReport) MarshalTo(buf []byte) (int, error) {
 	sz := p.MarshalSize()
 	if len(buf) < sz {
-		return 0, fmt.Errorf("rtcp: buffer too small for receiver report")
+		return 0, errors.New("rtcp: buffer too small for receiver report")
 	}
 	count := uint8(len(p.Reports))
 	marshalHeaderTo(buf, p.hdr.Padding, count, RTCPTypeRR, uint16(sz/4-1))
@@ -339,7 +340,7 @@ func (p *SourceDescription) MarshalSize() int {
 		for _, item := range chunk.Items {
 			sz += 2 + len(item.Text) // type + length + text
 		}
-		sz += 1 // END marker (0x00)
+		sz += 1            // END marker (0x00)
 		sz = (sz + 3) &^ 3 // align chunk to 4 bytes
 	}
 	return sz
@@ -348,7 +349,7 @@ func (p *SourceDescription) MarshalSize() int {
 func (p *SourceDescription) MarshalTo(buf []byte) (int, error) {
 	sz := p.MarshalSize()
 	if len(buf) < sz {
-		return 0, fmt.Errorf("rtcp: buffer too small for source description")
+		return 0, errors.New("rtcp: buffer too small for source description")
 	}
 	count := uint8(len(p.Chunks))
 	marshalHeaderTo(buf, p.hdr.Padding, count, RTCPTypeSDES, uint16(sz/4-1))
@@ -392,7 +393,7 @@ func (p *Goodbye) MarshalSize() int {
 func (p *Goodbye) MarshalTo(buf []byte) (int, error) {
 	sz := p.MarshalSize()
 	if len(buf) < sz {
-		return 0, fmt.Errorf("rtcp: buffer too small for goodbye")
+		return 0, errors.New("rtcp: buffer too small for goodbye")
 	}
 	count := uint8(len(p.Sources))
 	marshalHeaderTo(buf, p.hdr.Padding, count, RTCPTypeBYE, uint16(sz/4-1))
@@ -426,7 +427,7 @@ func (p *ApplicationDefined) MarshalSize() int {
 func (p *ApplicationDefined) MarshalTo(buf []byte) (int, error) {
 	sz := p.MarshalSize()
 	if len(buf) < sz {
-		return 0, fmt.Errorf("rtcp: buffer too small for application defined")
+		return 0, errors.New("rtcp: buffer too small for application defined")
 	}
 	marshalHeaderTo(buf, p.hdr.Padding, p.SubType, RTCPTypeAPP, uint16(sz/4-1))
 
@@ -456,7 +457,7 @@ func (p *RawRTCP) MarshalSize() int {
 func (p *RawRTCP) MarshalTo(buf []byte) (int, error) {
 	sz := p.MarshalSize()
 	if len(buf) < sz {
-		return 0, fmt.Errorf("rtcp: buffer too small for raw packet")
+		return 0, errors.New("rtcp: buffer too small for raw packet")
 	}
 	h := p.HeaderField
 	h.Length = uint16(sz/4 - 1)
@@ -571,7 +572,7 @@ func unmarshalSenderReport(hdr RTCPHeader, data []byte) (*SenderReport, error) {
 	p.OctetCount = binary.BigEndian.Uint32(body[20:24])
 
 	off := 24
-	for i := 0; i < int(hdr.Count); i++ {
+	for i := range hdr.Count {
 		if off+24 > len(body) {
 			return nil, UnmarshalErrorf("rtcp: sender report truncated in report block %d", i)
 		}
@@ -597,7 +598,7 @@ func unmarshalReceiverReport(hdr RTCPHeader, data []byte) (*ReceiverReport, erro
 	p.SSRC = binary.BigEndian.Uint32(body[0:4])
 
 	off := 4
-	for i := 0; i < int(hdr.Count); i++ {
+	for i := range hdr.Count {
 		if off+24 > len(body) {
 			return nil, UnmarshalErrorf("rtcp: receiver report truncated in report block %d", i)
 		}
@@ -634,7 +635,7 @@ func unmarshalSourceDescription(hdr RTCPHeader, data []byte) (*SourceDescription
 	p := &SourceDescription{hdr: hdr, Chunks: make([]SourceDescriptionChunk, 0, hdr.Count)}
 	body := data[4:]
 	off := 0
-	for i := 0; i < int(hdr.Count); i++ {
+	for i := range hdr.Count {
 		if off+4 > len(body) {
 			return nil, UnmarshalErrorf("rtcp: sdes chunk %d too short for source", i)
 		}
@@ -674,11 +675,11 @@ func unmarshalGoodbye(hdr RTCPHeader, data []byte) (*Goodbye, error) {
 	p := &Goodbye{hdr: hdr}
 	body := data[4:]
 	p.Sources = make([]uint32, hdr.Count)
-	for i := 0; i < int(hdr.Count); i++ {
-		if i*4+4 > len(body) {
+	for i := range hdr.Count {
+		if int(i)*4+4 > len(body) {
 			return nil, UnmarshalErrorf("rtcp: bye truncated at source %d", i)
 		}
-		p.Sources[i] = binary.BigEndian.Uint32(body[i*4:])
+		p.Sources[i] = binary.BigEndian.Uint32(body[int(i)*4:])
 	}
 	off := int(hdr.Count) * 4
 	if off < len(body) {

@@ -23,7 +23,7 @@ func stateIST(t *testing.T, tx *InviteTransaction) ISTState {
 	return tx.state
 }
 
-// Timer J (reliable = 0s)
+// Timer J (reliable = 0s).
 func TestSynctestNISTTimerJReliable(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		req := testRequest(t, proto.SIPMethodOPTIONS, "st-nist-j", true)
@@ -59,7 +59,7 @@ func TestSynctestNISTTimerJReliable(t *testing.T) {
 	})
 }
 
-// Timer J (unreliable = 32s)
+// Timer J (unreliable = 32s).
 func TestSynctestNISTTimerJUnreliable(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		req := testRequest(t, proto.SIPMethodOPTIONS, "st-nist-j-udp", false)
@@ -128,7 +128,7 @@ func TestSynctestISTTimerHFires(t *testing.T) {
 	})
 }
 
-// Timer I (5s for unreliable)
+// Timer I (5s for unreliable).
 func TestSynctestISTTimerIUnreliable(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		req := testRequest(t, proto.SIPMethodINVITE, "st-ist-i-udp", false)
@@ -161,7 +161,7 @@ func TestSynctestISTTimerIUnreliable(t *testing.T) {
 	})
 }
 
-// Timer I (0s for reliable)
+// Timer I (0s for reliable).
 func TestSynctestISTTimerIReliable(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		req := testRequest(t, proto.SIPMethodINVITE, "st-ist-i-tcp", true)

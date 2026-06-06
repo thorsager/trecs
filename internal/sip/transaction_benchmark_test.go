@@ -17,9 +17,9 @@ func BenchmarkNISTRespond(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		b.StopTimer()
-	tx := &NonInviteTransaction{
+		tx := &NonInviteTransaction{
 			branch:    "bench-nist",
 			method:    proto.SIPMethodOPTIONS,
 			transport: trans,
@@ -43,7 +43,7 @@ func BenchmarkNISTRespondProvisionalThenFinal(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		b.StopTimer()
 		tx := &NonInviteTransaction{
 			branch:    "bench-nist-seq",
@@ -70,7 +70,7 @@ func BenchmarkISTRespond2xx(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		b.StopTimer()
 		tx := &InviteTransaction{
 			branch:    "bench-ist-2xx",
@@ -95,7 +95,7 @@ func BenchmarkISTRespond300Plus(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		b.StopTimer()
 		tx := &InviteTransaction{
 			branch:    "bench-ist-300",
@@ -121,7 +121,7 @@ func BenchmarkISTRespondProvisionalThen300(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		b.StopTimer()
 		tx := &InviteTransaction{
 			branch:    "bench-ist-seq",
@@ -150,7 +150,7 @@ func BenchmarkManagerHandleRequestNew(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		b.StopTimer()
 		tm := NewTransactionManager()
 		b.StartTimer()
@@ -172,7 +172,7 @@ func BenchmarkManagerHandleRequestRetransmission(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		tm.HandleRequest(b.Context(), ev, trans, nil)
 	}
 }
@@ -200,7 +200,7 @@ func BenchmarkManagerHandleACK(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		tm.HandleACK(b.Context(), ackEv, trans)
 	}
 }
@@ -222,7 +222,7 @@ func BenchmarkManagerHandleACKNoMatch(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		tm.HandleACK(b.Context(), ackEv, trans)
 	}
 }

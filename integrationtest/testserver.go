@@ -15,15 +15,15 @@ import (
 
 // TestServer wraps a trecs SIP server and registrar for integration tests.
 type TestServer struct {
-	Server   *trecs_sip.Server
-	Reg      *trecs_sip.Registrar
-	Addr     string
-	Domain   string
-	UDPPort  int
-	TCPPort  int
-	ctx      context.Context
-	cancel   context.CancelFunc
-	oldLog   *slog.Logger
+	ctx     context.Context
+	Server  *trecs_sip.Server
+	Reg     *trecs_sip.Registrar
+	cancel  context.CancelFunc
+	oldLog  *slog.Logger
+	Addr    string
+	Domain  string
+	UDPPort int
+	TCPPort int
 }
 
 // StartTestServer creates and starts a trecs server with a registrar for

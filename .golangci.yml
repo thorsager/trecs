@@ -1,0 +1,201 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    # Default linters
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+    # Additional recommended linters
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - canonicalheader
+    - containedctx
+    - contextcheck
+    - copyloopvar
+    - decorder
+    - dogsled
+    - dupl
+    - dupword
+    - durationcheck
+    - err113
+    - errname
+    - errorlint
+    - exptostd
+    - fatcontext
+    - ginkgolinter
+    - gocheckcompilerdirectives
+    - gochecknoglobals
+    - gochecknoinits
+    - gochecksumtype
+    - gocritic
+    - gocyclo
+    - godot
+    - gomoddirectives
+    - goprintffuncname
+    - gosec
+    - intrange
+    - loggercheck
+    - makezero
+    - mirror
+    - misspell
+    - musttag
+    - nakedret
+    - nilerr
+    - nilnesserr
+    - noctx
+    - nolintlint
+    - nosprintfhostport
+    - perfsprint
+    - prealloc
+    - predeclared
+    - promlinter
+    - protogetter
+    - reassign
+    - recvcheck
+    - revive
+    - rowserrcheck
+    - sloglint
+    - spancheck
+    - sqlclosecheck
+    - tagalign
+    - testableexamples
+    - testifylint
+    - tparallel
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - usetesting
+    - wastedassign
+    - whitespace
+    - zerologlint
+
+  settings:
+    errcheck:
+      check-type-assertions: false
+      check-blank: false
+    govet:
+      disable:
+        - fieldalignment
+        - shadow
+        - unusedwrite
+      enable-all: true
+    gocritic:
+      disabled-checks:
+        - exitAfterDefer
+        - whyNoLint
+        - hugeParam
+        - appendAssign
+        - builtinShadow
+        - rangeValCopy
+        - nestingReduce
+        - paramTypeCombine
+        - emptyStringTest
+        - indexAlloc
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+        - opinionated
+    gofumpt:
+      extra-rules: true
+    misspell:
+      locale: US
+    gosec:
+      excludes:
+        - G115 # integer overflow conversion (often false positive)
+    revive:
+      rules:
+        - name: exported
+          arguments:
+            - disableStutteringCheck
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - containedctx
+        path: '.*'
+      - linters:
+          - contextcheck
+        path: '.*'
+      - linters:
+          - err113
+        path: '.*'
+      - linters:
+          - dupword
+        path: '.*'
+      - linters:
+          - dupl
+        path: _test\.go
+      - linters:
+          - gochecknoglobals
+        path: _test\.go
+      - linters:
+          - errcheck
+        path: _test\.go
+      - linters:
+          - intrange
+        path: _test\.go
+      - linters:
+          - noctx
+        path: _test\.go
+      - linters:
+          - perfsprint
+        path: _test\.go
+      - linters:
+          - prealloc
+        path: _test\.go
+      - linters:
+          - predeclared
+        path: internal/sip/uri.go
+      - linters:
+          - recvcheck
+        path: '.*'
+      - linters:
+          - staticcheck
+        path: internal/media/rtpconn.go
+      - linters:
+          - staticcheck
+        path: _test\.go
+      - linters:
+          - testifylint
+        path: _test\.go
+      - linters:
+          - unconvert
+        path: _test\.go
+      - linters:
+          - unparam
+        path: _test\.go
+      - linters:
+          - unused
+        path: _test\.go
+      - linters:
+          - gochecknoglobals
+        path: '.*'
+      - linters:
+          - gochecknoinits
+        path: '.*'
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+    - goimports
+  exclusions:
+    generated: lax
