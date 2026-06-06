@@ -1,0 +1,19 @@
+name: Require Labels
+
+on:
+  pull_request:
+    types: [opened, reopened, labeled, unlabeled, synchronize]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  require-label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: mheap/github-action-required-labels@v5
+        with:
+          mode: minimum
+          count: 1
+          labels: "major, minor, patch"
+          message: "PR must have one of: major, minor, or patch label for release-drafter versioning."
