@@ -11,8 +11,8 @@ permissions:
   pull-requests: read
 
 jobs:
-  name: Version lable
   require-version:
+    name: Version label
     runs-on: ubuntu-latest
     steps:
       - uses: mheap/github-action-required-labels@v5
@@ -25,7 +25,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   require-category:
-    name: Category lable
+    name: Category label
     runs-on: ubuntu-latest
     steps:
       - uses: mheap/github-action-required-labels@v5
