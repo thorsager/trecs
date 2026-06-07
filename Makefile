@@ -2,6 +2,8 @@ BIN    := trecsd
 GO     := go
 LDFLAGS:=
 
+PACKAGES := $(shell go list ./... | grep -v integrationtest)
+
 build: $(BIN)
 
 $(BIN): cmd/trecsd/main.go
@@ -14,7 +16,7 @@ clean:
 	rm -f $(BIN)
 
 test:
-	$(GO) test -count=1 -skip=TestIntegration ./...
+	$(GO) test -count=1  $(PACKAGES)
 
 integrationtest:
 	$(GO) test -count=1 ./integrationtest/...
