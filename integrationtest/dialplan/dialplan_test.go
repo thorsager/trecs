@@ -419,8 +419,8 @@ func getPort(ts *integrationtest.TestServer, transport string) int {
 	return ts.UDPPort
 }
 
-func extractRTPAddr(sdp *proto.SDP) (string, int) {
-	ip := "127.0.0.1"
+func extractRTPAddr(sdp *proto.SDP) (ip string, port int) {
+	ip = "127.0.0.1"
 	if sdp.Connection != nil && sdp.Connection.Address != "" {
 		ip = sdp.Connection.Address
 	}
@@ -447,9 +447,8 @@ func extractToTag(res *sipgo_sip.Response) string {
 func generateTestWav(t *testing.T) string {
 	t.Helper()
 
-	f, err := os.CreateTemp("", "trec_test_*.wav")
+	f, err := os.CreateTemp(t.TempDir(), "trec_test_*.wav")
 	require.NoError(t, err)
-	t.Cleanup(func() { os.Remove(f.Name()) })
 
 	sampleRate := uint32(8000)
 	bitsPerSample := uint16(16)
@@ -474,11 +473,11 @@ func writeWavHeader(f *os.File, sampleRate uint32, bitsPerSample uint16, numChan
 	blockAlign := numChannels * bitsPerSample / 8
 	totalSize := dataSize + 36
 
-	f.Write([]byte("RIFF"))
+	f.WriteString("RIFF")
 	binary.Write(f, binary.LittleEndian, uint32(totalSize))
-	f.Write([]byte("WAVE"))
+	f.WriteString("WAVE")
 
-	f.Write([]byte("fmt "))
+	f.WriteString("fmt ")
 	binary.Write(f, binary.LittleEndian, uint32(16))
 	binary.Write(f, binary.LittleEndian, uint16(1))
 	binary.Write(f, binary.LittleEndian, numChannels)
@@ -487,6 +486,6 @@ func writeWavHeader(f *os.File, sampleRate uint32, bitsPerSample uint16, numChan
 	binary.Write(f, binary.LittleEndian, blockAlign)
 	binary.Write(f, binary.LittleEndian, bitsPerSample)
 
-	f.Write([]byte("data"))
+	f.WriteString("data")
 	binary.Write(f, binary.LittleEndian, dataSize)
 }

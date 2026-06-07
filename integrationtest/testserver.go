@@ -130,11 +130,11 @@ func StartTestServerWithDialplan(t *testing.T, host string, dp dialplan.Dialplan
 }
 
 // WriteTempDialplan creates a temporary dialplan JSON file and returns the path.
-// The caller is responsible for cleanup (typically via t.Cleanup).
+// The file is created in t.TempDir() and is automatically cleaned up.
 func WriteTempDialplan(t *testing.T, extensions map[string]map[string]string) string {
 	t.Helper()
 
-	f, err := os.CreateTemp("", "trec_dialplan_*.json")
+	f, err := os.CreateTemp(t.TempDir(), "trec_dialplan_*.json")
 	if err != nil {
 		t.Fatalf("failed to create temp dialplan: %v", err)
 	}
@@ -152,8 +152,6 @@ func WriteTempDialplan(t *testing.T, extensions map[string]map[string]string) st
 	if _, err := f.Write(data); err != nil {
 		t.Fatalf("failed to write dialplan: %v", err)
 	}
-
-	t.Cleanup(func() { os.Remove(f.Name()) })
 
 	return f.Name()
 }

@@ -65,18 +65,18 @@ func TestIntegration_B2BUA(t *testing.T) {
 }
 
 type bobUAS struct {
-	t           *testing.T
-	ts          *integrationtest.TestServer
-	ctx         context.Context
-	cancel      context.CancelFunc
-	ua          *sipgo.UserAgent
-	client      *sipgo.Client
-	sipConn     *net.UDPConn
-	rtp         *net.UDPConn
-	transport   string
-	port        int
-	sipAddr     *net.UDPAddr
-	ready       chan struct{}
+	t         *testing.T
+	ts        *integrationtest.TestServer
+	ctx       context.Context
+	cancel    context.CancelFunc
+	ua        *sipgo.UserAgent
+	client    *sipgo.Client
+	sipConn   *net.UDPConn
+	rtp       *net.UDPConn
+	transport string
+	port      int
+	sipAddr   *net.UDPAddr
+	ready     chan struct{}
 
 	mu            sync.Mutex
 	callID        string
@@ -332,8 +332,6 @@ func (b *bobUAS) receiveRTP() {
 
 		if packetCount == 1 {
 			serverSSRC = pkt.Header.SSRC
-			prevSeq = pkt.Header.SequenceNumber
-			prevTs = pkt.Header.Timestamp
 
 			if serverSSRC == 0xAAAAAAAA {
 				b.rtpCount <- -1
@@ -661,8 +659,8 @@ func getPort(ts *integrationtest.TestServer, transport string) int {
 	return integrationtest.GetPort(ts, transport)
 }
 
-func extractRTPAddr(sdp *proto.SDP) (string, int) {
-	ip := "127.0.0.1"
+func extractRTPAddr(sdp *proto.SDP) (ip string, port int) {
+	ip = "127.0.0.1"
 	if sdp.Connection != nil && sdp.Connection.Address != "" {
 		ip = sdp.Connection.Address
 	}
