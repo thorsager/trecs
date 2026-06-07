@@ -17,7 +17,7 @@ test:
 	$(GO) test -count=1 -skip=TestIntegration ./...
 
 integrationtest:
-	$(GO) test -count=1 ./integrationtest/
+	$(GO) test -count=1 ./integrationtest/...
 
 bench:
 	$(GO) test ./... -bench=. -benchmem -benchtime=1000ms
