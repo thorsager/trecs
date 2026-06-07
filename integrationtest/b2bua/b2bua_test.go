@@ -115,7 +115,9 @@ func newBobUAS(t *testing.T, ts *integrationtest.TestServer, transport string) *
 		ready:       make(chan struct{}),
 	}
 
-	b.ua, _ = sipgo.NewUA(sipgo.WithUserAgentHostname(ts.Domain))
+	var err error
+	b.ua, err = sipgo.NewUA(sipgo.WithUserAgentHostname(ts.Domain))
+	require.NoError(t, err)
 
 	if transport == "udp" {
 		addr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0}
@@ -127,10 +129,12 @@ func newBobUAS(t *testing.T, ts *integrationtest.TestServer, transport string) *
 		go b.handleSIPUDP()
 		<-b.ready // Wait for handler to be ready
 	} else {
-		b.client, _ = sipgo.NewClient(b.ua, sipgo.WithClientAddr("127.0.0.1:0"))
+		b.client, err = sipgo.NewClient(b.ua, sipgo.WithClientAddr("127.0.0.1:0"))
+		require.NoError(t, err)
 	}
 
-	b.rtp, _ = net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	b.rtp, err = net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	require.NoError(t, err)
 
 	return b
 }

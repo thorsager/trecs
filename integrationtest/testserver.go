@@ -86,7 +86,7 @@ func StartTestServerWithDialplan(t *testing.T, host string, dp dialplan.Dialplan
 		Registrar:      reg,
 		SessionManager: sm,
 		Server:         srv,
-		ServerIP:       "127.0.0.1",
+		ServerIP:       host,
 		ServerAddr:     addr,
 		UACManager:     uacMgr,
 		Dialplan:       dp,
