@@ -608,12 +608,16 @@ func (h *Handler) handleBob200OK(
 
 	bobTo, err := resp.To()
 	if err != nil {
+		rtpConnA.Close()
+		rtpConnB.Close()
 		log.Error("B2BUA: missing To in Bob's 200 OK")
 		return
 	}
 
 	bobSDP, err := proto.UnmarshalSDPBytes(resp.Body)
 	if err != nil {
+		rtpConnA.Close()
+		rtpConnB.Close()
 		log.Error("B2BUA: failed to parse Bob's SDP", "error", err)
 		return
 	}

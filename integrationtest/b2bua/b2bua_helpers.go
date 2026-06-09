@@ -45,6 +45,7 @@ type bobUAS struct {
 	answered         bool
 	rejected         bool
 	byeReceived      chan struct{}
+	byeOnce          sync.Once
 	rtpCount         chan int
 	sipDone          chan struct{}
 	serverRTPPortB   int
@@ -65,6 +66,7 @@ type outboundBobUAS struct {
 
 	mu               sync.Mutex
 	byeReceived      chan struct{}
+	byeOnce          sync.Once
 	rtpCount         chan int
 	serverRTPPortB   int
 	serverRTPPortBCh chan int
@@ -133,7 +135,7 @@ func newOutboundBobUAS(t *testing.T, ts *integrationtest.TestServer) *outboundBo
 			b.t.Logf("Outbound Bob received BYE: %s", req.Short())
 			resp := sipgo_sip.NewResponseFromRequest(req, 200, "OK", nil)
 			_ = tx.Respond(resp)
-			close(b.byeReceived)
+			b.byeOnce.Do(func() { close(b.byeReceived) })
 		}
 	})
 
@@ -297,6 +299,10 @@ func (b *bobUAS) handleTCPConn(conn net.Conn) {
 		_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 		n, err := conn.Read(readBuf)
 		if err != nil {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				continue
+			}
 			return
 		}
 		buf.Write(readBuf[:n])
@@ -440,7 +446,7 @@ func (b *bobUAS) handleIncomingBye(msg string, writeFunc func([]byte) error) {
 	resp := fmt.Sprintf("SIP/2.0 200 OK\r\nCall-ID: %s\r\nFrom: %s\r\nTo: <sip:bob@%s>;tag=%s\r\nCSeq: 2 BYE\r\nContent-Length: 0\r\n\r\n",
 		b.callID, b.extractFromHeader(msg), b.ts.Domain, b.toTag)
 	_ = writeFunc([]byte(resp))
-	close(b.byeReceived)
+	b.byeOnce.Do(func() { close(b.byeReceived) })
 }
 
 func (b *bobUAS) extractFromHeader(msg string) string {
@@ -606,7 +612,6 @@ func sendAliceToBob(t *testing.T, aliceRTP *net.UDPConn, serverRTPAddr *net.UDPA
 
 	select {
 	case count := <-bobRTPCount:
-		require.Positive(t, count, "Bob should receive RTP packets")
 		if count < 0 {
 			switch count {
 			case -1:
@@ -618,7 +623,9 @@ func sendAliceToBob(t *testing.T, aliceRTP *net.UDPConn, serverRTPAddr *net.UDPA
 			case -4:
 				t.Fatal("SSRC inconsistent across packets")
 			}
+			return
 		}
+		require.Positive(t, count, "Bob should receive RTP packets")
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for Bob to receive RTP")
 	}
