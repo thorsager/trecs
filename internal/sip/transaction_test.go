@@ -215,7 +215,7 @@ func TestNISTFinalResponseToCompleted(t *testing.T) {
 	if tx.state != NISTCompleted {
 		t.Fatalf("expected Completed after 200 for reliable transport, got %s", tx.state)
 	}
-	if trans.lastSent().StatusCode() != 200 {
+	if trans.lastSent().StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected sent 200, got %d", trans.lastSent().StatusCode())
 	}
 
@@ -315,7 +315,7 @@ func TestNISTCompletedFromProceeding(t *testing.T) {
 	if tx.state != NISTCompleted {
 		t.Fatalf("expected Completed from Proceeding, got %s", tx.state)
 	}
-	if trans.lastSent().StatusCode() != 200 {
+	if trans.lastSent().StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected sent 200, got %d", trans.lastSent().StatusCode())
 	}
 }
@@ -484,7 +484,7 @@ func TestISTProvisionalToProceeding(t *testing.T) {
 	if tx.state != ISTProceeding {
 		t.Fatalf("expected Proceeding after 180, got %s", tx.state)
 	}
-	if trans.lastSent().StatusCode() != 180 {
+	if trans.lastSent().StatusCode() != proto.SIPStatusRinging {
 		t.Fatalf("expected sent 180, got %d", trans.lastSent().StatusCode())
 	}
 }
@@ -534,7 +534,7 @@ func TestIST2xxTerminatesImmediately(t *testing.T) {
 	if tx.state != ISTTerminated {
 		t.Fatalf("expected Terminated after 2xx, got %s", tx.state)
 	}
-	if trans.lastSent().StatusCode() != 200 {
+	if trans.lastSent().StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected sent 200, got %d", trans.lastSent().StatusCode())
 	}
 
@@ -564,7 +564,7 @@ func TestIST300PlusToCompleted(t *testing.T) {
 	if tx.state != ISTCompleted {
 		t.Fatalf("expected Completed after 404, got %s", tx.state)
 	}
-	if trans.lastSent().StatusCode() != 404 {
+	if trans.lastSent().StatusCode() != proto.SIPStatusNotFound {
 		t.Fatalf("expected sent 404, got %d", trans.lastSent().StatusCode())
 	}
 }

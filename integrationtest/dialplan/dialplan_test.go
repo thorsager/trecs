@@ -114,7 +114,7 @@ func runEchoTest(t *testing.T, ts *integrationtest.TestServer, transport string,
 
 	res, err := client.Do(t.Context(), invite)
 	require.NoError(t, err)
-	require.Equal(t, 200, res.StatusCode, "expected 200 OK for echo INVITE")
+	require.Equal(t, proto.SIPStatusOK, res.StatusCode, "expected 200 OK for echo INVITE")
 
 	serverTag := extractToTag(res)
 	require.NotEmpty(t, serverTag, "To header should have server tag")
@@ -160,7 +160,7 @@ func runEchoTest(t *testing.T, ts *integrationtest.TestServer, transport string,
 	}
 	byeRes, err := client.Do(t.Context(), bye)
 	require.NoError(t, err)
-	require.Equal(t, 200, byeRes.StatusCode, "BYE should get 200 OK")
+	require.Equal(t, proto.SIPStatusOK, byeRes.StatusCode, "BYE should get 200 OK")
 
 	client.Close()
 	ua.Close()
@@ -190,7 +190,7 @@ func runPlaybackTest(t *testing.T, ts *integrationtest.TestServer, transport str
 
 	res, err := client.Do(t.Context(), invite)
 	require.NoError(t, err)
-	require.Equal(t, 200, res.StatusCode, "expected 200 OK for playback INVITE")
+	require.Equal(t, proto.SIPStatusOK, res.StatusCode, "expected 200 OK for playback INVITE")
 
 	serverTag := extractToTag(res)
 	require.NotEmpty(t, serverTag, "To header should have server tag")
@@ -241,7 +241,7 @@ func runPlaybackTest(t *testing.T, ts *integrationtest.TestServer, transport str
 	}
 	byeRes, err := client.Do(t.Context(), bye)
 	require.NoError(t, err)
-	require.Equal(t, 200, byeRes.StatusCode, "BYE should get 200 OK")
+	require.Equal(t, proto.SIPStatusOK, byeRes.StatusCode, "BYE should get 200 OK")
 
 	client.Close()
 	ua.Close()

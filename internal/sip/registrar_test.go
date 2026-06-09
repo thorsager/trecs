@@ -61,7 +61,7 @@ func TestRegistrar_RegisterSingleContact(t *testing.T) {
 	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
-	if res == nil || res.StatusCode() != 200 {
+	if res == nil || res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200 OK, got %v", statusOrNil(res))
 	}
 
@@ -105,7 +105,7 @@ func TestRegistrar_QueryBindings(t *testing.T) {
 	reg.HandleRegister(t.Context(), query, tx)
 
 	res := tx.last()
-	if res == nil || res.StatusCode() != 200 {
+	if res == nil || res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200 OK, got %v", statusOrNil(res))
 	}
 
@@ -143,7 +143,7 @@ func TestRegistrar_Unregister(t *testing.T) {
 	reg.HandleRegister(t.Context(), unreg, tx)
 
 	res := tx.last()
-	if res == nil || res.StatusCode() != 200 {
+	if res == nil || res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200 OK, got %v", statusOrNil(res))
 	}
 
@@ -188,7 +188,7 @@ func TestRegistrar_UnregisterAll(t *testing.T) {
 	reg.HandleRegister(t.Context(), unreg, tx)
 
 	res := tx.last()
-	if res == nil || res.StatusCode() != 200 {
+	if res == nil || res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200 OK, got %v", statusOrNil(res))
 	}
 	if len(res.Headers.Get("Contact")) != 0 {
@@ -211,7 +211,7 @@ func TestRegistrar_StarWithoutExpiresZero(t *testing.T) {
 
 	reg.HandleRegister(t.Context(), req, tx)
 
-	if tx.last().StatusCode() != 400 {
+	if tx.last().StatusCode() != proto.SIPStatusBadRequest {
 		t.Fatalf("expected 400 for star without Expires: 0, got %d", tx.last().StatusCode())
 	}
 }
@@ -229,7 +229,7 @@ func TestRegistrar_CSeqMonotonic(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
 		"Content-Length: 0\r\n\r\n"), tx1)
 
-	if tx1.last().StatusCode() != 200 {
+	if tx1.last().StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200 for first REGISTER, got %d", tx1.last().StatusCode())
 	}
 
@@ -243,7 +243,7 @@ func TestRegistrar_CSeqMonotonic(t *testing.T) {
 		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
 		"Content-Length: 0\r\n\r\n"), tx2)
 
-	if tx2.last().StatusCode() != 400 {
+	if tx2.last().StatusCode() != proto.SIPStatusBadRequest {
 		t.Fatalf("expected 400 for repeated CSeq, got %d", tx2.last().StatusCode())
 	}
 }
@@ -264,7 +264,7 @@ func TestRegistrar_DefaultExpiry(t *testing.T) {
 	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
-	if res.StatusCode() != 200 {
+	if res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200, got %d", res.StatusCode())
 	}
 	if !strings.Contains(res.Headers.GetFirst("Contact"), "expires=3600") {
@@ -289,7 +289,7 @@ func TestRegistrar_MultipleContacts(t *testing.T) {
 	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
-	if res.StatusCode() != 200 {
+	if res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200, got %d", res.StatusCode())
 	}
 	contacts := res.Headers.Get("Contact")
@@ -326,7 +326,7 @@ func TestRegistrar_RefreshBinding(t *testing.T) {
 		"Content-Length: 0\r\n\r\n"), tx)
 
 	res := tx.last()
-	if res.StatusCode() != 200 {
+	if res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200, got %d", res.StatusCode())
 	}
 	if !strings.Contains(res.Headers.GetFirst("Contact"), "expires=7200") {
@@ -351,7 +351,7 @@ func TestRegistrar_BadRequestURIMismatch(t *testing.T) {
 
 	reg.HandleRegister(t.Context(), req, tx)
 
-	if tx.last().StatusCode() != 400 {
+	if tx.last().StatusCode() != proto.SIPStatusBadRequest {
 		t.Fatalf("expected 400 for Request-URI domain mismatch, got %d", tx.last().StatusCode())
 	}
 }
@@ -374,7 +374,7 @@ func TestRegistrar_RequestURIWithPort(t *testing.T) {
 
 	reg.HandleRegister(t.Context(), req, tx)
 
-	if tx.last().StatusCode() != 200 {
+	if tx.last().StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200 for Request-URI with port matching To host, got %d", tx.last().StatusCode())
 	}
 }
@@ -396,7 +396,7 @@ func TestRegistrar_RequestURIDomainOnly(t *testing.T) {
 
 	reg.HandleRegister(t.Context(), req, tx)
 
-	if tx.last().StatusCode() != 200 {
+	if tx.last().StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200 for domain-only Request-URI, got %d", tx.last().StatusCode())
 	}
 }
@@ -415,7 +415,7 @@ func TestRegistrar_MissingCallID(t *testing.T) {
 
 	reg.HandleRegister(t.Context(), req, tx)
 
-	if tx.last().StatusCode() != 400 {
+	if tx.last().StatusCode() != proto.SIPStatusBadRequest {
 		t.Fatalf("expected 400 for missing Call-ID, got %d", tx.last().StatusCode())
 	}
 }
@@ -446,7 +446,7 @@ func TestRegistrar_Sweep(t *testing.T) {
 		"Content-Length: 0\r\n\r\n"), tx)
 
 	res := tx.last()
-	if res.StatusCode() != 200 {
+	if res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200, got %d", res.StatusCode())
 	}
 	if len(res.Headers.Get("Contact")) != 0 {
@@ -477,7 +477,7 @@ func TestRegistrar_GlobalExpiresHeader(t *testing.T) {
 	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
-	if res.StatusCode() != 200 {
+	if res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200, got %d", res.StatusCode())
 	}
 	if !strings.Contains(res.Headers.GetFirst("Contact"), "expires=1800") {
@@ -508,7 +508,7 @@ func TestRegistrar_PerContactOverridesGlobal(t *testing.T) {
 	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
-	if res.StatusCode() != 200 {
+	if res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200, got %d", res.StatusCode())
 	}
 	if !strings.Contains(res.Headers.GetFirst("Contact"), "expires=3600") {
@@ -535,7 +535,7 @@ func TestRegistrar_CommaSeparatedContacts(t *testing.T) {
 	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
-	if res.StatusCode() != 200 {
+	if res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200, got %d", res.StatusCode())
 	}
 	contacts := res.Headers.Get("Contact")
@@ -563,7 +563,7 @@ func TestRegistrar_AddrSpecContact(t *testing.T) {
 	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
-	if res.StatusCode() != 200 {
+	if res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200, got %d", res.StatusCode())
 	}
 	contacts := res.Headers.Get("Contact")
@@ -596,7 +596,7 @@ func TestRegistrar_ContactURIParamsPreserved(t *testing.T) {
 	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
-	if res.StatusCode() != 200 {
+	if res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200, got %d", res.StatusCode())
 	}
 	contact := res.Headers.GetFirst("Contact")
@@ -635,7 +635,7 @@ func TestRegistrar_UnregisterNonExistent(t *testing.T) {
 	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
-	if res.StatusCode() != 200 {
+	if res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200, got %d", res.StatusCode())
 	}
 	contacts := res.Headers.Get("Contact")
@@ -660,7 +660,7 @@ func TestRegistrar_IndependentCSeqPerCallID(t *testing.T) {
 		"CSeq: 1 REGISTER\r\n"+
 		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
 		"Content-Length: 0\r\n\r\n"), tx1)
-	if tx1.last().StatusCode() != 200 {
+	if tx1.last().StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("call-a CSeq 1: expected 200, got %d", tx1.last().StatusCode())
 	}
 
@@ -675,7 +675,7 @@ func TestRegistrar_IndependentCSeqPerCallID(t *testing.T) {
 		"CSeq: 1 REGISTER\r\n"+
 		"Contact: <sip:alice@10.0.0.1>;expires=7200\r\n"+
 		"Content-Length: 0\r\n\r\n"), tx2)
-	if tx2.last().StatusCode() != 200 {
+	if tx2.last().StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("call-b CSeq 1: expected 200, got %d", tx2.last().StatusCode())
 	}
 
@@ -688,7 +688,7 @@ func TestRegistrar_IndependentCSeqPerCallID(t *testing.T) {
 		"Call-ID: call-c\r\n"+
 		"CSeq: 1 REGISTER\r\n"+
 		"Content-Length: 0\r\n\r\n"), tx3)
-	if tx3.last().StatusCode() != 200 {
+	if tx3.last().StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("query: expected 200, got %d", tx3.last().StatusCode())
 	}
 	if len(tx3.last().Headers.Get("Contact")) != 2 {
@@ -708,7 +708,7 @@ func TestRegistrar_IndependentCSeqPerCallID(t *testing.T) {
 		"CSeq: 1 REGISTER\r\n"+
 		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
 		"Content-Length: 0\r\n\r\n"), tx4)
-	if tx4.last().StatusCode() != 400 {
+	if tx4.last().StatusCode() != proto.SIPStatusBadRequest {
 		t.Fatalf("call-a CSeq 1 replay: expected 400, got %d", tx4.last().StatusCode())
 	}
 
@@ -722,7 +722,7 @@ func TestRegistrar_IndependentCSeqPerCallID(t *testing.T) {
 		"CSeq: 5 REGISTER\r\n"+
 		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n"+
 		"Content-Length: 0\r\n\r\n"), tx5)
-	if tx5.last().StatusCode() != 200 {
+	if tx5.last().StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("call-a CSeq 5: expected 200, got %d", tx5.last().StatusCode())
 	}
 }
@@ -830,7 +830,7 @@ func TestRegistrar_MinimumExpiresInResponse(t *testing.T) {
 		"Content-Length: 0\r\n\r\n"), tx)
 
 	res := tx.last()
-	if res.StatusCode() != 200 {
+	if res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200, got %d", res.StatusCode())
 	}
 	contacts := res.Headers.Get("Contact")
@@ -874,7 +874,7 @@ func TestRegistrar_ExpiresZeroWithoutStarIsQuery(t *testing.T) {
 	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
-	if res.StatusCode() != 200 {
+	if res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200, got %d", res.StatusCode())
 	}
 	contacts := res.Headers.Get("Contact")
@@ -910,7 +910,7 @@ func TestRegistrar_PartialUnregisterPreservesOthers(t *testing.T) {
 		"Content-Length: 0\r\n\r\n"), tx)
 
 	res := tx.last()
-	if res.StatusCode() != 200 {
+	if res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200, got %d", res.StatusCode())
 	}
 	contacts := res.Headers.Get("Contact")
@@ -1006,7 +1006,7 @@ func TestRegistrar_ContactWithOB(t *testing.T) {
 	}
 
 	res := tx.last()
-	if res.StatusCode() != 200 {
+	if res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200, got %d", res.StatusCode())
 	}
 	contact := res.Headers.GetFirst("Contact")
@@ -1180,7 +1180,7 @@ func TestRegistrar_FlowTimer_TCP(t *testing.T) {
 	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
-	if res == nil || res.StatusCode() != 200 {
+	if res == nil || res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200 OK, got %v", statusOrNil(res))
 	}
 	if res.Headers.GetFirst("Require") != "outbound" {
@@ -1208,7 +1208,7 @@ func TestRegistrar_FlowTimer_UDP(t *testing.T) {
 	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
-	if res == nil || res.StatusCode() != 200 {
+	if res == nil || res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200 OK, got %v", statusOrNil(res))
 	}
 	if res.Headers.GetFirst("Require") != "outbound" {
@@ -1235,7 +1235,7 @@ func TestRegistrar_FlowTimer_NoSupportedOutbound(t *testing.T) {
 	reg.HandleRegister(t.Context(), req, tx)
 
 	res := tx.last()
-	if res == nil || res.StatusCode() != 200 {
+	if res == nil || res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200 OK, got %v", statusOrNil(res))
 	}
 	if res.Headers.GetFirst("Require") == "outbound" {
