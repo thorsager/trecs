@@ -31,7 +31,7 @@ func TestUAC_CallingToProceeding(t *testing.T) {
 	}
 
 	resp := <-uac.Responses
-	if resp.StatusCode() != 100 {
+	if resp.StatusCode() != proto.SIPStatusTrying {
 		t.Fatalf("expected 100, got %d", resp.StatusCode())
 	}
 }
@@ -53,7 +53,7 @@ func TestUAC_CallingToCompleted2xx(t *testing.T) {
 	}
 
 	resp := <-uac.Responses
-	if resp.StatusCode() != 200 {
+	if resp.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode())
 	}
 }
@@ -75,7 +75,7 @@ func TestUAC_CallingToCompleted3xx(t *testing.T) {
 	}
 
 	resp := <-uac.Responses
-	if resp.StatusCode() != 486 {
+	if resp.StatusCode() != proto.SIPStatusBusyHere {
 		t.Fatalf("expected 486, got %d", resp.StatusCode())
 	}
 }
@@ -103,7 +103,7 @@ func TestUAC_ProceedingToCompleted2xx(t *testing.T) {
 	}
 
 	resp := <-uac.Responses
-	if resp.StatusCode() != 200 {
+	if resp.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode())
 	}
 }
@@ -269,7 +269,7 @@ func TestUACManager_BranchRouting(t *testing.T) {
 
 	select {
 	case r := <-uac1.Responses:
-		if r.StatusCode() != 200 {
+		if r.StatusCode() != proto.SIPStatusOK {
 			t.Fatalf("uac1 expected 200, got %d", r.StatusCode())
 		}
 	case <-time.After(time.Second):
@@ -278,7 +278,7 @@ func TestUACManager_BranchRouting(t *testing.T) {
 
 	select {
 	case r := <-uac2.Responses:
-		if r.StatusCode() != 200 {
+		if r.StatusCode() != proto.SIPStatusOK {
 			t.Fatalf("uac2 expected 200, got %d", r.StatusCode())
 		}
 	case <-time.After(time.Second):

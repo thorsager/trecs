@@ -13,30 +13,6 @@ import (
 	"sync"
 )
 
-const (
-	SIPMethodINVITE   SIPMethod = "INVITE"
-	SIPMethodACK      SIPMethod = "ACK"
-	SIPMethodBYE      SIPMethod = "BYE"
-	SIPMethodCANCEL   SIPMethod = "CANCEL"
-	SIPMethodREGISTER SIPMethod = "REGISTER"
-	SIPMethodOPTIONS  SIPMethod = "OPTIONS"
-
-	// Extension methods.
-	SIPMethodPRACK     SIPMethod = "PRACK"     // RFC 3262
-	SIPMethodSUBSCRIBE SIPMethod = "SUBSCRIBE" // RFC 6665
-	SIPMethodNOTIFY    SIPMethod = "NOTIFY"    // RFC 6665
-	SIPMethodPUBLISH   SIPMethod = "PUBLISH"   // RFC 3903
-	SIPMethodINFO      SIPMethod = "INFO"      // RFC 6086
-	SIPMethodREFER     SIPMethod = "REFER"     // RFC 3515
-	SIPMethodMESSAGE   SIPMethod = "MESSAGE"   // RFC 3428
-	SIPMethodUPDATE    SIPMethod = "UPDATE"    // RFC 3311
-
-	// SIPIndicator is the prefix used in SIP version strings (e.g. "SIP/2.0").
-	SIPIndicator = "SIP/"
-	// SIPVersion is the SIP protocol version string used in start lines.
-	SIPVersion = SIPIndicator + "2.0"
-)
-
 var (
 	ErrMissingRequiredHeader = errors.New("sip: missing required header")
 

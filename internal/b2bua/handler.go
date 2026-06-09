@@ -534,10 +534,9 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context,
 
 	log.Debug("B2BUA: response loop started")
 
-	defer rtpConnA.Close()
-	defer rtpConnB.Close()
-
 	if err := uac.Send(bobInvite); err != nil {
+		rtpConnA.Close()
+		rtpConnB.Close()
 		log.Error("B2BUA: failed to send INVITE to Bob", "error", err)
 		tx.Respond(proto.NewResponse(req, 502, "Bad Gateway"))
 		return
@@ -568,6 +567,8 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context,
 			}
 
 			if sc >= 300 {
+				rtpConnA.Close()
+				rtpConnB.Close()
 				log.Info("B2BUA: Bob error response, forwarding to Alice", "statusCode", sc, "reason", resp.Status())
 				errResp := proto.NewResponse(req, sc, resp.Status())
 				tx.Respond(errResp)
@@ -575,6 +576,8 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context,
 			}
 
 		case err := <-uac.Errors:
+			rtpConnA.Close()
+			rtpConnB.Close()
 			log.Error("B2BUA: Bob INVITE timed out", "error", err)
 			tx.Respond(proto.NewResponse(req, 408, "Request Timeout"))
 			return

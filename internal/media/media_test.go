@@ -785,7 +785,7 @@ func readNon100(t *testing.T, conn *net.UDPConn, timeout time.Duration) *proto.S
 	for time.Now().Before(deadline) {
 		remaining := time.Until(deadline)
 		msg := readSIP(t, conn, remaining)
-		if msg.StatusCode() != 100 {
+		if msg.StatusCode() != proto.SIPStatusTrying {
 			return msg
 		}
 	}
@@ -1119,7 +1119,7 @@ func TestEchoEarlyOffer(t *testing.T) {
 
 	// Read 200 OK
 	res := readNon100(t, clientSIP, 5*time.Second)
-	require.Equal(t, 200, res.StatusCode(), "expected 200 OK, got %d %s", res.StatusCode(), res.Status())
+	require.Equal(t, proto.SIPStatusOK, res.StatusCode(), "expected 200 OK, got %d %s", res.StatusCode(), res.Status())
 
 	// Parse server tag from To header
 	toAddr, err := res.To()
@@ -1181,7 +1181,7 @@ func TestEchoEarlyOffer(t *testing.T) {
 
 	// Read 200 OK for BYE
 	byeRes := readNon100(t, clientSIP, 5*time.Second)
-	require.Equal(t, 200, byeRes.StatusCode(), "BYE should get 200 OK")
+	require.Equal(t, proto.SIPStatusOK, byeRes.StatusCode(), "BYE should get 200 OK")
 }
 
 // ---- Delayed offer integration test ----
@@ -1213,7 +1213,7 @@ func TestEchoDelayedOffer(t *testing.T) {
 
 	// Read 200 OK with SDP offer
 	res := readNon100(t, clientSIP, 5*time.Second)
-	require.Equal(t, 200, res.StatusCode(), "expected 200 OK, got %d %s", res.StatusCode(), res.Status())
+	require.Equal(t, proto.SIPStatusOK, res.StatusCode(), "expected 200 OK, got %d %s", res.StatusCode(), res.Status())
 
 	// Parse server tag and SDP offer
 	toAddr, err := res.To()
@@ -1278,7 +1278,7 @@ func TestEchoDelayedOffer(t *testing.T) {
 
 	// Read 200 OK for BYE
 	byeRes := readNon100(t, clientSIP, 5*time.Second)
-	require.Equal(t, 200, byeRes.StatusCode(), "BYE should get 200 OK")
+	require.Equal(t, proto.SIPStatusOK, byeRes.StatusCode(), "BYE should get 200 OK")
 }
 
 func rawSIP(t *testing.T, raw string) *proto.SIPMessage {

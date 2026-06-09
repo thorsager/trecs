@@ -64,7 +64,7 @@ func TestServerOPTIONSOverUDP(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unmarshal: %v", err)
 		}
-		if msg.StatusCode() == 200 {
+		if msg.StatusCode() == proto.SIPStatusOK {
 			gotOK = true
 			allow := msg.Headers.GetFirst("Allow")
 			if allow == "" {
@@ -120,7 +120,7 @@ func TestUnsupportedMethod(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	if msg.StatusCode() != 501 {
+	if msg.StatusCode() != proto.SIPStatusNotImplemented {
 		t.Fatalf("expected 501 Not Implemented, got %d", msg.StatusCode())
 	}
 }
@@ -172,7 +172,7 @@ func TestServerRoute_MaxForwardsZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if msg.StatusCode() != 483 {
+	if msg.StatusCode() != proto.SIPStatusTooManyHops {
 		t.Fatalf("expected 483 Too Many Hops, got %d", msg.StatusCode())
 	}
 
