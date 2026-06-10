@@ -156,6 +156,68 @@ func WriteTempDialplan(t *testing.T, extensions map[string]map[string]string) st
 	return f.Name()
 }
 
+// TestUserEntry defines a test user for NewTestPasswordStore.
+type TestUserEntry struct {
+	Username string
+	Password string
+	AORs     []string
+}
+
+// TestUser is a convenience constructor for TestUserEntry.
+func TestUser(username, password string, aors ...string) TestUserEntry {
+	return TestUserEntry{
+		Username: username,
+		Password: password,
+		AORs:     aors,
+	}
+}
+
+// testPasswordStore is an in-memory trecs_sip.PasswordStore for tests.
+type testPasswordStore struct {
+	realm     string
+	algorithm string
+	ha1s      map[string]string
+	aors      map[string][]string
+}
+
+func (s *testPasswordStore) Realm() string                     { return s.realm }
+func (s *testPasswordStore) Algorithm() string                  { return s.algorithm }
+func (s *testPasswordStore) HA1(username string) (string, bool) {
+	h, ok := s.ha1s[username]
+	return h, ok
+}
+func (s *testPasswordStore) AORs(username string) ([]string, bool) {
+	a, ok := s.aors[username]
+	return a, ok
+}
+
+// NewTestPasswordStore creates an in-memory PasswordStore for testing.
+// HA1 hashes are computed automatically from the given plaintext passwords.
+func NewTestPasswordStore(realm, algorithm string, users ...TestUserEntry) trecs_sip.PasswordStore {
+	s := &testPasswordStore{
+		realm:     realm,
+		algorithm: algorithm,
+		ha1s:      make(map[string]string, len(users)),
+		aors:      make(map[string][]string, len(users)),
+	}
+	for _, u := range users {
+		s.ha1s[u.Username] = trecs_sip.ComputeHA1(u.Username, realm, u.Password, algorithm)
+		s.aors[u.Username] = u.AORs
+	}
+	return s
+}
+
+// StartTestServerWithAuthUsers creates a test server with Digest authentication for
+// REGISTER requests, using the given PasswordStore.
+func StartTestServerWithAuthUsers(t *testing.T, host string, store trecs_sip.PasswordStore) *TestServer {
+	t.Helper()
+
+	ts := StartTestServerWithDialplan(t, host, nil)
+	ts.Reg.SetPasswordStore(store)
+
+	return ts
+}
+
 // GetPort returns the appropriate port for the given transport.
 func GetPort(ts *TestServer, transport string) int {
 	if transport == "tcp" {

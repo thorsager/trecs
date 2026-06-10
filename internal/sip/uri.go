@@ -73,6 +73,14 @@ func uriHostname(uri string) string {
 	return h
 }
 
+// StripURIParams removes URI parameters (everything after the first ';') from a SIP URI.
+func StripURIParams(uri string) string {
+	if semi := strings.IndexByte(uri, ';'); semi >= 0 {
+		return uri[:semi]
+	}
+	return uri
+}
+
 // extractSIPURI parses a Contact URI into host, port, and transport.
 func extractSIPURI(contactURI string) (host string, port int, transport string) {
 	transport = "UDP"

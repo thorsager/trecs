@@ -21,6 +21,7 @@ var (
 	flagRTPMin    int
 	flagRTPMax    int
 	flagDialplan  string
+	flagAuthUsers string
 	flagLogLevel  string
 	flagLogFormat string
 )
@@ -32,6 +33,7 @@ func init() {
 	flag.IntVar(&flagRTPMin, "rtp-min", 0, "RTP port range start (0 = OS-assigned)")
 	flag.IntVar(&flagRTPMax, "rtp-max", 0, "RTP port range end (0 = OS-assigned)")
 	flag.StringVar(&flagDialplan, "dialplan", "", "Path to dialplan JSON file")
+	flag.StringVar(&flagAuthUsers, "auth-users", "", "Path to users JSON file for digest authentication")
 	flag.StringVar(&flagLogLevel, "log-level", "info", "Log level (trace, debug, info, warn, error)")
 	flag.StringVar(&flagLogFormat, "log-format", "text", "Log format (text, json, or compact)")
 	flag.Parse()
@@ -100,6 +102,17 @@ func main() {
 			os.Exit(1)
 		}
 		slog.Info("Dialplan loaded", "path", flagDialplan)
+	}
+
+	if flagAuthUsers != "" {
+		store, err := sip.NewJSONPasswordStore(flagAuthUsers)
+		if err != nil {
+			slog.Error("Failed to load auth users", "error", err)
+			stop()
+			os.Exit(1)
+		}
+		reg.SetPasswordStore(store)
+		slog.Info("Digest authentication enabled", "realm", store.Realm(), "algorithm", store.Algorithm())
 	}
 
 	h := b2bua.NewHandler(b2bua.Config{

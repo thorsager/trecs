@@ -214,7 +214,7 @@ func buildUnregisterAllRequest(domain string, port int) *sipgo_sip.Request {
 func assertRegisterOK(t *testing.T, res *sipgo_sip.Response, ts *integrationtest.TestServer) {
 	t.Helper()
 
-	assert.Equal(t, 200, res.StatusCode, "expected 200 OK (no auth challenge)")
+	assert.Equal(t, 200, res.StatusCode, "expected 200 OK")
 
 	assert.Nil(t, res.GetHeader("WWW-Authenticate"),
 		"should not have WWW-Authenticate header when no auth is required")

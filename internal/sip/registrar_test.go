@@ -1246,6 +1246,291 @@ func TestRegistrar_FlowTimer_NoSupportedOutbound(t *testing.T) {
 	}
 }
 
+// ── Auth test helpers ──
+
+type testUserEntry struct {
+	ha1  string
+	aors []string
+}
+
+type testPasswordStore struct {
+	realm     string
+	algorithm string
+	users     map[string]testUserEntry
+}
+
+func (s *testPasswordStore) Realm() string               { return s.realm }
+func (s *testPasswordStore) Algorithm() string            { return s.algorithm }
+func (s *testPasswordStore) HA1(username string) (string, bool) {
+	u, ok := s.users[username]
+	if !ok {
+		return "", false
+	}
+	return u.ha1, true
+}
+func (s *testPasswordStore) AORs(username string) ([]string, bool) {
+	u, ok := s.users[username]
+	if !ok {
+		return nil, false
+	}
+	return u.aors, true
+}
+
+func newTestAuthStore(aliceSecret string) *testPasswordStore {
+	return &testPasswordStore{
+		realm:     "example.com",
+		algorithm: "SHA-256",
+		users: map[string]testUserEntry{
+			"alice": {
+				ha1:  ComputeHA1("alice", "example.com", aliceSecret, "SHA-256"),
+				aors: []string{"sip:alice@example.com"},
+			},
+		},
+	}
+}
+
+func buildAuthHeader(nonce, username, ha1, realm, algorithm, cnonce, uri string, nc uint64) string {
+	resp := ComputeDigestResponse(ha1, nonce, "00000001", cnonce, "auth", "REGISTER", uri, algorithm)
+	return "Digest username=\"" + username + "\", realm=\"" + realm +
+		"\", nonce=\"" + nonce +
+		"\", uri=\"" + uri +
+		"\", response=\"" + resp +
+		"\", algorithm=" + algorithm +
+		", cnonce=\"" + cnonce +
+		"\", qop=auth, nc=00000001"
+}
+
+// ── Auth tests ──
+
+func TestRegistrar_Auth_NoAuthHeader(t *testing.T) {
+	reg := NewRegistrar()
+	store := newTestAuthStore("secret")
+	reg.SetPasswordStore(store)
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(t.Context(), req, tx)
+
+	res := tx.last()
+	if res == nil || res.StatusCode() != proto.SIPStatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized, got %v", statusOrNil(res))
+	}
+	wwwAuth := res.Headers.GetFirst("WWW-Authenticate")
+	if wwwAuth == "" {
+		t.Fatal("missing WWW-Authenticate header in 401")
+	}
+	if !strings.Contains(wwwAuth, "realm=\"example.com\"") {
+		t.Fatalf("WWW-Authenticate missing realm: %q", wwwAuth)
+	}
+	if !strings.Contains(wwwAuth, "nonce=") {
+		t.Fatalf("WWW-Authenticate missing nonce: %q", wwwAuth)
+	}
+	if !strings.Contains(wwwAuth, "algorithm=SHA-256") {
+		t.Fatalf("WWW-Authenticate missing algorithm: %q", wwwAuth)
+	}
+	if !strings.Contains(wwwAuth, "qop=\"auth\"") {
+		t.Fatalf("WWW-Authenticate missing qop: %q", wwwAuth)
+	}
+}
+
+func TestRegistrar_Auth_ValidCredentials(t *testing.T) {
+	reg := NewRegistrar()
+	store := newTestAuthStore("secret")
+	reg.SetPasswordStore(store)
+	tx := &mockTx{}
+
+	nonce := reg.nonces.NewNonce()
+	cnonce := "test-cnonce"
+	authHeader := buildAuthHeader(nonce, "alice", store.users["alice"].ha1, "example.com", "SHA-256", cnonce, "sip:alice@example.com", 1)
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Authorization: " + authHeader + "\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(t.Context(), req, tx)
+
+	res := tx.last()
+	if res == nil || res.StatusCode() != proto.SIPStatusOK {
+		t.Fatalf("expected 200 OK, got %v", statusOrNil(res))
+	}
+
+	bindings := reg.GetBindings("sip:alice@example.com")
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 binding, got %d", len(bindings))
+	}
+	if bindings[0].ContactURI != "sip:alice@192.168.1.5" {
+		t.Fatalf("expected contact sip:alice@192.168.1.5, got %q", bindings[0].ContactURI)
+	}
+}
+
+func TestRegistrar_Auth_WrongPassword(t *testing.T) {
+	reg := NewRegistrar()
+	store := newTestAuthStore("secret")
+	reg.SetPasswordStore(store)
+	tx := &mockTx{}
+
+	nonce := reg.nonces.NewNonce()
+	wrongHa1 := ComputeHA1("alice", "example.com", "wrong", "SHA-256")
+	cnonce := "test-cnonce"
+	authHeader := buildAuthHeader(nonce, "alice", wrongHa1, "example.com", "SHA-256", cnonce, "sip:alice@example.com", 1)
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Authorization: " + authHeader + "\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(t.Context(), req, tx)
+
+	res := tx.last()
+	if res == nil || res.StatusCode() != proto.SIPStatusForbidden {
+		t.Fatalf("expected 403 Forbidden, got %v", statusOrNil(res))
+	}
+
+	bindings := reg.GetBindings("sip:alice@example.com")
+	if len(bindings) != 0 {
+		t.Fatal("expected no bindings after failed auth")
+	}
+}
+
+func TestRegistrar_Auth_WrongAOR(t *testing.T) {
+	reg := NewRegistrar()
+	store := newTestAuthStore("secret")
+	reg.SetPasswordStore(store)
+	tx := &mockTx{}
+
+	nonce := reg.nonces.NewNonce()
+	cnonce := "test-cnonce"
+	authHeader := buildAuthHeader(nonce, "alice", store.users["alice"].ha1, "example.com", "SHA-256", cnonce, "sip:alice@example.com", 1)
+
+	// Register with a different AOR (bob instead of alice)
+	req := sipMessage("REGISTER sip:bob@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:bob@example.com>;tag=abc\r\n" +
+		"To: <sip:bob@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Authorization: " + authHeader + "\r\n" +
+		"Contact: <sip:bob@192.168.1.6>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(t.Context(), req, tx)
+
+	res := tx.last()
+	if res == nil || res.StatusCode() != proto.SIPStatusForbidden {
+		t.Fatalf("expected 403 Forbidden, got %v", statusOrNil(res))
+	}
+}
+
+func TestRegistrar_Auth_UnknownNonce(t *testing.T) {
+	reg := NewRegistrar()
+	store := newTestAuthStore("secret")
+	reg.SetPasswordStore(store)
+	tx := &mockTx{}
+
+	cnonce := "test-cnonce"
+	// Use a nonce that was never issued
+	authHeader := buildAuthHeader("unknown-nonce", "alice", store.users["alice"].ha1, "example.com", "SHA-256", cnonce, "sip:alice@example.com", 1)
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Authorization: " + authHeader + "\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(t.Context(), req, tx)
+
+	res := tx.last()
+	if res == nil || res.StatusCode() != proto.SIPStatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized, got %v", statusOrNil(res))
+	}
+	wwwAuth := res.Headers.GetFirst("WWW-Authenticate")
+	if strings.Contains(wwwAuth, "stale=TRUE") {
+		t.Fatalf("expected stale=FALSE for unknown nonce, got %q", wwwAuth)
+	}
+}
+
+func TestRegistrar_Auth_ExpiredNonce(t *testing.T) {
+	reg := NewRegistrar()
+	store := newTestAuthStore("secret")
+	reg.SetPasswordStore(store)
+	tx := &mockTx{}
+
+	nonce := reg.nonces.NewNonce()
+
+	// Set expiry to the past to simulate expiration without sleeping.
+	reg.nonces.mu.Lock()
+	reg.nonces.entries[nonce].expires = time.Now().Add(-1 * time.Second)
+	reg.nonces.mu.Unlock()
+
+	cnonce := "test-cnonce"
+	authHeader := buildAuthHeader(nonce, "alice", store.users["alice"].ha1, "example.com", "SHA-256", cnonce, "sip:alice@example.com", 1)
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Authorization: " + authHeader + "\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(t.Context(), req, tx)
+
+	res := tx.last()
+	if res == nil || res.StatusCode() != proto.SIPStatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized, got %v", statusOrNil(res))
+	}
+	wwwAuth := res.Headers.GetFirst("WWW-Authenticate")
+	if !strings.Contains(wwwAuth, "stale=TRUE") {
+		t.Fatalf("expected stale=TRUE for expired nonce, got %q", wwwAuth)
+	}
+}
+
+func TestRegistrar_Auth_NoAuthWhenNotConfigured(t *testing.T) {
+	reg := NewRegistrar()
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-1\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(t.Context(), req, tx)
+
+	res := tx.last()
+	if res == nil || res.StatusCode() != proto.SIPStatusOK {
+		t.Fatalf("expected 200 OK when no auth configured, got %v", statusOrNil(res))
+	}
+}
+
 func statusOrNil(msg *proto.SIPMessage) string {
 	if msg == nil {
 		return "nil"
