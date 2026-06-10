@@ -479,6 +479,32 @@ func (b *bobUAS) register(t *testing.T) {
 	}
 }
 
+func (b *bobUAS) registerWithAuth(t *testing.T, username, password string) {
+	t.Helper()
+
+	t.Logf("Bob registering with auth (transport=%s)", b.transport)
+
+	req := buildBobRegisterRequest(b.ts.Domain, getPort(b.ts, b.transport), b.transport, b.port)
+
+	res, err := b.client.Do(t.Context(), req)
+	require.NoError(t, err)
+	require.Equal(t, proto.SIPStatusUnauthorized, res.StatusCode, "Expected 401 challenge before auth")
+
+	res, err = b.client.DoDigestAuth(t.Context(), req, res, sipgo.DigestAuth{
+		Username: username,
+		Password: password,
+	})
+	require.NoError(t, err)
+	require.Equal(t, proto.SIPStatusOK, res.StatusCode, "Bob auth registration should succeed")
+
+	if b.transport == "tcp" {
+		via := res.GetHeader("Via")
+		require.NotNil(t, via, "Via header must be present")
+		b.port = extractPortFromVia(via.Value())
+		require.NotZero(t, b.port, "Should extract port from Via header")
+	}
+}
+
 func (b *bobUAS) sendBye() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()

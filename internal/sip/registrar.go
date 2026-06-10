@@ -37,6 +37,15 @@ type Registrar struct {
 	bindings map[string][]*Binding
 	lastCSeq map[string]int
 	mu       sync.RWMutex
+	passwd   PasswordStore // nil = no authentication (accept all)
+	nonces   *NonceManager // always non-nil; created in NewRegistrar
+}
+
+// SetPasswordStore enables Digest authentication for REGISTER requests.
+// When set, the registrar challenges unauthenticated REGISTERs with 401 and
+// verifies Authorization headers before accepting bindings.
+func (r *Registrar) SetPasswordStore(store PasswordStore) {
+	r.passwd = store
 }
 
 // NewRegistrar creates a new Registrar with no bindings.
@@ -44,6 +53,7 @@ func NewRegistrar() *Registrar {
 	return &Registrar{
 		bindings: make(map[string][]*Binding),
 		lastCSeq: make(map[string]int),
+		nonces:   NewNonceManager(300 * time.Second),
 	}
 }
 
@@ -58,6 +68,7 @@ func (r *Registrar) Start(ctx context.Context) {
 			return
 		case <-ticker.C:
 			r.sweep()
+			r.nonces.Sweep()
 		}
 	}
 }
@@ -140,6 +151,52 @@ func (r *Registrar) HandleRegister(ctx context.Context, req *proto.SIPMessage, t
 	}
 
 	contacts, hasStar := extractContacts(rawContacts)
+
+	if r.passwd != nil {
+		authHeader := req.Headers.GetFirst("Authorization")
+		if authHeader == "" {
+			log.Debug("REGISTER: no Authorization, challenging")
+			nonce := r.nonces.NewNonce()
+			challenge := BuildWWWAuthenticate(r.passwd.Realm(), nonce, r.passwd.Algorithm(), false)
+			res := proto.NewResponse(req, 401, "Unauthorized")
+			res.Headers.Add("WWW-Authenticate", challenge)
+			tx.Respond(res)
+			return
+		}
+
+		creds, err := ParseAuthorization(authHeader)
+		if err != nil || creds.Username == "" {
+			log.Warn("REGISTER: bad Authorization header", "error", err)
+			tx.Respond(proto.NewResponse(req, 400, "Bad Request"))
+			return
+		}
+
+		ha1, userExists := r.passwd.HA1(creds.Username)
+		if !userExists || !VerifyDigest(creds, ha1) {
+			log.Warn("REGISTER: digest verification failed", "username", creds.Username)
+			tx.Respond(proto.NewResponse(req, 403, "Forbidden"))
+			return
+		}
+
+		known, valid := r.nonces.Verify(creds.Nonce, creds.NC)
+		if !valid {
+			log.Warn("REGISTER: nonce rejected", "known", known)
+			stale := known
+			nonce := r.nonces.NewNonce()
+			challenge := BuildWWWAuthenticate(r.passwd.Realm(), nonce, r.passwd.Algorithm(), stale)
+			res := proto.NewResponse(req, 401, "Unauthorized")
+			res.Headers.Add("WWW-Authenticate", challenge)
+			tx.Respond(res)
+			return
+		}
+
+		allowedAORs, _ := r.passwd.AORs(creds.Username)
+		if !AORAllowed(allowedAORs, aor) {
+			log.Warn("REGISTER: AOR not authorized", "username", creds.Username, "aor", aor)
+			tx.Respond(proto.NewResponse(req, 403, "Forbidden"))
+			return
+		}
+	}
 
 	r.mu.Lock()
 
