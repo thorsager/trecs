@@ -1419,7 +1419,9 @@ func TestRegistrar_Auth_WrongAOR(t *testing.T) {
 
 	nonce := reg.nonces.NewNonce()
 	cnonce := "test-cnonce"
-	authHeader := buildAuthHeader(nonce, "alice", store.users["alice"].ha1, "example.com", "SHA-256", cnonce, "sip:alice@example.com", 1)
+	// Build auth with the Request-URI (sip:bob@example.com) so it passes URI validation,
+	// but alice's credentials — AOR check will reject bob's AOR.
+	authHeader := buildAuthHeader(nonce, "alice", store.users["alice"].ha1, "example.com", "SHA-256", cnonce, "sip:bob@example.com", 1)
 
 	// Register with a different AOR (bob instead of alice)
 	req := sipMessage("REGISTER sip:bob@example.com SIP/2.0\r\n" +

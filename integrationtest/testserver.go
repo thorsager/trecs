@@ -41,6 +41,11 @@ func StartTestServer(t *testing.T, host string) *TestServer {
 	return StartTestServerWithDialplan(t, host, nil)
 }
 
+// SetProxyPasswordStore enables proxy authentication on the B2BUA handler.
+func (ts *TestServer) SetProxyPasswordStore(store trecs_sip.PasswordStore) {
+	ts.Handler.SetProxyPasswordStore(store, ts.ctx)
+}
+
 // Stop shuts down the test server and restores the original slog default.
 func (ts *TestServer) Stop() {
 	ts.cancel()
@@ -214,6 +219,7 @@ func StartTestServerWithAuthUsers(t *testing.T, host string, store trecs_sip.Pas
 
 	ts := StartTestServerWithDialplan(t, host, nil)
 	ts.Reg.SetPasswordStore(store)
+	ts.SetProxyPasswordStore(store)
 
 	return ts
 }

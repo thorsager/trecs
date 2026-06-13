@@ -153,40 +153,12 @@ func (r *Registrar) HandleRegister(ctx context.Context, req *proto.SIPMessage, t
 	contacts, hasStar := extractContacts(rawContacts)
 
 	if r.passwd != nil {
-		authHeader := req.Headers.GetFirst("Authorization")
-		if authHeader == "" {
-			log.Debug("REGISTER: no Authorization, challenging")
-			nonce := r.nonces.NewNonce()
-			challenge := BuildWWWAuthenticate(r.passwd.Realm(), nonce, r.passwd.Algorithm(), false)
-			res := proto.NewResponse(req, 401, "Unauthorized")
-			res.Headers.Add("WWW-Authenticate", challenge)
-			tx.Respond(res)
-			return
-		}
-
-		creds, err := ParseAuthorization(authHeader)
-		if err != nil || creds.Username == "" {
-			log.Warn("REGISTER: bad Authorization header", "error", err)
-			tx.Respond(proto.NewResponse(req, 400, "Bad Request"))
-			return
-		}
-
-		ha1, userExists := r.passwd.HA1(creds.Username)
-		if !userExists || !VerifyDigest(creds, ha1) {
-			log.Warn("REGISTER: digest verification failed", "username", creds.Username)
-			tx.Respond(proto.NewResponse(req, 403, "Forbidden"))
-			return
-		}
-
-		known, valid := r.nonces.Verify(creds.Nonce, creds.NC)
-		if !valid {
-			log.Warn("REGISTER: nonce rejected", "known", known)
-			stale := known
-			nonce := r.nonces.NewNonce()
-			challenge := BuildWWWAuthenticate(r.passwd.Realm(), nonce, r.passwd.Algorithm(), stale)
-			res := proto.NewResponse(req, 401, "Unauthorized")
-			res.Headers.Add("WWW-Authenticate", challenge)
-			tx.Respond(res)
+		creds := VerifyDigestRequest(req, tx,
+			r.passwd, r.nonces,
+			"Authorization", "WWW-Authenticate",
+			401, "Unauthorized",
+			"REGISTER", log)
+		if creds == nil {
 			return
 		}
 

@@ -1,0 +1,14 @@
+{
+    "realm": "127.0.0.1",
+    "algorithm": "MD5",
+    "users": {
+        "alice": {
+            "ha1": "18af59e93bb3331aac9fe77419a6ec78",
+            "aors": ["sip:alice@127.0.0.1"]
+        },
+        "bob": {
+            "ha1": "e8d263a80f955cf52b9d327e1ee338ed",
+            "aors": ["sip:bob@127.0.0.1"]
+        }
+    }
+}

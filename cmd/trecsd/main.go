@@ -74,6 +74,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if flagLogLevel != "info" {
+		slog.Info("Log level set", "level", flagLogLevel)
+	}
+
 	if flagRTPMin > 0 && flagRTPMax > 0 && flagRTPMax >= flagRTPMin {
 		slog.Info("RTP port range", "min", flagRTPMin, "max", flagRTPMax)
 	} else {
@@ -104,16 +108,7 @@ func main() {
 		slog.Info("Dialplan loaded", "path", flagDialplan)
 	}
 
-	if flagAuthUsers != "" {
-		store, err := sip.NewJSONPasswordStore(flagAuthUsers)
-		if err != nil {
-			slog.Error("Failed to load auth users", "error", err)
-			stop()
-			os.Exit(1)
-		}
-		reg.SetPasswordStore(store)
-		slog.Info("Digest authentication enabled", "realm", store.Realm(), "algorithm", store.Algorithm())
-	}
+
 
 	h := b2bua.NewHandler(b2bua.Config{
 		Registrar:      reg,
@@ -126,6 +121,18 @@ func main() {
 		RTPPortMin:     flagRTPMin,
 		RTPPortMax:     flagRTPMax,
 	})
+
+	if flagAuthUsers != "" {
+		store, err := sip.NewJSONPasswordStore(flagAuthUsers)
+		if err != nil {
+			slog.Error("Failed to load auth users", "error", err)
+			stop()
+			os.Exit(1)
+		}
+		reg.SetPasswordStore(store)
+		h.SetProxyPasswordStore(store, ctx)
+		slog.Info("Digest authentication enabled", "path", flagAuthUsers, "realm", store.Realm(), "algorithm", store.Algorithm())
+	}
 
 	server.On(proto.SIPMethodREGISTER, reg.HandleRegister)
 	server.On(proto.SIPMethodOPTIONS, h.HandleOptions)
