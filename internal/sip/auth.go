@@ -7,8 +7,11 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
+
+	"github.com/thorsager/trecs/proto"
 )
 
 type DigestCredentials struct {
@@ -24,7 +27,9 @@ type DigestCredentials struct {
 	Opaque    string
 }
 
-func ParseAuthorization(raw string) (*DigestCredentials, error) {
+// ParseDigest parses the value of a Digest-type header (Authorization,
+// Proxy-Authorization, etc.) and returns the parsed credentials.
+func ParseDigest(raw string) (*DigestCredentials, error) {
 	raw = strings.TrimSpace(raw)
 	// Scheme is case-insensitive per RFC 7235 §4.1.
 	if len(raw) < 6 || !strings.EqualFold(raw[:6], "Digest") {
@@ -107,7 +112,17 @@ func ParseAuthorization(raw string) (*DigestCredentials, error) {
 	return creds, nil
 }
 
-func BuildWWWAuthenticate(realm, nonce, algorithm string, stale bool) string {
+// ParseAuthorization parses an Authorization header value (see ParseDigest).
+func ParseAuthorization(raw string) (*DigestCredentials, error) {
+	return ParseDigest(raw)
+}
+
+// ParseProxyAuthorization parses a Proxy-Authorization header value (see ParseDigest).
+func ParseProxyAuthorization(raw string) (*DigestCredentials, error) {
+	return ParseDigest(raw)
+}
+
+func BuildDigestChallenge(realm, nonce, algorithm string, stale bool) string {
 	var b strings.Builder
 	b.WriteString("Digest realm=\"")
 	b.WriteString(realm)
@@ -120,6 +135,14 @@ func BuildWWWAuthenticate(realm, nonce, algorithm string, stale bool) string {
 		b.WriteString(", stale=TRUE")
 	}
 	return b.String()
+}
+
+func BuildWWWAuthenticate(realm, nonce, algorithm string, stale bool) string {
+	return BuildDigestChallenge(realm, nonce, algorithm, stale)
+}
+
+func BuildProxyAuthenticate(realm, nonce, algorithm string, stale bool) string {
+	return BuildDigestChallenge(realm, nonce, algorithm, stale)
 }
 
 func ComputeHA1(username, realm, password, algorithm string) string {
@@ -175,11 +198,73 @@ func ComputeDigestResponse(ha1, nonce, nc, cnonce, qop, method, uri, algorithm s
 	return hexHash(algorithm, []byte(respData))
 }
 
-func VerifyDigest(creds *DigestCredentials, ha1 string) bool {
+func VerifyDigest(creds *DigestCredentials, ha1 string, method string) bool {
 	nc := ""
 	if creds.QOP != "" {
 		nc = fmt.Sprintf("%08x", creds.NC)
 	}
-	expected := ComputeDigestResponse(ha1, creds.Nonce, nc, creds.CNonce, creds.QOP, "REGISTER", creds.URI, creds.Algorithm)
+	expected := ComputeDigestResponse(ha1, creds.Nonce, nc, creds.CNonce, creds.QOP, method, creds.URI, creds.Algorithm)
 	return subtle.ConstantTimeCompare([]byte(expected), []byte(creds.Response)) == 1
+}
+
+// VerifyDigestRequest performs the full digest authentication flow for a SIP request:
+//  1. Check that the auth header exists, otherwise send a challenge.
+//  2. Parse the header value.
+//  3. Look up the user's HA1 and verify the digest response.
+//  4. Verify the nonce (replay protection and expiry).
+//
+// On success it returns the parsed credentials. On failure it sends the
+// appropriate error response (400, 403, or challengeStatus) and returns nil.
+//
+// log is used for structured logging; pass a *slog.Logger from the caller's context.
+func VerifyDigestRequest(req *proto.SIPMessage, tx Transaction,
+	passwd PasswordStore, nonces *NonceManager,
+	authHeaderKey, respChallengeKey string,
+	challengeStatus int, statusText string,
+	method string, log *slog.Logger,
+) *DigestCredentials {
+	authHeader := req.Headers.GetFirst(authHeaderKey)
+	if authHeader == "" {
+		log.Debug("no credentials, challenging")
+		nonce := nonces.NewNonce()
+		challenge := BuildDigestChallenge(passwd.Realm(), nonce, passwd.Algorithm(), false)
+		res := proto.NewResponse(req, challengeStatus, statusText)
+		res.Headers.Add(respChallengeKey, challenge)
+		tx.Respond(res)
+		return nil
+	}
+
+	creds, err := ParseDigest(authHeader)
+	if err != nil || creds.Username == "" {
+		log.Warn("bad auth header", "error", err)
+		tx.Respond(proto.NewResponse(req, 400, "Bad Request"))
+		return nil
+	}
+
+	if creds.URI != req.RequestURI() {
+		log.Warn("uri mismatch", "expected", req.RequestURI(), "got", creds.URI)
+		tx.Respond(proto.NewResponse(req, 400, "Bad Request"))
+		return nil
+	}
+
+	ha1, userExists := passwd.HA1(creds.Username)
+	if !userExists || !VerifyDigest(creds, ha1, method) {
+		log.Warn("digest verification failed", "username", creds.Username, "method", method)
+		tx.Respond(proto.NewResponse(req, 403, "Forbidden"))
+		return nil
+	}
+
+	known, valid := nonces.Verify(creds.Nonce, creds.NC)
+	if !valid {
+		log.Warn("nonce rejected", "known", known)
+		stale := known
+		nonce := nonces.NewNonce()
+		challenge := BuildDigestChallenge(passwd.Realm(), nonce, passwd.Algorithm(), stale)
+		res := proto.NewResponse(req, challengeStatus, statusText)
+		res.Headers.Add(respChallengeKey, challenge)
+		tx.Respond(res)
+		return nil
+	}
+
+	return creds
 }

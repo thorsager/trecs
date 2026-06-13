@@ -1,0 +1,6 @@
+{
+    "extensions": {
+        "echo": { "action": "echo" },
+        "echo_test": { "action": "echo" }
+    }
+}

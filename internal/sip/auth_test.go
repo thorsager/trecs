@@ -1,6 +1,8 @@
 package sip
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"testing"
 )
 
@@ -212,7 +214,7 @@ func TestVerifyDigest_Valid(t *testing.T) {
 		NC:        1,
 	}
 
-	if !VerifyDigest(creds, ha1) {
+	if !VerifyDigest(creds, ha1, "REGISTER") {
 		t.Fatal("VerifyDigest returned false for valid credentials")
 	}
 }
@@ -231,7 +233,7 @@ func TestVerifyDigest_WrongPassword(t *testing.T) {
 		NC:        1,
 	}
 
-	if VerifyDigest(creds, ha1) {
+	if VerifyDigest(creds, ha1, "REGISTER") {
 		t.Fatal("VerifyDigest returned true for wrong password")
 	}
 }
@@ -322,5 +324,159 @@ func TestParseAuthorization_CRLFFolding(t *testing.T) {
 	}
 	if creds.Username != "alice" {
 		t.Fatalf("Username: got %q, want alice", creds.Username)
+	}
+}
+
+func TestParseProxyAuthorization(t *testing.T) {
+	raw := `Digest username="bob", realm="example.com", nonce="xyz", uri="sip:example.com", response="abc", algorithm=SHA-256, cnonce="c1", qop=auth, nc=00000001`
+	creds, err := ParseProxyAuthorization(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if creds.Username != "bob" {
+		t.Fatalf("Username: got %q, want bob", creds.Username)
+	}
+	if creds.Realm != "example.com" {
+		t.Fatalf("Realm: got %q, want example.com", creds.Realm)
+	}
+	if creds.Algorithm != "SHA-256" {
+		t.Fatalf("Algorithm: got %q, want SHA-256", creds.Algorithm)
+	}
+}
+
+func TestBuildProxyAuthenticate(t *testing.T) {
+	challenge := BuildProxyAuthenticate("proxy.realm", "nonce123", "SHA-256", false)
+	expected := `Digest realm="proxy.realm", nonce="nonce123", algorithm=SHA-256, qop="auth"`
+	if challenge != expected {
+		t.Fatalf("got %q, want %q", challenge, expected)
+	}
+}
+
+func TestBuildProxyAuthenticate_Stale(t *testing.T) {
+	challenge := BuildProxyAuthenticate("proxy.realm", "nonce123", "MD5", true)
+	expected := `Digest realm="proxy.realm", nonce="nonce123", algorithm=MD5, qop="auth", stale=TRUE`
+	if challenge != expected {
+		t.Fatalf("got %q, want %q", challenge, expected)
+	}
+}
+
+func TestParseProxyAuthorization_NoDigestPrefix(t *testing.T) {
+	_, err := ParseProxyAuthorization("Basic xyz")
+	if err == nil {
+		t.Fatal("expected error for non-Digest auth")
+	}
+}
+
+func TestVerifyDigest_WithInviteMethod(t *testing.T) {
+	ha1 := ComputeHA1("alice", "example.com", "secret", "SHA-256")
+	nonce := "test-nonce"
+	cnonce := "client-nonce"
+	rawResponse := ComputeDigestResponse(ha1, nonce, "00000001", cnonce, "auth", "INVITE", "sip:example.com", "SHA-256")
+
+	creds := &DigestCredentials{
+		Username:  "alice",
+		Realm:     "example.com",
+		Nonce:     nonce,
+		URI:       "sip:example.com",
+		Response:  rawResponse,
+		Algorithm: "SHA-256",
+		CNonce:    cnonce,
+		QOP:       "auth",
+		NC:        1,
+	}
+
+	if !VerifyDigest(creds, ha1, "INVITE") {
+		t.Fatal("VerifyDigest returned false for valid INVITE credentials")
+	}
+	// Must fail with wrong method
+	if VerifyDigest(creds, ha1, "BYE") {
+		t.Fatal("VerifyDigest should fail when method does not match")
+	}
+}
+
+func TestVerifyDigest_WithByeMethod(t *testing.T) {
+	ha1 := ComputeHA1("alice", "example.com", "secret", "SHA-256")
+	nonce := "test-nonce"
+	cnonce := "client-nonce"
+	rawResponse := ComputeDigestResponse(ha1, nonce, "00000001", cnonce, "auth", "BYE", "sip:example.com", "SHA-256")
+
+	creds := &DigestCredentials{
+		Username:  "alice",
+		Realm:     "example.com",
+		Nonce:     nonce,
+		URI:       "sip:example.com",
+		Response:  rawResponse,
+		Algorithm: "SHA-256",
+		CNonce:    cnonce,
+		QOP:       "auth",
+		NC:        1,
+	}
+
+	if !VerifyDigest(creds, ha1, "BYE") {
+		t.Fatal("VerifyDigest returned false for valid BYE credentials")
+	}
+}
+
+func TestVerifyDigest_NoQop(t *testing.T) {
+	// Without qop, the formula is H(HA1:nonce:HA2) — no nc/cnonce/qop.
+	ha1 := ComputeHA1("alice", "example.com", "secret", "MD5")
+	nonce := "simple-nonce"
+	uri := "sip:example.com"
+	method := "INVITE"
+
+	// Compute the expected response using the no-qop formula directly.
+	ha2 := hexHash("MD5", []byte(method+":"+uri))
+	respData := ha1 + ":" + nonce + ":" + ha2
+	h := md5.Sum([]byte(respData))
+	expected := hex.EncodeToString(h[:])
+
+	creds := &DigestCredentials{
+		Username:  "alice",
+		Realm:     "example.com",
+		Nonce:     nonce,
+		URI:       uri,
+		Response:  expected,
+		Algorithm: "MD5",
+	}
+
+	if !VerifyDigest(creds, ha1, method) {
+		t.Fatal("VerifyDigest returned false for valid no-qop credentials")
+	}
+
+	// Wrong response should fail.
+	credsBad := *creds
+	credsBad.Response = "00000000000000000000000000000000"
+	if VerifyDigest(&credsBad, ha1, method) {
+		t.Fatal("VerifyDigest should fail for wrong response")
+	}
+}
+
+func TestVerifyDigest_QopAuthInt(t *testing.T) {
+	ha1 := ComputeHA1("alice", "example.com", "secret", "SHA-256")
+	nonce := "test-nonce"
+	cnonce := "client-nonce"
+
+	// qop=auth-int uses the same formula path as auth.
+	rawResponse := ComputeDigestResponse(ha1, nonce, "00000001", cnonce, "auth-int", "INVITE", "sip:example.com", "SHA-256")
+
+	creds := &DigestCredentials{
+		Username:  "alice",
+		Realm:     "example.com",
+		Nonce:     nonce,
+		URI:       "sip:example.com",
+		Response:  rawResponse,
+		Algorithm: "SHA-256",
+		CNonce:    cnonce,
+		QOP:       "auth-int",
+		NC:        1,
+	}
+
+	if !VerifyDigest(creds, ha1, "INVITE") {
+		t.Fatal("VerifyDigest returned false for valid auth-int credentials")
+	}
+
+	// Must fail with wrong method.
+	if VerifyDigest(creds, ha1, "BYE") {
+		t.Fatal("VerifyDigest should fail when method does not match (auth-int)")
 	}
 }

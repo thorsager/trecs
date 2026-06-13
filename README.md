@@ -84,3 +84,48 @@ Breakdown:
 - `--duration 30` — hangs up after 30s (safety net)
 - `--play-file / --auto-play / --auto-play-hangup` — plays a WAV to the
   caller and hangs up when it ends
+
+## Example configuration
+
+Example config files are in [`docs/examples/`](docs/examples/).
+
+### Users
+
+[`docs/examples/users.json`](docs/examples/users.json) defines two users with
+Digest authentication (MD5, realm `127.0.0.1`):
+
+| User  | Password   | AOR                       |
+|-------|------------|---------------------------|
+| alice | `secret`   | `sip:alice@127.0.0.1`    |
+| bob   | `password` | `sip:bob@127.0.0.1`      |
+
+The server can be started with auth enabled:
+
+```bash
+trecsd --addr :5060 --auth-users docs/examples/users.json
+```
+
+This enables Digest authentication for both REGISTER and INVITE/BYE (proxy
+auth). Registering with a matching password grants binding to the user's AOR.
+
+### Dialplan
+
+[`docs/examples/dialplan.json`](docs/examples/dialplan.json) maps extensions
+to actions:
+
+| Extension   | Action    |
+|-------------|-----------|
+| `echo`      | echo      |
+| `echo_test` | echo      |
+
+The echo action loops back any RTP audio received. Start with a dialplan:
+
+```bash
+trecsd --addr :5060 --dialplan docs/examples/dialplan.json
+```
+
+Both flags can be combined:
+
+```bash
+trecsd --addr :5060 --dialplan docs/examples/dialplan.json --auth-users docs/examples/users.json
+```

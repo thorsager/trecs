@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"time"
 
 	"github.com/thorsager/trecs/internal/dialplan"
 	"github.com/thorsager/trecs/internal/logutil"
@@ -29,16 +30,18 @@ type Config struct {
 // Handler implements SIP request handlers for the T-REC B2BUA server,
 // including echo service, file playback, B2BUA call bridging, and call teardown.
 type Handler struct {
-	reg        *sip.Registrar
-	sm         *media.SessionManager
-	server     *sip.Server
-	serverIP   string
-	serverAddr string
-	uacMgr     *sip.UACManager
-	dp         dialplan.Dialplan
-	rtpMin     int
-	rtpMax     int
-	store      *Store
+	reg         *sip.Registrar
+	sm          *media.SessionManager
+	server      *sip.Server
+	serverIP    string
+	serverAddr  string
+	uacMgr      *sip.UACManager
+	dp          dialplan.Dialplan
+	rtpMin      int
+	rtpMax      int
+	store       *Store
+	proxyPasswd sip.PasswordStore
+	proxyNonces *sip.NonceManager
 }
 
 // NewHandler creates a new B2BUA handler with the given configuration.
@@ -55,6 +58,37 @@ func NewHandler(cfg Config) *Handler {
 		rtpMax:     cfg.RTPPortMax,
 		store:      NewStore(),
 	}
+}
+
+// SetProxyPasswordStore enables proxy authentication for INVITE and BYE
+// using the same PasswordStore as the registrar. The nonce manager
+// runs its own sweep goroutine, stopped when ctx is cancelled.
+func (h *Handler) SetProxyPasswordStore(store sip.PasswordStore, ctx context.Context) {
+	h.proxyPasswd = store
+	h.proxyNonces = sip.NewNonceManager(300 * time.Second)
+	sip.StartNonceSweeper(ctx, h.proxyNonces, 30*time.Second)
+}
+
+// requireProxyAuth checks the Proxy-Authorization header on req.
+// If proxy auth is not configured, it returns nil (passthrough).
+// If auth is configured and the header is missing or invalid, it sends
+// the appropriate error response and returns nil (caller should abort).
+// On success it returns the parsed credentials.
+func (h *Handler) requireProxyAuth(ctx context.Context, req *proto.SIPMessage, tx sip.Transaction, method string) *sip.DigestCredentials {
+	if h.proxyPasswd == nil {
+		return nil
+	}
+	log := logutil.FromContext(ctx)
+
+	creds := sip.VerifyDigestRequest(req, tx,
+		h.proxyPasswd, h.proxyNonces,
+		"Proxy-Authorization", "Proxy-Authenticate",
+		407, "Proxy Authentication Required",
+		method, log)
+	if creds != nil {
+		log.Debug("proxy auth: verified", "username", creds.Username, "method", method)
+	}
+	return creds
 }
 
 // HandleOptions responds to OPTIONS requests.
@@ -95,6 +129,10 @@ func (h *Handler) HandleInvite(ctx context.Context, req *proto.SIPMessage, tx si
 
 	trying := proto.NewResponse(req, 100, "Trying")
 	tx.Respond(trying)
+
+	if h.requireProxyAuth(ctx, req, tx, "INVITE") == nil && h.proxyPasswd != nil {
+		return
+	}
 
 	if h.dp != nil {
 		if entry, ok := h.dp.Lookup(req); ok {
@@ -858,6 +896,10 @@ func (h *Handler) HandleBye(ctx context.Context, req *proto.SIPMessage, tx sip.T
 
 	trying := proto.NewResponse(req, 100, "Trying")
 	tx.Respond(trying)
+
+	if h.requireProxyAuth(ctx, req, tx, "BYE") == nil && h.proxyPasswd != nil {
+		return
+	}
 
 	_, serverPort, _ := net.SplitHostPort(h.serverAddr)
 	if serverPort == "" {

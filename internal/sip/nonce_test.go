@@ -1,6 +1,7 @@
 package sip
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -114,6 +115,29 @@ func TestNonceManager_VerifyExpired(t *testing.T) {
 	}
 	if valid {
 		t.Fatal("expected valid=false for expired nonce")
+	}
+}
+
+func TestStartNonceSweeper(t *testing.T) {
+	nm := NewNonceManager(50 * time.Millisecond)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	StartNonceSweeper(ctx, nm, 10*time.Millisecond)
+
+	nonce := nm.NewNonce()
+	known, valid := nm.Verify(nonce, 1)
+	if !known || !valid {
+		t.Fatal("nonce should be valid immediately")
+	}
+
+	// Wait well past TTL + sweep interval.
+	time.Sleep(300 * time.Millisecond)
+	known, valid = nm.Verify(nonce, 1)
+	if known {
+		t.Fatal("nonce should have been swept")
+	}
+	if valid {
+		t.Fatal("swept nonce should not be valid")
 	}
 }
 

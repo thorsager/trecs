@@ -28,7 +28,7 @@ func TestIntegration_B2BUACallWithAuth(t *testing.T) {
 		bob.registerWithAuth(t, "bob", "password")
 		time.Sleep(100 * time.Millisecond)
 
-		runAliceInviteAndVerify(t, ts, bob, "udp", "alice_bye")
+		runAliceInviteAndVerify(t, ts, bob, "udp", "alice_bye", "bob", "password")
 	})
 
 	t.Run("TCP_TCP", func(t *testing.T) {
@@ -41,11 +41,11 @@ func TestIntegration_B2BUACallWithAuth(t *testing.T) {
 		bob.registerWithAuth(t, "bob", "password")
 		time.Sleep(100 * time.Millisecond)
 
-		runAliceInviteAndVerify(t, ts, bob, "tcp", "alice_bye")
+		runAliceInviteAndVerify(t, ts, bob, "tcp", "alice_bye", "bob", "password")
 	})
 }
 
-func runAliceInviteAndVerify(t *testing.T, ts *integrationtest.TestServer, bob *bobUAS, transport, byeFrom string) {
+func runAliceInviteAndVerify(t *testing.T, ts *integrationtest.TestServer, bob *bobUAS, transport, byeFrom, authUsername, authPassword string) {
 	t.Helper()
 
 	aliceUA, err := sipgo.NewUA(sipgo.WithUserAgentHostname(ts.Domain))
@@ -68,8 +68,7 @@ func runAliceInviteAndVerify(t *testing.T, ts *integrationtest.TestServer, bob *
 		invite.SetTransport("TCP")
 	}
 
-	res, err := aliceClient.Do(t.Context(), invite)
-	require.NoError(t, err)
+	res := doProxyAuthRequest(t, aliceClient, invite, authUsername, authPassword)
 	require.Equal(t, proto.SIPStatusOK, res.StatusCode, "Alice should receive 200 OK")
 
 	serverTag := extractToTagB2B(res)
@@ -110,8 +109,7 @@ func runAliceInviteAndVerify(t *testing.T, ts *integrationtest.TestServer, bob *
 		if transport == "tcp" {
 			bye.SetTransport("TCP")
 		}
-		byeRes, err := aliceClient.Do(t.Context(), bye)
-		require.NoError(t, err)
+		byeRes := doProxyAuthRequest(t, aliceClient, bye, authUsername, authPassword)
 		require.Equal(t, proto.SIPStatusOK, byeRes.StatusCode, "BYE should get 200 OK")
 	case "bob_bye":
 		require.NoError(t, bob.sendBye(), "Bob should be able to send BYE and get 200 OK")
