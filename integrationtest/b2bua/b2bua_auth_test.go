@@ -48,6 +48,11 @@ func TestIntegration_B2BUACallWithAuth(t *testing.T) {
 func runAliceInviteAndVerify(t *testing.T, ts *integrationtest.TestServer, bob *bobUAS, transport, byeFrom, authUsername, authPassword string) {
 	t.Helper()
 
+	aliceSSRC := randomSSRC()
+	bobSSRC := randomSSRC()
+	bob.expectedClientSSRC = aliceSSRC
+	bob.expectedBobSSRC = bobSSRC
+
 	aliceUA, err := sipgo.NewUA(sipgo.WithUserAgentHostname(ts.Domain))
 	require.NoError(t, err)
 
@@ -77,7 +82,7 @@ func runAliceInviteAndVerify(t *testing.T, ts *integrationtest.TestServer, bob *
 	require.NotEmpty(t, res.Body(), "200 OK should have SDP body")
 	sdpAnswer, err := proto.UnmarshalSDPBytes(res.Body())
 	require.NoError(t, err)
-	serverIP, serverRTPPort := extractRTPAddr(sdpAnswer)
+	serverIP, serverRTPPort := integrationtest.ExtractRTPAddr(sdpAnswer)
 	require.NotZero(t, serverRTPPort, "SDP answer should have RTP port")
 
 	ack := buildB2BUAACK(ts.Domain, integrationtest.GetPort(ts, transport), callID, aliceFromTag, serverTag)
@@ -100,8 +105,8 @@ func runAliceInviteAndVerify(t *testing.T, ts *integrationtest.TestServer, bob *
 	require.NotZero(t, serverRTPPortB, "Bob should have extracted server's RTP port")
 	serverRTPAddrB := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: serverRTPPortB}
 
-	sendAliceToBob(t, aliceRTP, serverRTPAddr, bob.rtpCount)
-	sendBobToAlice(t, bob.rtp, serverRTPAddrB, aliceRTP)
+	sendAliceToBob(t, aliceRTP, serverRTPAddr, bob.rtpCount, aliceSSRC)
+	sendBobToAlice(t, bob.rtp, serverRTPAddrB, aliceRTP, bobSSRC)
 
 	switch byeFrom {
 	case "alice_bye":
@@ -150,10 +155,13 @@ func TestIntegration_B2BUARegisterRejectedWithoutAuth(t *testing.T) {
 
 		wwwAuth := res.GetHeader("WWW-Authenticate")
 		require.NotNil(t, wwwAuth, "Should have WWW-Authenticate header")
-		require.Contains(t, wwwAuth.Value(), "Digest")
-		require.Contains(t, wwwAuth.Value(), `realm="127.0.0.1"`)
-		require.Contains(t, wwwAuth.Value(), "algorithm=SHA-256")
-		require.Contains(t, wwwAuth.Value(), "qop=\"auth\"")
+		val := wwwAuth.Value()
+		require.Contains(t, val, "Digest")
+		require.Contains(t, val, `realm="127.0.0.1"`)
+		require.Contains(t, val, "algorithm=SHA-256")
+		require.Contains(t, val, "qop=\"auth\"")
+		require.Contains(t, val, "nonce=", "WWW-Authenticate must include nonce per RFC 3261 §22.1")
+		require.NotContains(t, val, "stale=TRUE", "Initial challenge should not have stale=TRUE")
 
 		client.Close()
 		ua.Close()

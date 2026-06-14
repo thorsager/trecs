@@ -3,8 +3,10 @@ package b2bua
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"regexp"
 	"strconv"
@@ -50,6 +52,9 @@ type bobUAS struct {
 	sipDone          chan struct{}
 	serverRTPPortB   int
 	serverRTPPortBCh chan int
+
+	expectedClientSSRC uint32 // SSRC that Alice will send (set before INVITE)
+	expectedBobSSRC    uint32 // SSRC that Bob will send (set before INVITE)
 }
 
 // outboundBobUAS is a Bob user-agent that registers with ;ob (RFC 5626 outbound)
@@ -70,6 +75,9 @@ type outboundBobUAS struct {
 	rtpCount         chan int
 	serverRTPPortB   int
 	serverRTPPortBCh chan int
+
+	expectedClientSSRC uint32
+	expectedBobSSRC    uint32
 }
 
 func newOutboundBobUAS(t *testing.T, ts *integrationtest.TestServer) *outboundBobUAS {
@@ -128,7 +136,7 @@ func newOutboundBobUAS(t *testing.T, ts *integrationtest.TestServer) *outboundBo
 				b.t.Logf("Outbound Bob failed to respond 200: %v", err)
 			} else {
 				b.t.Logf("Outbound Bob sent 200 OK (RTP port %d)", rtpPort)
-				go receiveRTP(b.rtp, b.rtpCount, b.ctx)
+				go receiveRTP(b.rtp, b.rtpCount, b.ctx, b.expectedClientSSRC)
 			}
 
 		case "BYE":
@@ -421,7 +429,7 @@ func (b *bobUAS) handleIncomingInvite(msg string, writeFunc func([]byte) error) 
 		return
 	}
 
-	go receiveRTP(b.rtp, b.rtpCount, b.ctx)
+	go receiveRTP(b.rtp, b.rtpCount, b.ctx, b.expectedClientSSRC)
 
 	// Build SDP answer
 	sdp := fmt.Sprintf("v=0\r\no=- %d 1 IN IP4 127.0.0.1\r\ns=bob\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio %d RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n",
@@ -555,7 +563,7 @@ func (b *bobUAS) close() {
 	}
 }
 
-func receiveRTP(rtp *net.UDPConn, rtpCount chan<- int, ctx context.Context) {
+func receiveRTP(rtp *net.UDPConn, rtpCount chan<- int, ctx context.Context, expectedClientSSRC uint32) {
 	var prevSeq uint16
 	var prevTs uint32
 	var serverSSRC uint32
@@ -587,7 +595,7 @@ func receiveRTP(rtp *net.UDPConn, rtpCount chan<- int, ctx context.Context) {
 
 		if packetCount == 1 {
 			serverSSRC = pkt.Header.SSRC
-			if serverSSRC == 0xAAAAAAAA {
+			if serverSSRC == expectedClientSSRC {
 				rtpCount <- -1
 				return
 			}
@@ -619,14 +627,14 @@ func receiveRTP(rtp *net.UDPConn, rtpCount chan<- int, ctx context.Context) {
 	rtpCount <- packetCount
 }
 
-func sendAliceToBob(t *testing.T, aliceRTP *net.UDPConn, serverRTPAddr *net.UDPAddr, bobRTPCount chan int) {
+func sendAliceToBob(t *testing.T, aliceRTP *net.UDPConn, serverRTPAddr *net.UDPAddr, bobRTPCount chan int, aliceSSRC uint32) {
 	t.Helper()
 
 	for i := range 10 {
-		pkt := buildRTPPacket(
+		pkt := integrationtest.BuildRTPPacket(
 			uint16(100+i),
 			uint32(i*160),
-			0xAAAAAAAA,
+			aliceSSRC,
 			[]byte{byte(i), byte(i), byte(i), byte(i)},
 		)
 		buf, _ := pkt.Marshal()
@@ -657,14 +665,14 @@ func sendAliceToBob(t *testing.T, aliceRTP *net.UDPConn, serverRTPAddr *net.UDPA
 	}
 }
 
-func sendBobToAlice(t *testing.T, bobRTP *net.UDPConn, serverRTPAddrB *net.UDPAddr, aliceRTP *net.UDPConn) {
+func sendBobToAlice(t *testing.T, bobRTP *net.UDPConn, serverRTPAddrB *net.UDPAddr, aliceRTP *net.UDPConn, bobSSRC uint32) {
 	t.Helper()
 
 	for i := range 10 {
-		pkt := buildRTPPacket(
+		pkt := integrationtest.BuildRTPPacket(
 			uint16(200+i),
 			uint32(i*160),
-			0xBBBBBBBB,
+			bobSSRC,
 			[]byte{byte(0x80 + i), byte(i), byte(i), byte(i)},
 		)
 		buf, _ := pkt.Marshal()
@@ -695,7 +703,7 @@ func sendBobToAlice(t *testing.T, bobRTP *net.UDPConn, serverRTPAddrB *net.UDPAd
 
 		if alicePacketCount == 1 {
 			aliceServerSSRC = pkt.Header.SSRC
-			require.NotEqual(t, uint32(0xBBBBBBBB), aliceServerSSRC, "SSRC not isolated (server leaked Bob's SSRC)")
+			require.NotEqual(t, bobSSRC, aliceServerSSRC, "SSRC not isolated (server leaked Bob's SSRC)")
 		} else {
 			require.Equal(t, alicePrevSeq+1, pkt.Header.SequenceNumber, "RTP sequence continuity broken (B→A)")
 			require.Equal(t, alicePrevTs+160, pkt.Header.Timestamp, "RTP timestamp not monotonic (B→A)")
@@ -716,6 +724,11 @@ func runB2BUACall(t *testing.T, ts *integrationtest.TestServer, aliceTransport, 
 
 	bob := newBobUAS(t, ts, bobTransport)
 	defer bob.close()
+
+	aliceSSRC := randomSSRC()
+	bobSSRC := randomSSRC()
+	bob.expectedClientSSRC = aliceSSRC
+	bob.expectedBobSSRC = bobSSRC
 
 	bob.register(t)
 	time.Sleep(100 * time.Millisecond)
@@ -750,7 +763,7 @@ func runB2BUACall(t *testing.T, ts *integrationtest.TestServer, aliceTransport, 
 	require.NotEmpty(t, res.Body(), "200 OK should have SDP body")
 	sdpAnswer, err := proto.UnmarshalSDPBytes(res.Body())
 	require.NoError(t, err)
-	serverIP, serverRTPPort := extractRTPAddr(sdpAnswer)
+	serverIP, serverRTPPort := integrationtest.ExtractRTPAddr(sdpAnswer)
 	require.NotZero(t, serverRTPPort, "SDP answer should have RTP port")
 
 	ack := buildB2BUAACK(ts.Domain, integrationtest.GetPort(ts, aliceTransport), callID, aliceFromTag, serverTag)
@@ -773,9 +786,9 @@ func runB2BUACall(t *testing.T, ts *integrationtest.TestServer, aliceTransport, 
 	require.NotZero(t, serverRTPPortB, "Bob should have extracted server's RTP port")
 	serverRTPAddrB := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: serverRTPPortB}
 
-	sendAliceToBob(t, aliceRTP, serverRTPAddr, bob.rtpCount)
+	sendAliceToBob(t, aliceRTP, serverRTPAddr, bob.rtpCount, aliceSSRC)
 
-	sendBobToAlice(t, bob.rtp, serverRTPAddrB, aliceRTP)
+	sendBobToAlice(t, bob.rtp, serverRTPAddrB, aliceRTP, bobSSRC)
 
 	switch byeFrom {
 	case "alice_bye":
@@ -808,7 +821,12 @@ func runOutboundCall(t *testing.T, ts *integrationtest.TestServer, outboundSide 
 		bobRTPPortBCh chan int
 		port          int
 		transport     string
+		aliceSSRC     uint32
+		bobSSRC       uint32
 	)
+
+	aliceSSRC = randomSSRC()
+	bobSSRC = randomSSRC()
 
 	callID := fmt.Sprintf("b2bua-outbound-%s-%s", outboundSide, t.Name())
 	aliceFromTag := "alice-from-outbound"
@@ -820,6 +838,8 @@ func runOutboundCall(t *testing.T, ts *integrationtest.TestServer, outboundSide 
 
 		bob := newOutboundBobUAS(t, ts)
 		defer bob.close()
+		bob.expectedClientSSRC = aliceSSRC
+		bob.expectedBobSSRC = bobSSRC
 		bob.register(t)
 		bobRTP = bob.rtp
 		bobRTPCount = bob.rtpCount
@@ -849,6 +869,8 @@ func runOutboundCall(t *testing.T, ts *integrationtest.TestServer, outboundSide 
 
 		bob := newBobUAS(t, ts, "udp")
 		defer bob.close()
+		bob.expectedClientSSRC = aliceSSRC
+		bob.expectedBobSSRC = bobSSRC
 		bob.register(t)
 		bobRTP = bob.rtp
 		bobRTPCount = bob.rtpCount
@@ -879,7 +901,7 @@ func runOutboundCall(t *testing.T, ts *integrationtest.TestServer, outboundSide 
 	require.NotEmpty(t, res.Body(), "200 OK should have SDP body")
 	sdpAnswer, err := proto.UnmarshalSDPBytes(res.Body())
 	require.NoError(t, err)
-	serverIP, serverRTPPort := extractRTPAddr(sdpAnswer)
+	serverIP, serverRTPPort := integrationtest.ExtractRTPAddr(sdpAnswer)
 	require.NotZero(t, serverRTPPort, "SDP answer should have RTP port")
 
 	ack := buildB2BUAACK(ts.Domain, port, callID, aliceFromTag, serverTag)
@@ -902,9 +924,9 @@ func runOutboundCall(t *testing.T, ts *integrationtest.TestServer, outboundSide 
 	require.NotZero(t, serverRTPPortB, "Bob should have extracted server's RTP port")
 	serverRTPAddrB := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: serverRTPPortB}
 
-	sendAliceToBob(t, aliceRTP, serverRTPAddr, bobRTPCount)
+	sendAliceToBob(t, aliceRTP, serverRTPAddr, bobRTPCount, aliceSSRC)
 
-	sendBobToAlice(t, bobRTP, serverRTPAddrB, aliceRTP)
+	sendBobToAlice(t, bobRTP, serverRTPAddrB, aliceRTP, bobSSRC)
 
 	bye := buildB2BUABYE(ts.Domain, port, callID, aliceFromTag, serverTag)
 	if transport == "tcp" {
@@ -999,7 +1021,7 @@ func buildB2BUAInvite(domain string, port int, callID, fromTag, transport string
 	req.AppendHeader(sipgo_sip.NewHeader("Max-Forwards", "70"))
 	req.AppendHeader(sipgo_sip.NewHeader("Content-Type", "application/sdp"))
 
-	sdp := buildSDPOffer(rtpPort, "127.0.0.1")
+	sdp := integrationtest.BuildSDPOffer(rtpPort, "127.0.0.1")
 	sdpBytes, _ := sdp.Marshal()
 	req.SetBody(sdpBytes)
 	req.AppendHeader(sipgo_sip.NewHeader("Content-Length", strconv.Itoa(len(sdpBytes))))
@@ -1038,64 +1060,23 @@ func buildB2BUABYE(domain string, port int, callID, fromTag, serverTag string) *
 }
 
 func extractToTagB2B(res *sipgo_sip.Response) string {
-	to := res.GetHeader("To")
-	if to == nil {
-		return ""
-	}
-	val := to.Value()
-	if idx := strings.Index(val, ";tag="); idx != -1 {
-		return val[idx+5:]
-	}
-	return ""
+	return integrationtest.ExtractToTag(res)
 }
 
 func getPort(ts *integrationtest.TestServer, transport string) int {
 	return integrationtest.GetPort(ts, transport)
 }
 
-func extractRTPAddr(sdp *proto.SDP) (ip string, port int) {
-	ip = "127.0.0.1"
-	if sdp.Connection != nil && sdp.Connection.Address != "" {
-		ip = sdp.Connection.Address
-	}
-	for _, m := range sdp.MediaDescs {
-		if m.Type == "audio" {
-			return ip, m.Port
+func randomSSRC() uint32 {
+	for {
+		n, err := rand.Int(rand.Reader, big.NewInt(1<<31-1))
+		if err != nil {
+			return 1
 		}
-	}
-	return ip, 0
-}
-
-func buildRTPPacket(seq uint16, ts uint32, ssrc uint32, payload []byte) *proto.RTPPacket {
-	return &proto.RTPPacket{
-		Header: proto.RTPHeader{
-			Version:        2,
-			PayloadType:    0,
-			SequenceNumber: seq,
-			Timestamp:      ts,
-			SSRC:           ssrc,
-		},
-		Payload: payload,
-	}
-}
-
-func buildSDPOffer(rtpPort int, ip string) *proto.SDP {
-	return &proto.SDP{
-		Version: 0,
-		Origin: proto.Origin{
-			Username:       "-",
-			SessionID:      "1",
-			SessionVersion: "1",
-			NetworkType:    "IN",
-			AddressType:    "IP4",
-			Address:        ip,
-		},
-		SessionName: "test",
-		Connection:  &proto.ConnectionInfo{NetworkType: "IN", AddressType: "IP4", Address: ip},
-		Times:       []proto.TimeDescription{{Start: 0, Stop: 0}},
-		MediaDescs: []proto.MediaDescription{
-			{Type: "audio", Port: rtpPort, Proto: "RTP/AVP", Fmt: []string{"0", "8"}},
-		},
+		ssrc := uint32(n.Int64())
+		if ssrc != 0 {
+			return ssrc
+		}
 	}
 }
 

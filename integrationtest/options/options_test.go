@@ -55,6 +55,7 @@ func TestIntegration_Options(t *testing.T) {
 		via := res.GetHeader("Via")
 		require.NotNil(t, via, "Via header must be present")
 		assert.Contains(t, via.Value(), "TCP", "Via transport must be TCP")
+		require.Contains(t, via.Value(), "branch=z9hG4bK", "Via branch must start with magic cookie per RFC 3261 §8.1.1.7")
 
 		client.Close()
 		ua.Close()
@@ -83,7 +84,9 @@ func assertOptionsOK(t *testing.T, res *sipgo_sip.Response, ts *integrationtest.
 	allow := res.GetHeader("Allow")
 	require.NotNil(t, allow, "Allow header must be present")
 	allowVal := allow.Value()
-	assert.True(t, strings.Contains(allowVal, "REGISTER"), "Allow header must include REGISTER")
+	for _, method := range []string{"INVITE", "ACK", "BYE", "OPTIONS", "REGISTER"} {
+		assert.True(t, strings.Contains(allowVal, method), "Allow header must include %s (RFC 3261 §11.2)", method)
+	}
 
 	accept := res.GetHeader("Accept")
 	require.NotNil(t, accept, "Accept header must be present")

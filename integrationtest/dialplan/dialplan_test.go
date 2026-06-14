@@ -1,11 +1,12 @@
 package dialplan
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"math/big"
 	"net"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -106,7 +107,7 @@ func runEchoTest(t *testing.T, ts *integrationtest.TestServer, transport string,
 	callID := fmt.Sprintf("echo-%s-%s", transport, t.Name())
 	fromTag := "echo-from-123"
 
-	invite := buildEchoInvite(ts.Domain, getPort(ts, transport), callID, fromTag, transport, rtpPort, earlyOffer)
+	invite := buildEchoInvite(ts.Domain, integrationtest.GetPort(ts, transport), callID, fromTag, transport, rtpPort, earlyOffer)
 
 	if transport == "tcp" {
 		invite.SetTransport("TCP")
@@ -116,16 +117,16 @@ func runEchoTest(t *testing.T, ts *integrationtest.TestServer, transport string,
 	require.NoError(t, err)
 	require.Equal(t, proto.SIPStatusOK, res.StatusCode, "expected 200 OK for echo INVITE")
 
-	serverTag := extractToTag(res)
+	serverTag := integrationtest.ExtractToTag(res)
 	require.NotEmpty(t, serverTag, "To header should have server tag")
 
 	require.NotEmpty(t, res.Body(), "200 OK should have SDP body")
 	sdpAnswer, err := proto.UnmarshalSDPBytes(res.Body())
 	require.NoError(t, err)
-	serverIP, serverRTPPort := extractRTPAddr(sdpAnswer)
+	serverIP, serverRTPPort := integrationtest.ExtractRTPAddr(sdpAnswer)
 	require.NotZero(t, serverRTPPort, "SDP answer should have RTP port")
 
-	ack := buildEchoACK(ts.Domain, getPort(ts, transport), callID, fromTag, serverTag, transport, !earlyOffer, rtpPort)
+	ack := buildEchoACK(ts.Domain, integrationtest.GetPort(ts, transport), callID, fromTag, serverTag, transport, !earlyOffer, rtpPort)
 	if transport == "tcp" {
 		ack.SetTransport("TCP")
 	}
@@ -136,7 +137,9 @@ func runEchoTest(t *testing.T, ts *integrationtest.TestServer, transport string,
 
 	serverRTPAddr := &net.UDPAddr{IP: net.ParseIP(serverIP), Port: serverRTPPort}
 	testPayload := []byte{0xde, 0xad, 0xbe, 0xef}
-	sendPkt := buildRTPPacket(1, 0, 9999, testPayload)
+	r, _ := rand.Int(rand.Reader, big.NewInt(1<<31-1))
+	clientSSRC := uint32(r.Int64())
+	sendPkt := integrationtest.BuildRTPPacket(1, 0, clientSSRC, testPayload)
 
 	buf, err := sendPkt.Marshal()
 	require.NoError(t, err)
@@ -154,7 +157,7 @@ func runEchoTest(t *testing.T, ts *integrationtest.TestServer, transport string,
 	assert.Equal(t, testPayload, echoed.Payload, "echoed payload should match")
 	assert.Equal(t, uint8(0), echoed.Header.PayloadType, "payload type should be PCMU")
 
-	bye := buildEchoBYE(ts.Domain, getPort(ts, transport), callID, fromTag, serverTag, transport)
+	bye := buildEchoBYE(ts.Domain, integrationtest.GetPort(ts, transport), callID, fromTag, serverTag, transport)
 	if transport == "tcp" {
 		bye.SetTransport("TCP")
 	}
@@ -182,7 +185,7 @@ func runPlaybackTest(t *testing.T, ts *integrationtest.TestServer, transport str
 	callID := fmt.Sprintf("play-%s-%s", transport, t.Name())
 	fromTag := "play-from-123"
 
-	invite := buildPlaybackInvite(ts.Domain, getPort(ts, transport), callID, fromTag, transport, clientRTP.LocalAddr().(*net.UDPAddr).Port, earlyOffer)
+	invite := buildPlaybackInvite(ts.Domain, integrationtest.GetPort(ts, transport), callID, fromTag, transport, clientRTP.LocalAddr().(*net.UDPAddr).Port, earlyOffer)
 
 	if transport == "tcp" {
 		invite.SetTransport("TCP")
@@ -192,16 +195,16 @@ func runPlaybackTest(t *testing.T, ts *integrationtest.TestServer, transport str
 	require.NoError(t, err)
 	require.Equal(t, proto.SIPStatusOK, res.StatusCode, "expected 200 OK for playback INVITE")
 
-	serverTag := extractToTag(res)
+	serverTag := integrationtest.ExtractToTag(res)
 	require.NotEmpty(t, serverTag, "To header should have server tag")
 
 	require.NotEmpty(t, res.Body(), "200 OK should have SDP body")
 	sdpAnswer, err := proto.UnmarshalSDPBytes(res.Body())
 	require.NoError(t, err)
-	_, serverRTPPort := extractRTPAddr(sdpAnswer)
+	_, serverRTPPort := integrationtest.ExtractRTPAddr(sdpAnswer)
 	require.NotZero(t, serverRTPPort, "SDP answer should have RTP port")
 
-	ack := buildPlaybackACK(ts.Domain, getPort(ts, transport), callID, fromTag, serverTag, transport, !earlyOffer, clientRTP.LocalAddr().(*net.UDPAddr).Port)
+	ack := buildPlaybackACK(ts.Domain, integrationtest.GetPort(ts, transport), callID, fromTag, serverTag, transport, !earlyOffer, clientRTP.LocalAddr().(*net.UDPAddr).Port)
 	if transport == "tcp" {
 		ack.SetTransport("TCP")
 	}
@@ -235,7 +238,7 @@ func runPlaybackTest(t *testing.T, ts *integrationtest.TestServer, transport str
 
 	time.Sleep(200 * time.Millisecond)
 
-	bye := buildPlaybackBYE(ts.Domain, getPort(ts, transport), callID, fromTag, serverTag, transport)
+	bye := buildPlaybackBYE(ts.Domain, integrationtest.GetPort(ts, transport), callID, fromTag, serverTag, transport)
 	if transport == "tcp" {
 		bye.SetTransport("TCP")
 	}
@@ -262,7 +265,7 @@ func buildEchoInvite(domain string, port int, callID, fromTag, transport string,
 
 	if earlyOffer {
 		req.AppendHeader(sipgo_sip.NewHeader("Content-Type", "application/sdp"))
-		sdp := buildSDPOffer(rtpPort, "127.0.0.1")
+		sdp := integrationtest.BuildSDPOffer(rtpPort, "127.0.0.1")
 		sdpBytes, _ := sdp.Marshal()
 		req.SetBody(sdpBytes)
 		req.AppendHeader(sipgo_sip.NewHeader("Content-Length", fmt.Sprintf("%d", len(sdpBytes))))
@@ -286,7 +289,7 @@ func buildEchoACK(domain string, port int, callID, fromTag, serverTag, transport
 	req.AppendHeader(sipgo_sip.NewHeader("Max-Forwards", "70"))
 
 	if includeSDP {
-		sdp := buildSDPOffer(rtpPort, "127.0.0.1")
+		sdp := integrationtest.BuildSDPOffer(rtpPort, "127.0.0.1")
 		sdpBytes, _ := sdp.Marshal()
 		req.SetBody(sdpBytes)
 		req.AppendHeader(sipgo_sip.NewHeader("Content-Type", "application/sdp"))
@@ -328,7 +331,7 @@ func buildPlaybackInvite(domain string, port int, callID, fromTag, transport str
 
 	if earlyOffer {
 		req.AppendHeader(sipgo_sip.NewHeader("Content-Type", "application/sdp"))
-		sdp := buildSDPOffer(rtpPort, "127.0.0.1")
+		sdp := integrationtest.BuildSDPOffer(rtpPort, "127.0.0.1")
 		sdpBytes, _ := sdp.Marshal()
 		req.SetBody(sdpBytes)
 		req.AppendHeader(sipgo_sip.NewHeader("Content-Length", fmt.Sprintf("%d", len(sdpBytes))))
@@ -352,7 +355,7 @@ func buildPlaybackACK(domain string, port int, callID, fromTag, serverTag, trans
 	req.AppendHeader(sipgo_sip.NewHeader("Max-Forwards", "70"))
 
 	if includeSDP {
-		sdp := buildSDPOffer(rtpPort, "127.0.0.1")
+		sdp := integrationtest.BuildSDPOffer(rtpPort, "127.0.0.1")
 		sdpBytes, _ := sdp.Marshal()
 		req.SetBody(sdpBytes)
 		req.AppendHeader(sipgo_sip.NewHeader("Content-Type", "application/sdp"))
@@ -377,71 +380,6 @@ func buildPlaybackBYE(domain string, port int, callID, fromTag, serverTag, trans
 	req.AppendHeader(sipgo_sip.NewHeader("Max-Forwards", "70"))
 	req.AppendHeader(sipgo_sip.NewHeader("Content-Length", "0"))
 	return req
-}
-
-func buildSDPOffer(rtpPort int, ip string) *proto.SDP {
-	return &proto.SDP{
-		Version: 0,
-		Origin: proto.Origin{
-			Username:       "-",
-			SessionID:      "1",
-			SessionVersion: "1",
-			NetworkType:    "IN",
-			AddressType:    "IP4",
-			Address:        ip,
-		},
-		SessionName: "test",
-		Connection:  &proto.ConnectionInfo{NetworkType: "IN", AddressType: "IP4", Address: ip},
-		Times:       []proto.TimeDescription{{Start: 0, Stop: 0}},
-		MediaDescs: []proto.MediaDescription{
-			{Type: "audio", Port: rtpPort, Proto: "RTP/AVP", Fmt: []string{"0", "8"}},
-		},
-	}
-}
-
-func buildRTPPacket(seq uint16, ts uint32, ssrc uint32, payload []byte) *proto.RTPPacket {
-	return &proto.RTPPacket{
-		Header: proto.RTPHeader{
-			Version:        2,
-			PayloadType:    0,
-			SequenceNumber: seq,
-			Timestamp:      ts,
-			SSRC:           ssrc,
-		},
-		Payload: payload,
-	}
-}
-
-func getPort(ts *integrationtest.TestServer, transport string) int {
-	if transport == "tcp" {
-		return ts.TCPPort
-	}
-	return ts.UDPPort
-}
-
-func extractRTPAddr(sdp *proto.SDP) (ip string, port int) {
-	ip = "127.0.0.1"
-	if sdp.Connection != nil && sdp.Connection.Address != "" {
-		ip = sdp.Connection.Address
-	}
-	for _, m := range sdp.MediaDescs {
-		if m.Type == "audio" {
-			return ip, m.Port
-		}
-	}
-	return ip, 0
-}
-
-func extractToTag(res *sipgo_sip.Response) string {
-	to := res.GetHeader("To")
-	if to == nil {
-		return ""
-	}
-	val := to.Value()
-	if idx := strings.Index(val, ";tag="); idx != -1 {
-		return val[idx+5:]
-	}
-	return ""
 }
 
 func generateTestWav(t *testing.T) string {

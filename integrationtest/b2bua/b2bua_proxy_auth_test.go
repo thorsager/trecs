@@ -76,6 +76,10 @@ func doProxyAuthRequest(t *testing.T, client *sipgo.Client, req *sipgo_sip.Reque
 
 	res, err = client.Do(t.Context(), authReq)
 	require.NoError(t, err)
+
+	resCSeq := res.CSeq()
+	require.NotNil(t, resCSeq, "Response must have CSeq")
+	require.Equal(t, req.Method, resCSeq.MethodName, "CSeq method must match")
 	return res
 }
 
@@ -103,8 +107,13 @@ func extractChallengeParam(challenge, key string) string {
 func runB2BUACallWithProxyAuth(t *testing.T, ts *integrationtest.TestServer, transport, username, password string) {
 	t.Helper()
 
+	aliceSSRC := randomSSRC()
+	bobSSRC := randomSSRC()
+
 	bob := newBobUAS(t, ts, transport)
 	defer bob.close()
+	bob.expectedClientSSRC = aliceSSRC
+	bob.expectedBobSSRC = bobSSRC
 	bob.registerWithAuth(t, username, password)
 	time.Sleep(100 * time.Millisecond)
 
@@ -136,7 +145,7 @@ func runB2BUACallWithProxyAuth(t *testing.T, ts *integrationtest.TestServer, tra
 	require.NotEmpty(t, res.Body(), "200 OK should have SDP body")
 	sdpAnswer, err := proto.UnmarshalSDPBytes(res.Body())
 	require.NoError(t, err)
-	serverIP, serverRTPPort := extractRTPAddr(sdpAnswer)
+	serverIP, serverRTPPort := integrationtest.ExtractRTPAddr(sdpAnswer)
 	require.NotZero(t, serverRTPPort, "SDP answer should have RTP port")
 
 	ack := buildB2BUAACK(ts.Domain, port, callID, aliceFromTag, serverTag)
@@ -159,8 +168,8 @@ func runB2BUACallWithProxyAuth(t *testing.T, ts *integrationtest.TestServer, tra
 	require.NotZero(t, serverRTPPortB, "Bob should have extracted server's RTP port")
 	serverRTPAddrB := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: serverRTPPortB}
 
-	sendAliceToBob(t, aliceRTP, serverRTPAddr, bob.rtpCount)
-	sendBobToAlice(t, bob.rtp, serverRTPAddrB, aliceRTP)
+	sendAliceToBob(t, aliceRTP, serverRTPAddr, bob.rtpCount, aliceSSRC)
+	sendBobToAlice(t, bob.rtp, serverRTPAddrB, aliceRTP, bobSSRC)
 
 	bye := buildB2BUABYE(ts.Domain, port, callID, aliceFromTag, serverTag)
 	if transport == "tcp" {
@@ -202,10 +211,13 @@ func TestIntegration_ProxyAuth_InviteRejectedWithoutAuth(t *testing.T) {
 
 			proxyAuth := res.GetHeader("Proxy-Authenticate")
 			require.NotNil(t, proxyAuth, "Should have Proxy-Authenticate header")
-			require.Contains(t, proxyAuth.Value(), "Digest")
-			require.Contains(t, proxyAuth.Value(), `realm="127.0.0.1"`)
-			require.Contains(t, proxyAuth.Value(), "algorithm=SHA-256")
-			require.Contains(t, proxyAuth.Value(), `qop="auth"`)
+			val := proxyAuth.Value()
+			require.Contains(t, val, "Digest")
+			require.Contains(t, val, `realm="127.0.0.1"`)
+			require.Contains(t, val, "algorithm=SHA-256")
+			require.Contains(t, val, `qop="auth"`)
+			require.Contains(t, val, "nonce=", "Proxy-Authenticate must include nonce per RFC 3261 §22.1")
+			require.NotContains(t, val, "stale=TRUE", "Initial challenge should not have stale=TRUE")
 
 			client.Close()
 			ua.Close()

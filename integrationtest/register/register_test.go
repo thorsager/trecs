@@ -236,6 +236,7 @@ func assertRegisterOK(t *testing.T, res *sipgo_sip.Response, ts *integrationtest
 
 	via := res.GetHeader("Via")
 	require.NotNil(t, via, "Via header must be present")
+	require.Contains(t, via.Value(), "branch=z9hG4bK", "Via branch must start with magic cookie per RFC 3261 §8.1.1.7")
 
 	cseq := res.CSeq()
 	require.NotNil(t, cseq)
