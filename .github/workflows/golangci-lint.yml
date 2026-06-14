@@ -12,6 +12,21 @@ permissions:
   pull-requests: read
 
 jobs:
+  govet:
+    name: Go Vet
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ^1.26
+
+      - name: go vet
+        run: go vet ./...
+
   golangci:
     name: Golang CI Lint 
     runs-on: ubuntu-latest
