@@ -1,7 +1,7 @@
 package sip
 
 import (
-	"crypto/md5"
+	"crypto/md5" //nolint:gosec // MD5 required for SIP Digest auth compatibility
 	"encoding/hex"
 	"testing"
 )
@@ -239,24 +239,24 @@ func TestVerifyDigest_WrongPassword(t *testing.T) {
 }
 
 func TestHA1_AlgorithmsProduceDifferentHashes(t *testing.T) {
-	md5 := ComputeHA1("alice", "example.com", "secret", "MD5")
-	sha256 := ComputeHA1("alice", "example.com", "secret", "SHA-256")
-	sha512256 := ComputeHA1("alice", "example.com", "secret", "SHA-512-256")
+	md5Hash := ComputeHA1("alice", "example.com", "secret", "MD5")
+	sha256Hash := ComputeHA1("alice", "example.com", "secret", "SHA-256")
+	sha512256Hash := ComputeHA1("alice", "example.com", "secret", "SHA-512-256")
 
-	if md5 == sha256 {
+	if md5Hash == sha256Hash {
 		t.Fatal("MD5 and SHA-256 HA1 should differ")
 	}
-	if sha256 == sha512256 {
+	if sha256Hash == sha512256Hash {
 		t.Fatal("SHA-256 and SHA-512-256 HA1 should differ")
 	}
-	if len(md5) != 32 {
-		t.Fatalf("MD5 HA1 length: got %d, want 32", len(md5))
+	if len(md5Hash) != 32 {
+		t.Fatalf("MD5 HA1 length: got %d, want 32", len(md5Hash))
 	}
-	if len(sha256) != 64 {
-		t.Fatalf("SHA-256 HA1 length: got %d, want 64", len(sha256))
+	if len(sha256Hash) != 64 {
+		t.Fatalf("SHA-256 HA1 length: got %d, want 64", len(sha256Hash))
 	}
-	if len(sha512256) != 64 {
-		t.Fatalf("SHA-512-256 HA1 length: got %d, want 64", len(sha512256))
+	if len(sha512256Hash) != 64 {
+		t.Fatalf("SHA-512-256 HA1 length: got %d, want 64", len(sha512256Hash))
 	}
 }
 
@@ -427,7 +427,7 @@ func TestVerifyDigest_NoQop(t *testing.T) {
 	// Compute the expected response using the no-qop formula directly.
 	ha2 := hexHash("MD5", []byte(method+":"+uri))
 	respData := ha1 + ":" + nonce + ":" + ha2
-	h := md5.Sum([]byte(respData))
+	h := md5.Sum([]byte(respData)) //nolint:gosec // MD5 required for SIP Digest auth
 	expected := hex.EncodeToString(h[:])
 
 	creds := &DigestCredentials{

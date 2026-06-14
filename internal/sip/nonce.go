@@ -1,9 +1,9 @@
 package sip
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"context"
 	"sync"
 	"time"
 )
@@ -61,6 +61,7 @@ func (nm *NonceManager) Verify(nonce string, nc uint64) (known, valid bool) {
 	entry.maxNC = nc
 	return true, true
 }
+
 // Sweep removes expired entries. It should be called periodically.
 func (nm *NonceManager) Sweep() {
 	nm.mu.Lock()
@@ -74,7 +75,7 @@ func (nm *NonceManager) Sweep() {
 }
 
 // StartNonceSweeper starts a background goroutine that calls Sweep() on nm
-// at the given interval. The goroutine stops when ctx is cancelled.
+// at the given interval. The goroutine stops when ctx is canceled.
 func StartNonceSweeper(ctx context.Context, nm *NonceManager, interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)

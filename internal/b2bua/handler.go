@@ -62,7 +62,7 @@ func NewHandler(cfg Config) *Handler {
 
 // SetProxyPasswordStore enables proxy authentication for INVITE and BYE
 // using the same PasswordStore as the registrar. The nonce manager
-// runs its own sweep goroutine, stopped when ctx is cancelled.
+// runs its own sweep goroutine, stopped when ctx is canceled.
 func (h *Handler) SetProxyPasswordStore(store sip.PasswordStore, ctx context.Context) {
 	h.proxyPasswd = store
 	h.proxyNonces = sip.NewNonceManager(300 * time.Second)
