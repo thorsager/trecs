@@ -248,6 +248,12 @@ func VerifyDigestRequest(req *proto.SIPMessage, tx Transaction,
 		return nil
 	}
 
+	if creds.Realm != passwd.Realm() {
+		log.Warn("realm mismatch", "expected", passwd.Realm(), "got", creds.Realm)
+		tx.Respond(proto.NewResponse(req, 400, "Bad Request"))
+		return nil
+	}
+
 	ha1, userExists := passwd.HA1(creds.Username)
 	if !userExists || !VerifyDigest(creds, ha1, method) {
 		log.Warn("digest verification failed", "username", creds.Username, "method", method)
