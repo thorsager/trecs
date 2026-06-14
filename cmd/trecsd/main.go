@@ -108,8 +108,6 @@ func main() {
 		slog.Info("Dialplan loaded", "path", flagDialplan)
 	}
 
-
-
 	h := b2bua.NewHandler(b2bua.Config{
 		Registrar:      reg,
 		SessionManager: media.NewSessionManager(),

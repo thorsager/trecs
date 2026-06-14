@@ -2,6 +2,7 @@ package sip
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -41,7 +42,7 @@ func NewJSONPasswordStore(path string) (*JSONPasswordStore, error) {
 		return nil, fmt.Errorf("auth: parsing password file: %w", err)
 	}
 	if cfg.Realm == "" {
-		return nil, fmt.Errorf("auth: realm is required")
+		return nil, errors.New("auth: realm is required")
 	}
 	if cfg.Algorithm == "" {
 		cfg.Algorithm = "SHA-256"
@@ -105,5 +106,3 @@ func AORAllowed(allowed []string, aor string) bool {
 	}
 	return false
 }
-
-

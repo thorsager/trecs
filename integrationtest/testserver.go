@@ -185,12 +185,13 @@ type testPasswordStore struct {
 	aors      map[string][]string
 }
 
-func (s *testPasswordStore) Realm() string                     { return s.realm }
-func (s *testPasswordStore) Algorithm() string                  { return s.algorithm }
+func (s *testPasswordStore) Realm() string     { return s.realm }
+func (s *testPasswordStore) Algorithm() string { return s.algorithm }
 func (s *testPasswordStore) HA1(username string) (string, bool) {
 	h, ok := s.ha1s[username]
 	return h, ok
 }
+
 func (s *testPasswordStore) AORs(username string) ([]string, bool) {
 	a, ok := s.aors[username]
 	return a, ok

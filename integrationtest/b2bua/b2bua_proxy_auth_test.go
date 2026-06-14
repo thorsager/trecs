@@ -171,7 +171,7 @@ func runB2BUACallWithProxyAuth(t *testing.T, ts *integrationtest.TestServer, tra
 	require.Equal(t, proto.SIPStatusOK, byeRes.StatusCode, "BYE should get 200 OK")
 }
 
-// TestIntegration_ProxyAuth_InviteRejectedWithoutAuth: INVITE with no Proxy-Authorization → 407
+// TestIntegration_ProxyAuth_InviteRejectedWithoutAuth: INVITE with no Proxy-Authorization → 407.
 func TestIntegration_ProxyAuth_InviteRejectedWithoutAuth(t *testing.T) {
 	store := integrationtest.NewTestPasswordStore("127.0.0.1", "SHA-256",
 		integrationtest.TestUser("alice", "secret", "sip:alice@127.0.0.1"),
@@ -213,7 +213,7 @@ func TestIntegration_ProxyAuth_InviteRejectedWithoutAuth(t *testing.T) {
 	}
 }
 
-// TestIntegration_ProxyAuth_InviteAcceptedWithAuth: Full call with Proxy-Authorization
+// TestIntegration_ProxyAuth_InviteAcceptedWithAuth: Full call with Proxy-Authorization.
 func TestIntegration_ProxyAuth_InviteAcceptedWithAuth(t *testing.T) {
 	store := integrationtest.NewTestPasswordStore("127.0.0.1", "SHA-256",
 		integrationtest.TestUser("bob", "password", "sip:bob@127.0.0.1"),
@@ -228,7 +228,7 @@ func TestIntegration_ProxyAuth_InviteAcceptedWithAuth(t *testing.T) {
 	}
 }
 
-// TestIntegration_ProxyAuth_ByeRejectedWithoutAuth: BYE with no Proxy-Authorization → 407
+// TestIntegration_ProxyAuth_ByeRejectedWithoutAuth: BYE with no Proxy-Authorization → 407.
 func TestIntegration_ProxyAuth_ByeRejectedWithoutAuth(t *testing.T) {
 	store := integrationtest.NewTestPasswordStore("127.0.0.1", "SHA-256",
 		integrationtest.TestUser("bob", "password", "sip:bob@127.0.0.1"),
@@ -288,7 +288,7 @@ func TestIntegration_ProxyAuth_ByeRejectedWithoutAuth(t *testing.T) {
 	}
 }
 
-// TestIntegration_ProxyAuth_ByeAcceptedWithAuth: BYE with Proxy-Authorization → 200
+// TestIntegration_ProxyAuth_ByeAcceptedWithAuth: BYE with Proxy-Authorization → 200.
 func TestIntegration_ProxyAuth_ByeAcceptedWithAuth(t *testing.T) {
 	store := integrationtest.NewTestPasswordStore("127.0.0.1", "SHA-256",
 		integrationtest.TestUser("bob", "password", "sip:bob@127.0.0.1"),
@@ -303,7 +303,7 @@ func TestIntegration_ProxyAuth_ByeAcceptedWithAuth(t *testing.T) {
 	}
 }
 
-// TestIntegration_ProxyAuth_WrongPassword: INVITE with bad credentials → 403
+// TestIntegration_ProxyAuth_WrongPassword: INVITE with bad credentials → 403.
 func TestIntegration_ProxyAuth_WrongPassword(t *testing.T) {
 	store := integrationtest.NewTestPasswordStore("127.0.0.1", "SHA-256",
 		integrationtest.TestUser("alice", "secret", "sip:alice@127.0.0.1"),
@@ -345,7 +345,7 @@ func TestIntegration_ProxyAuth_WrongPassword(t *testing.T) {
 			qop := extractChallengeParam(proxyAuth.Value(), "qop")
 			ha1 := trecs_sip.ComputeHA1("alice", realm, "wrongpass", algorithm)
 			digestResponse := trecs_sip.ComputeDigestResponse(ha1, nonce, "00000001", "cnonce", qop, "INVITE", invite.Recipient.String(), algorithm)
-			authValue := fmt.Sprintf(`Digest username="alice", realm="%s", nonce="%s", uri="%s", response="%s", algorithm=%s, cnonce="cnonce", nc=00000001, qop=%s`,
+			authValue := fmt.Sprintf(`Digest username="alice", realm=%q, nonce=%q, uri=%q, response=%q, algorithm=%s, cnonce="cnonce", nc=00000001, qop=%s`,
 				realm, nonce, invite.Recipient.String(), digestResponse, algorithm, qop)
 
 			authReq := invite.Clone()
@@ -361,7 +361,7 @@ func TestIntegration_ProxyAuth_WrongPassword(t *testing.T) {
 }
 
 // TestIntegration_ProxyAuth_BadNonce: INVITE with gibberish nonce → 407 stale=FALSE
-// TestIntegration_ProxyAuth_OptionsBypassesAuth: OPTIONS should succeed without auth
+// TestIntegration_ProxyAuth_OptionsBypassesAuth: OPTIONS should succeed without auth.
 func TestIntegration_ProxyAuth_OptionsBypassesAuth(t *testing.T) {
 	store := integrationtest.NewTestPasswordStore("127.0.0.1", "SHA-256",
 		integrationtest.TestUser("alice", "secret", "sip:alice@127.0.0.1"),
@@ -424,7 +424,7 @@ func TestIntegration_ProxyAuth_BadNonce(t *testing.T) {
 	// Send with a made-up nonce + correct digest for that nonce
 	ha1 := trecs_sip.ComputeHA1("alice", "127.0.0.1", "secret", "SHA-256")
 	response := trecs_sip.ComputeDigestResponse(ha1, "bogus-nonce", "00000001", "cnonce", "auth", "INVITE", invite.Recipient.String(), "SHA-256")
-	authValue := fmt.Sprintf(`Digest username="alice", realm="127.0.0.1", nonce="bogus-nonce", uri="%s", response="%s", algorithm=SHA-256, cnonce="cnonce", nc=00000001, qop=auth`,
+	authValue := fmt.Sprintf(`Digest username="alice", realm="127.0.0.1", nonce="bogus-nonce", uri=%q, response=%q, algorithm=SHA-256, cnonce="cnonce", nc=00000001, qop=auth`,
 		invite.Recipient.String(), response)
 
 	authReq := invite.Clone()

@@ -1259,8 +1259,8 @@ type testPasswordStore struct {
 	users     map[string]testUserEntry
 }
 
-func (s *testPasswordStore) Realm() string               { return s.realm }
-func (s *testPasswordStore) Algorithm() string            { return s.algorithm }
+func (s *testPasswordStore) Realm() string     { return s.realm }
+func (s *testPasswordStore) Algorithm() string { return s.algorithm }
 func (s *testPasswordStore) HA1(username string) (string, bool) {
 	u, ok := s.users[username]
 	if !ok {
@@ -1268,6 +1268,7 @@ func (s *testPasswordStore) HA1(username string) (string, bool) {
 	}
 	return u.ha1, true
 }
+
 func (s *testPasswordStore) AORs(username string) ([]string, bool) {
 	u, ok := s.users[username]
 	if !ok {
