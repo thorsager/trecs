@@ -29,7 +29,7 @@ func NewNonceManager(ttl time.Duration) *NonceManager {
 func (nm *NonceManager) NewNonce() string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		return "0000000000000000"
+		panic("crypto/rand: " + err.Error())
 	}
 	nonce := hex.EncodeToString(b)
 
