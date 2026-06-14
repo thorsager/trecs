@@ -174,6 +174,9 @@ func doAuthRequest(t *testing.T, client *sipgo.Client, req *sipgo_sip.Request, u
 	})
 	require.NoError(t, err)
 	require.Equal(t, proto.SIPStatusOK, res.StatusCode, "Auth request should succeed")
+	resCSeq := res.CSeq()
+	require.NotNil(t, resCSeq, "200 OK must have CSeq")
+	require.Equal(t, req.Method, resCSeq.MethodName, "CSeq method must match")
 	return res
 }
 
@@ -182,8 +185,11 @@ func assertWWWChallenge(t *testing.T, res *sipgo_sip.Response, realm, algorithm 
 	t.Helper()
 	wwwAuth := res.GetHeader("WWW-Authenticate")
 	require.NotNil(t, wwwAuth, "Should have WWW-Authenticate header")
-	require.Contains(t, wwwAuth.Value(), "Digest")
-	require.Contains(t, wwwAuth.Value(), `realm="`+realm+`"`)
-	require.Contains(t, wwwAuth.Value(), "algorithm="+algorithm)
-	require.Contains(t, wwwAuth.Value(), "qop=\"auth\"")
+	val := wwwAuth.Value()
+	require.Contains(t, val, "Digest")
+	require.Contains(t, val, `realm="`+realm+`"`)
+	require.Contains(t, val, "algorithm="+algorithm)
+	require.Contains(t, val, "qop=\"auth\"")
+	require.Contains(t, val, "nonce=", "WWW-Authenticate must include nonce per RFC 3261 §22.1")
+	require.NotContains(t, val, "stale=TRUE", "Initial challenge should not have stale=TRUE")
 }
