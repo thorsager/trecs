@@ -3,10 +3,8 @@ package b2bua
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
-	"math/big"
 	"net"
 	"regexp"
 	"strconv"
@@ -595,7 +593,7 @@ func receiveRTP(rtp *net.UDPConn, rtpCount chan<- int, ctx context.Context, expe
 
 		if packetCount == 1 {
 			serverSSRC = pkt.Header.SSRC
-			if serverSSRC == expectedClientSSRC {
+			if expectedClientSSRC != 0 && serverSSRC == expectedClientSSRC {
 				rtpCount <- -1
 				return
 			}
@@ -725,8 +723,8 @@ func runB2BUACall(t *testing.T, ts *integrationtest.TestServer, aliceTransport, 
 	bob := newBobUAS(t, ts, bobTransport)
 	defer bob.close()
 
-	aliceSSRC := randomSSRC()
-	bobSSRC := randomSSRC()
+	aliceSSRC := integrationtest.RandomSSRC()
+	bobSSRC := integrationtest.RandomSSRC()
 	bob.expectedClientSSRC = aliceSSRC
 	bob.expectedBobSSRC = bobSSRC
 
@@ -825,8 +823,8 @@ func runOutboundCall(t *testing.T, ts *integrationtest.TestServer, outboundSide 
 		bobSSRC       uint32
 	)
 
-	aliceSSRC = randomSSRC()
-	bobSSRC = randomSSRC()
+	aliceSSRC = integrationtest.RandomSSRC()
+	bobSSRC = integrationtest.RandomSSRC()
 
 	callID := fmt.Sprintf("b2bua-outbound-%s-%s", outboundSide, t.Name())
 	aliceFromTag := "alice-from-outbound"
@@ -1065,19 +1063,6 @@ func extractToTagB2B(res *sipgo_sip.Response) string {
 
 func getPort(ts *integrationtest.TestServer, transport string) int {
 	return integrationtest.GetPort(ts, transport)
-}
-
-func randomSSRC() uint32 {
-	for {
-		n, err := rand.Int(rand.Reader, big.NewInt(1<<31-1))
-		if err != nil {
-			return 1
-		}
-		ssrc := uint32(n.Int64())
-		if ssrc != 0 {
-			return ssrc
-		}
-	}
 }
 
 var sdpPortRegex = regexp.MustCompile(`m=audio (\d+) RTP/AVP`)

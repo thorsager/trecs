@@ -107,8 +107,8 @@ func extractChallengeParam(challenge, key string) string {
 func runB2BUACallWithProxyAuth(t *testing.T, ts *integrationtest.TestServer, transport, username, password string) {
 	t.Helper()
 
-	aliceSSRC := randomSSRC()
-	bobSSRC := randomSSRC()
+	aliceSSRC := integrationtest.RandomSSRC()
+	bobSSRC := integrationtest.RandomSSRC()
 
 	bob := newBobUAS(t, ts, transport)
 	defer bob.close()
