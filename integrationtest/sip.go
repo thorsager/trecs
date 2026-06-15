@@ -14,7 +14,11 @@ func ExtractToTag(res *sipgo_sip.Response) string {
 	}
 	val := to.Value()
 	if idx := strings.Index(val, ";tag="); idx != -1 {
-		return val[idx+5:]
+		tagVal := val[idx+5:]
+		if end := strings.Index(tagVal, ";"); end != -1 {
+			tagVal = tagVal[:end]
+		}
+		return tagVal
 	}
 	return ""
 }

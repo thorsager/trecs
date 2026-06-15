@@ -48,8 +48,8 @@ func TestIntegration_B2BUACallWithAuth(t *testing.T) {
 func runAliceInviteAndVerify(t *testing.T, ts *integrationtest.TestServer, bob *bobUAS, transport, byeFrom, authUsername, authPassword string) {
 	t.Helper()
 
-	aliceSSRC := randomSSRC()
-	bobSSRC := randomSSRC()
+	aliceSSRC := integrationtest.RandomSSRC()
+	bobSSRC := integrationtest.RandomSSRC()
 	bob.expectedClientSSRC = aliceSSRC
 	bob.expectedBobSSRC = bobSSRC
 

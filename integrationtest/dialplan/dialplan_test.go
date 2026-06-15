@@ -1,10 +1,8 @@
 package dialplan
 
 import (
-	"crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"math/big"
 	"net"
 	"os"
 	"testing"
@@ -137,9 +135,7 @@ func runEchoTest(t *testing.T, ts *integrationtest.TestServer, transport string,
 
 	serverRTPAddr := &net.UDPAddr{IP: net.ParseIP(serverIP), Port: serverRTPPort}
 	testPayload := []byte{0xde, 0xad, 0xbe, 0xef}
-	r, _ := rand.Int(rand.Reader, big.NewInt(1<<31-1))
-	clientSSRC := uint32(r.Int64())
-	sendPkt := integrationtest.BuildRTPPacket(1, 0, clientSSRC, testPayload)
+	sendPkt := integrationtest.BuildRTPPacket(1, 0, integrationtest.RandomSSRC(), testPayload)
 
 	buf, err := sendPkt.Marshal()
 	require.NoError(t, err)
