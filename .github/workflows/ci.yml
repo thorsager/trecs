@@ -58,6 +58,24 @@ jobs:
           coverage-artifact-name: "code-coverage" # can be omitted if you used this default value
           coverage-file-name: "coverage.txt" # can be omitted if you used this default value
 
+  race_detection:
+    name: "Race detection"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ^1.26
+
+      - name: Unit tests
+        run: go test -race $(go list ./... | grep -v integrationtest)
+
+      - name: Integration tests
+        run: go test -race ./integrationtest/...
+
   integration_tests:
     name: "Integration tests"
     runs-on: ubuntu-latest
