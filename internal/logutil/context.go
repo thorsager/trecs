@@ -40,14 +40,22 @@ func NewContext(ctx context.Context, logger *slog.Logger) context.Context {
 // WithValue stores a key-value pair in the context that will be automatically
 // included as an attribute on every log record produced by FromContext(ctx).
 func WithValue(ctx context.Context, key string, value any) context.Context {
-	v := extractCtxValues(ctx)
-	v.attrs = append(v.attrs, slog.Any(key, value))
+	existing := extractCtxValues(ctx)
+	v := &ctxValues{
+		attrs: make([]slog.Attr, len(existing.attrs)+1),
+	}
+	copy(v.attrs, existing.attrs)
+	v.attrs[len(existing.attrs)] = slog.Any(key, value)
 	return context.WithValue(ctx, ctxValuesKey{}, v)
 }
 
 // WithValues stores multiple key-value pairs in the context for automatic logging.
 func WithValues(ctx context.Context, kvs ...any) context.Context {
-	v := extractCtxValues(ctx)
+	existing := extractCtxValues(ctx)
+	v := &ctxValues{
+		attrs: make([]slog.Attr, len(existing.attrs), len(existing.attrs)+len(kvs)/2),
+	}
+	copy(v.attrs, existing.attrs)
 	for i := 0; i+1 < len(kvs); i += 2 {
 		if key, ok := kvs[i].(string); ok {
 			v.attrs = append(v.attrs, slog.Any(key, kvs[i+1]))

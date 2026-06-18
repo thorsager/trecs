@@ -212,8 +212,8 @@ func TestNISTFinalResponseToCompleted(t *testing.T) {
 
 	tx.Respond(proto.NewResponse(req, 200, "OK"))
 
-	if tx.state != NISTCompleted {
-		t.Fatalf("expected Completed after 200 for reliable transport, got %s", tx.state)
+	if got := stateNIST(t, tx); got != NISTCompleted && got != NISTTerminated {
+		t.Fatalf("expected Completed or Terminated after 200 for reliable transport, got %s", got)
 	}
 	if trans.lastSent().StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected sent 200, got %d", trans.lastSent().StatusCode())
@@ -312,8 +312,8 @@ func TestNISTCompletedFromProceeding(t *testing.T) {
 
 	tx.Respond(proto.NewResponse(req, 200, "OK"))
 
-	if tx.state != NISTCompleted {
-		t.Fatalf("expected Completed from Proceeding, got %s", tx.state)
+	if got := stateNIST(t, tx); got != NISTCompleted && got != NISTTerminated {
+		t.Fatalf("expected Completed or Terminated from Proceeding, got %s", got)
 	}
 	if trans.lastSent().StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected sent 200, got %d", trans.lastSent().StatusCode())

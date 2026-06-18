@@ -8,6 +8,13 @@ import (
 	"github.com/thorsager/trecs/proto"
 )
 
+func stateUAC(t *testing.T, u *UACTransaction) UACState {
+	t.Helper()
+	u.stateMu.Lock()
+	defer u.stateMu.Unlock()
+	return u.state
+}
+
 func TestUAC_CallingToProceeding(t *testing.T) {
 	mock := &mockTransport{}
 	target := &Target{}
@@ -26,8 +33,8 @@ func TestUAC_CallingToProceeding(t *testing.T) {
 
 	// 100 Trying
 	uac.HandleResponse(proto.NewResponse(req, 100, "Trying"))
-	if uac.state != UACStateProceeding {
-		t.Fatalf("expected Proceeding, got %s", uac.state)
+	if got := stateUAC(t, uac); got != UACStateProceeding {
+		t.Fatalf("expected Proceeding, got %s", got)
 	}
 
 	resp := <-uac.Responses
@@ -48,8 +55,8 @@ func TestUAC_CallingToCompleted2xx(t *testing.T) {
 	}
 
 	uac.HandleResponse(proto.NewResponse(req, 200, "OK"))
-	if uac.state != UACStateCompleted {
-		t.Fatalf("expected Completed, got %s", uac.state)
+	if got := stateUAC(t, uac); got != UACStateCompleted && got != UACStateTerminated {
+		t.Fatalf("expected Completed or Terminated, got %s", got)
 	}
 
 	resp := <-uac.Responses
@@ -70,8 +77,8 @@ func TestUAC_CallingToCompleted3xx(t *testing.T) {
 	}
 
 	uac.HandleResponse(proto.NewResponse(req, 486, "Busy Here"))
-	if uac.state != UACStateCompleted {
-		t.Fatalf("expected Completed, got %s", uac.state)
+	if got := stateUAC(t, uac); got != UACStateCompleted && got != UACStateTerminated {
+		t.Fatalf("expected Completed or Terminated, got %s", got)
 	}
 
 	resp := <-uac.Responses
@@ -92,14 +99,14 @@ func TestUAC_ProceedingToCompleted2xx(t *testing.T) {
 	}
 
 	uac.HandleResponse(proto.NewResponse(req, 180, "Ringing"))
-	if uac.state != UACStateProceeding {
-		t.Fatalf("expected Proceeding, got %s", uac.state)
+	if got := stateUAC(t, uac); got != UACStateProceeding {
+		t.Fatalf("expected Proceeding, got %s", got)
 	}
 	<-uac.Responses // drain 180
 
 	uac.HandleResponse(proto.NewResponse(req, 200, "OK"))
-	if uac.state != UACStateCompleted {
-		t.Fatalf("expected Completed, got %s", uac.state)
+	if got := stateUAC(t, uac); got != UACStateCompleted && got != UACStateTerminated {
+		t.Fatalf("expected Completed or Terminated, got %s", got)
 	}
 
 	resp := <-uac.Responses
@@ -120,14 +127,14 @@ func TestUAC_TerminatedIgnoresResponses(t *testing.T) {
 	}
 
 	uac.Cancel()
-	if uac.state != UACStateTerminated {
-		t.Fatalf("expected Terminated, got %s", uac.state)
+	if got := stateUAC(t, uac); got != UACStateTerminated {
+		t.Fatalf("expected Terminated, got %s", got)
 	}
 
 	// Should not panic or change state
 	uac.HandleResponse(proto.NewResponse(req, 200, "OK"))
-	if uac.state != UACStateTerminated {
-		t.Fatalf("expected Terminated after cancel, got %s", uac.state)
+	if got := stateUAC(t, uac); got != UACStateTerminated {
+		t.Fatalf("expected Terminated after cancel, got %s", got)
 	}
 }
 
@@ -189,14 +196,11 @@ func TestUAC_NoRetransmitOnTCP(t *testing.T) {
 }
 
 func TestUAC_TimerBTimeout(t *testing.T) {
-	oldT1 := T1
-	T1 = 10 * time.Millisecond
-	defer func() { T1 = oldT1 }()
-
 	mock := &mockTransport{}
 	target := &Target{}
 	uac := newUACTransaction(t.Context(), proto.SIPMethodINVITE, mock, target)
 	uac.reliable = true
+	uac.t1Override = 10 * time.Millisecond
 
 	req := testRequest(t, proto.SIPMethodINVITE, uac.Branch, false)
 	if err := uac.Send(req); err != nil {
@@ -213,16 +217,12 @@ func TestUAC_TimerBTimeout(t *testing.T) {
 		t.Fatal("expected Timer B timeout within 2s")
 	}
 
-	if uac.state != UACStateTerminated {
-		t.Fatalf("expected Terminated after Timer B, got %s", uac.state)
+	if got := stateUAC(t, uac); got != UACStateTerminated {
+		t.Fatalf("expected Terminated after Timer B, got %s", got)
 	}
 }
 
 func TestUAC_TimerDCompleted(t *testing.T) {
-	oldT1 := T1
-	T1 = 10 * time.Millisecond
-	defer func() { T1 = oldT1 }()
-
 	mock := &mockTransport{}
 	target := &Target{}
 	uac := newUACTransaction(t.Context(), proto.SIPMethodINVITE, mock, target)
@@ -234,15 +234,15 @@ func TestUAC_TimerDCompleted(t *testing.T) {
 	}
 
 	uac.HandleResponse(proto.NewResponse(req, 200, "OK"))
-	if uac.state != UACStateCompleted {
-		t.Fatalf("expected Completed, got %s", uac.state)
+	if got := stateUAC(t, uac); got != UACStateCompleted && got != UACStateTerminated {
+		t.Fatalf("expected Completed or Terminated, got %s", got)
 	}
 
 	// Timer D with zero duration (reliable=true) should fire immediately
 	time.Sleep(100 * time.Millisecond)
 
-	if uac.state != UACStateTerminated {
-		t.Fatalf("expected Terminated after Timer D, got %s", uac.state)
+	if got := stateUAC(t, uac); got != UACStateTerminated {
+		t.Fatalf("expected Terminated after Timer D, got %s", got)
 	}
 }
 
@@ -306,8 +306,8 @@ func TestUAC_CancelStopsTimers(t *testing.T) {
 		t.Fatalf("expected only initial send after cancel, got %d", sent)
 	}
 
-	if uac.state != UACStateTerminated {
-		t.Fatalf("expected Terminated after cancel, got %s", uac.state)
+	if got := stateUAC(t, uac); got != UACStateTerminated {
+		t.Fatalf("expected Terminated after cancel, got %s", got)
 	}
 }
 
