@@ -2,9 +2,7 @@ name: Require Labels
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
-  pull_request_target:
-    types: [labeled, unlabeled]
+    types: [opened, reopened, synchronize, labeled, unlabeled]
 
 permissions:
   contents: read
