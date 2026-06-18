@@ -54,24 +54,24 @@ func (s UACState) String() string {
 }
 
 type UACTransaction struct {
-	transport Transport
-	ctx       context.Context
-	timerD    *time.Timer
-	Errors    chan error
-	cancel    context.CancelFunc
-	manager   *UACManager
-	request   *proto.SIPMessage
-	Responses chan *proto.SIPMessage
-	target    *Target
-	logger    *slog.Logger
-	timerA    *time.Timer
-	timerB    *time.Timer
-	Branch    string
-	Method    proto.SIPMethod
-	retxCount int
-	state     UACState
-	stateMu   sync.Mutex
-	reliable  bool
+	transport  Transport
+	ctx        context.Context
+	timerD     *time.Timer
+	Errors     chan error
+	cancel     context.CancelFunc
+	manager    *UACManager
+	request    *proto.SIPMessage
+	Responses  chan *proto.SIPMessage
+	target     *Target
+	logger     *slog.Logger
+	timerA     *time.Timer
+	timerB     *time.Timer
+	Branch     string
+	Method     proto.SIPMethod
+	retxCount  int
+	state      UACState
+	stateMu    sync.Mutex
+	reliable   bool
 	t1Override time.Duration // for tests; zero means use global T1
 }
 
