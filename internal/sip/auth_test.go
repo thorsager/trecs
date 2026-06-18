@@ -4,6 +4,7 @@ import (
 	"crypto/md5" //nolint:gosec // MD5 required for SIP Digest auth compatibility
 	"encoding/hex"
 	"testing"
+	"time"
 )
 
 func TestParseAuthorization_Valid(t *testing.T) {
@@ -478,5 +479,74 @@ func TestVerifyDigest_QopAuthInt(t *testing.T) {
 	// Must fail with wrong method.
 	if VerifyDigest(creds, ha1, "BYE") {
 		t.Fatal("VerifyDigest should fail when method does not match (auth-int)")
+	}
+}
+
+func TestAuthAttemptTracker_RecordAndReset(t *testing.T) {
+	at := NewAuthAttemptTracker(AuthAttemptTTL)
+	if at.Count("k1") != 0 {
+		t.Fatalf("initial count should be 0")
+	}
+	if at.Record("k1") != 1 {
+		t.Fatalf("first record should return 1")
+	}
+	if at.Record("k1") != 2 {
+		t.Fatalf("second record should return 2")
+	}
+	if at.Count("k1") != 2 {
+		t.Fatalf("count should be 2")
+	}
+	at.Reset("k1")
+	if at.Count("k1") != 0 {
+		t.Fatalf("count after reset should be 0")
+	}
+}
+
+func TestAuthAttemptTracker_KeysAreIndependent(t *testing.T) {
+	at := NewAuthAttemptTracker(AuthAttemptTTL)
+	at.Record("k1")
+	at.Record("k1")
+	at.Record("k2")
+	if at.Count("k1") != 2 {
+		t.Fatalf("k1 count should be 2")
+	}
+	if at.Count("k2") != 1 {
+		t.Fatalf("k2 count should be 1")
+	}
+}
+
+func TestAuthAttemptTracker_Expiry(t *testing.T) {
+	at := NewAuthAttemptTracker(50 * time.Millisecond)
+	at.Record("k1")
+	if at.Count("k1") != 1 {
+		t.Fatalf("count should be 1 before expiry")
+	}
+	time.Sleep(60 * time.Millisecond)
+	if at.Count("k1") != 0 {
+		t.Fatalf("count should be 0 after expiry")
+	}
+}
+
+func TestAuthAttemptTracker_Sweep(t *testing.T) {
+	at := NewAuthAttemptTracker(50 * time.Millisecond)
+	at.Record("k1")
+	time.Sleep(60 * time.Millisecond)
+	at.Sweep()
+	at.mu.Lock()
+	_, ok := at.entries["k1"]
+	at.mu.Unlock()
+	if ok {
+		t.Fatalf("expired entry should be swept")
+	}
+}
+
+func TestAuthAttemptTracker_RecordRefreshesExpiry(t *testing.T) {
+	at := NewAuthAttemptTracker(100 * time.Millisecond)
+	at.Record("k1")
+	time.Sleep(60 * time.Millisecond)
+	at.Record("k1") // should refresh expiry
+	time.Sleep(60 * time.Millisecond)
+	if at.Count("k1") != 2 {
+		t.Fatalf("entry should still be alive after refresh")
 	}
 }

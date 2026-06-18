@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/thorsager/trecs/proto"
 )
@@ -26,6 +28,148 @@ type DigestCredentials struct {
 	QOP       string
 	NC        uint64
 	Opaque    string
+}
+
+// DefaultMaxFailedAuthAttempts is the default number of consecutive auth failures
+// allowed before a 403 Forbidden lockout.
+const DefaultMaxFailedAuthAttempts = 3
+
+// ClampMaxFailedAuthAttempts clamps n to the valid range [1, 10].
+func ClampMaxFailedAuthAttempts(n int) int {
+	if n < 1 {
+		return 1
+	}
+	if n > 10 {
+		return 10
+	}
+	return n
+}
+
+// AuthAttemptTTL is the lifetime of per-session failed-auth counters.
+// Matches the NonceManager TTL (300s) so the attempt budget expires
+// together with the nonce, preventing nonce-reuse across counter resets.
+const AuthAttemptTTL = 300 * time.Second
+
+// authAttemptEntry tracks the number of consecutive failures for a single
+// session key along with its expiry time.
+type authAttemptEntry struct {
+	count   int
+	expires time.Time
+}
+
+// AuthAttemptTracker counts failed authentication/authorization attempts per
+// session (transport:remote|Call-ID). It is safe for concurrent use.
+type AuthAttemptTracker struct {
+	mu      sync.Mutex
+	entries map[string]*authAttemptEntry
+	ttl     time.Duration
+}
+
+// NewAuthAttemptTracker creates a tracker that expires entries after ttl.
+func NewAuthAttemptTracker(ttl time.Duration) *AuthAttemptTracker {
+	return &AuthAttemptTracker{
+		entries: make(map[string]*authAttemptEntry),
+		ttl:     ttl,
+	}
+}
+
+// Record increments the failure count for key, refreshes its expiry, and
+// returns the new count.
+func (at *AuthAttemptTracker) Record(key string) int {
+	at.mu.Lock()
+	defer at.mu.Unlock()
+	e := at.entries[key]
+	if e == nil {
+		e = &authAttemptEntry{}
+		at.entries[key] = e
+	}
+	e.count++
+	e.expires = time.Now().Add(at.ttl)
+	return e.count
+}
+
+// Count returns the current failure count for key, or 0 if expired/missing.
+func (at *AuthAttemptTracker) Count(key string) int {
+	at.mu.Lock()
+	defer at.mu.Unlock()
+	e := at.entries[key]
+	if e == nil || time.Now().After(e.expires) {
+		return 0
+	}
+	return e.count
+}
+
+// Reset clears the failure count for key.
+func (at *AuthAttemptTracker) Reset(key string) {
+	at.mu.Lock()
+	defer at.mu.Unlock()
+	delete(at.entries, key)
+}
+
+// Sweep removes expired entries. It should be called periodically.
+func (at *AuthAttemptTracker) Sweep() {
+	at.mu.Lock()
+	defer at.mu.Unlock()
+	now := time.Now()
+	for k, e := range at.entries {
+		if now.After(e.expires) {
+			delete(at.entries, k)
+		}
+	}
+}
+
+// AuthAttemptKey builds a session key from the transaction source and Call-ID.
+func AuthAttemptKey(tx Transaction, callID string) string {
+	target := tx.Target()
+	var remote string
+	if target.Addr != nil {
+		remote = target.Addr.String()
+	} else if target.Conn != nil {
+		remote = target.Conn.RemoteAddr().String()
+	} else {
+		remote = "unknown"
+	}
+	transport := "?"
+	if tx.Transport() != nil {
+		transport = TransportName(tx.Transport())
+	}
+	return transport + ":" + remote + "|" + callID
+}
+
+// sendAuthFailureResponse records a failed attempt and sends either a fresh
+// 401/407 challenge or a 403 lockout response. It returns true if a 403 was
+// sent.
+func sendAuthFailureResponse(
+	tracker *AuthAttemptTracker,
+	maxAttempts int,
+	key string,
+	req *proto.SIPMessage,
+	tx Transaction,
+	passwd PasswordStore,
+	nonces *NonceManager,
+	respChallengeKey string,
+	challengeStatus int,
+	statusText string,
+	stale bool,
+	log *slog.Logger,
+) bool {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	count := tracker.Record(key)
+	if count < maxAttempts {
+		log.Debug("auth failure, challenging", "count", count, "maxAttempts", maxAttempts)
+		nonce := nonces.NewNonce()
+		challenge := BuildDigestChallenge(passwd.Realm(), nonce, passwd.Algorithm(), stale)
+		res := proto.NewResponse(req, challengeStatus, statusText)
+		res.Headers.Add(respChallengeKey, challenge)
+		tx.Respond(res)
+		return false
+	}
+	log.Warn("auth failure threshold reached, locking out", "count", count, "maxAttempts", maxAttempts)
+	tracker.Reset(key)
+	tx.Respond(proto.NewResponse(req, 403, "Forbidden"))
+	return true
 }
 
 // ParseDigest parses the value of a Digest-type header (Authorization,
@@ -208,21 +352,21 @@ func VerifyDigest(creds *DigestCredentials, ha1 string, method string) bool {
 	return subtle.ConstantTimeCompare([]byte(expected), []byte(creds.Response)) == 1
 }
 
-// VerifyDigestRequest performs the full digest authentication flow for a SIP request:
-//  1. Check that the auth header exists, otherwise send a challenge.
-//  2. Parse the header value.
-//  3. Look up the user's HA1 and verify the digest response.
-//  4. Verify the nonce (replay protection and expiry).
+// VerifyDigestRequest performs the full digest authentication flow for a SIP request.
 //
-// On success it returns the parsed credentials. On failure it sends the
-// appropriate error response (400, 403, or challengeStatus) and returns nil.
-//
-// log is used for structured logging; pass a *slog.Logger from the caller's context.
+// Failures (malformed header, realm/URI mismatch, unknown username, wrong
+// password, invalid nonce) are treated as authentication failures and are
+// subject to the configured retry limit: the first maxAttempts-1 failures
+// receive a fresh 401/407 challenge; the maxAttempts-th failure receives 403.
+// Only a missing auth header bypasses counting (it receives the initial
+// challenge). On success the per-session failure counter is reset and the
+// parsed credentials are returned.
 func VerifyDigestRequest(req *proto.SIPMessage, tx Transaction,
-	passwd PasswordStore, nonces *NonceManager,
+	passwd PasswordStore, nonces *NonceManager, attempts *AuthAttemptTracker,
 	authHeaderKey, respChallengeKey string,
 	challengeStatus int, statusText string,
 	method string, log *slog.Logger,
+	maxAttempts int,
 ) *DigestCredentials {
 	authHeader := req.Headers.GetFirst(authHeaderKey)
 	if authHeader == "" {
@@ -235,41 +379,52 @@ func VerifyDigestRequest(req *proto.SIPMessage, tx Transaction,
 		return nil
 	}
 
+	callID := req.Headers.GetFirst("Call-ID")
+	key := AuthAttemptKey(tx, callID)
+
 	creds, err := ParseDigest(authHeader)
 	if err != nil || creds.Username == "" {
 		log.Warn("bad auth header", "error", err)
-		tx.Respond(proto.NewResponse(req, 400, "Bad Request"))
+		sendAuthFailureResponse(attempts, maxAttempts, key, req, tx,
+			passwd, nonces, respChallengeKey, challengeStatus, statusText,
+			false, log)
 		return nil
 	}
 
 	if creds.URI != req.RequestURI() {
 		log.Warn("uri mismatch", "expected", req.RequestURI(), "got", creds.URI)
-		tx.Respond(proto.NewResponse(req, 400, "Bad Request"))
+		sendAuthFailureResponse(attempts, maxAttempts, key, req, tx,
+			passwd, nonces, respChallengeKey, challengeStatus, statusText,
+			false, log)
 		return nil
 	}
 
 	if creds.Realm != passwd.Realm() {
 		log.Warn("realm mismatch", "expected", passwd.Realm(), "got", creds.Realm)
-		tx.Respond(proto.NewResponse(req, 400, "Bad Request"))
-		return nil
-	}
-
-	ha1, userExists := passwd.HA1(creds.Username)
-	if !userExists || !VerifyDigest(creds, ha1, method) {
-		log.Warn("digest verification failed", "username", creds.Username, "method", method)
-		tx.Respond(proto.NewResponse(req, 403, "Forbidden"))
+		sendAuthFailureResponse(attempts, maxAttempts, key, req, tx,
+			passwd, nonces, respChallengeKey, challengeStatus, statusText,
+			false, log)
 		return nil
 	}
 
 	known, valid := nonces.Verify(creds.Nonce, creds.NC)
 	if !valid {
 		log.Warn("nonce rejected", "known", known)
-		stale := known
-		nonce := nonces.NewNonce()
-		challenge := BuildDigestChallenge(passwd.Realm(), nonce, passwd.Algorithm(), stale)
-		res := proto.NewResponse(req, challengeStatus, statusText)
-		res.Headers.Add(respChallengeKey, challenge)
-		tx.Respond(res)
+		sendAuthFailureResponse(attempts, maxAttempts, key, req, tx,
+			passwd, nonces, respChallengeKey, challengeStatus, statusText,
+			known, log)
+		return nil
+	}
+
+	ha1, userExists := passwd.HA1(creds.Username)
+	if !userExists {
+		ha1 = "0000000000000000000000000000000000000000000000000000000000000000"
+	}
+	if !VerifyDigest(creds, ha1, method) || !userExists {
+		log.Warn("digest verification failed", "username", creds.Username, "method", method)
+		sendAuthFailureResponse(attempts, maxAttempts, key, req, tx,
+			passwd, nonces, respChallengeKey, challengeStatus, statusText,
+			false, log)
 		return nil
 	}
 

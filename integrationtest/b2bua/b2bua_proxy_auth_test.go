@@ -1,9 +1,7 @@
 package b2bua
 
 import (
-	"crypto/rand"
 	"fmt"
-	"math/big"
 	"net"
 	"strings"
 	"testing"
@@ -28,51 +26,7 @@ func doProxyAuthRequest(t *testing.T, client *sipgo.Client, req *sipgo_sip.Reque
 		return res
 	}
 
-	proxyAuth := res.GetHeader("Proxy-Authenticate")
-	require.NotNil(t, proxyAuth, "407 response must have Proxy-Authenticate")
-	challenge := proxyAuth.Value()
-
-	realm := extractChallengeParam(challenge, "realm")
-	nonce := extractChallengeParam(challenge, "nonce")
-	algorithm := extractChallengeParam(challenge, "algorithm")
-	qop := extractChallengeParam(challenge, "qop")
-	require.NotEmpty(t, realm, "realm in Proxy-Authenticate")
-	require.NotEmpty(t, nonce, "nonce in Proxy-Authenticate")
-
-	if algorithm == "" {
-		algorithm = "MD5"
-	}
-
-	ha1 := trecs_sip.ComputeHA1(username, realm, password, algorithm)
-	cnonce, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
-	nc := "00000001"
-	method := req.Method
-	uri := req.Recipient.String()
-	digestResponse := trecs_sip.ComputeDigestResponse(ha1, nonce, nc, fmt.Sprintf("%016x", cnonce), qop, string(method), uri, algorithm)
-
-	var b strings.Builder
-	b.WriteString(`Digest username="`)
-	b.WriteString(username)
-	b.WriteString(`", realm="`)
-	b.WriteString(realm)
-	b.WriteString(`", nonce="`)
-	b.WriteString(nonce)
-	b.WriteString(`", uri="`)
-	b.WriteString(uri)
-	b.WriteString(`", response="`)
-	b.WriteString(digestResponse)
-	b.WriteString(`", algorithm=`)
-	b.WriteString(algorithm)
-	b.WriteString(`, cnonce="`)
-	b.WriteString(fmt.Sprintf("%016x", cnonce))
-	b.WriteString(`", nc=`)
-	b.WriteString(nc)
-	b.WriteString(`, qop=`)
-	b.WriteString(qop)
-
-	authReq := req.Clone()
-	authReq.RemoveHeader("Via")
-	authReq.AppendHeader(sipgo_sip.NewHeader("Proxy-Authorization", b.String()))
+	authReq := integrationtest.BuildProxyAuthRequest(t, req, res, username, password)
 
 	res, err = client.Do(t.Context(), authReq)
 	require.NoError(t, err)
@@ -81,27 +35,6 @@ func doProxyAuthRequest(t *testing.T, client *sipgo.Client, req *sipgo_sip.Reque
 	require.NotNil(t, resCSeq, "Response must have CSeq")
 	require.Equal(t, req.Method, resCSeq.MethodName, "CSeq method must match")
 	return res
-}
-
-func extractChallengeParam(challenge, key string) string {
-	prefix := key + "="
-	idx := strings.Index(challenge, prefix)
-	if idx < 0 {
-		return ""
-	}
-	val := strings.TrimSpace(challenge[idx+len(prefix):])
-	if strings.HasPrefix(val, `"`) {
-		val = val[1:]
-		if end := strings.IndexByte(val, '"'); end >= 0 {
-			return val[:end]
-		}
-		return ""
-	}
-	end := strings.IndexAny(val, ", \t\r\n")
-	if end < 0 {
-		return val
-	}
-	return val[:end]
 }
 
 func runB2BUACallWithProxyAuth(t *testing.T, ts *integrationtest.TestServer, transport, username, password string) {
@@ -315,7 +248,8 @@ func TestIntegration_ProxyAuth_ByeAcceptedWithAuth(t *testing.T) {
 	}
 }
 
-// TestIntegration_ProxyAuth_WrongPassword: INVITE with bad credentials → 403.
+// TestIntegration_ProxyAuth_WrongPassword: INVITE with bad credentials is
+// challenged up to maxAttempts-1 times, then locked out with 403.
 func TestIntegration_ProxyAuth_WrongPassword(t *testing.T) {
 	store := integrationtest.NewTestPasswordStore("127.0.0.1", "SHA-256",
 		integrationtest.TestUser("alice", "secret", "sip:alice@127.0.0.1"),
@@ -324,6 +258,7 @@ func TestIntegration_ProxyAuth_WrongPassword(t *testing.T) {
 	for _, transport := range []string{"udp", "tcp"} {
 		t.Run(strings.ToUpper(transport), func(t *testing.T) {
 			ts := integrationtest.StartTestServerWithAuthUsers(t, "127.0.0.1", store)
+			ts.SetMaxFailedAuthAttempts(2)
 			defer ts.Stop()
 
 			ua, err := sipgo.NewUA(sipgo.WithUserAgentHostname(ts.Domain))
@@ -340,31 +275,22 @@ func TestIntegration_ProxyAuth_WrongPassword(t *testing.T) {
 				invite.SetTransport("TCP")
 			}
 
-			// Send INVITE without auth → get 407
+			// Send INVITE without auth → get 407 (not counted as failure).
 			res, err := client.Do(t.Context(), invite)
 			require.NoError(t, err)
 			require.Equal(t, proto.SIPStatusProxyAuthenticationRequired, res.StatusCode)
 
-			// Build Proxy-Authorization with wrong password
-			proxyAuth := res.GetHeader("Proxy-Authenticate")
-			require.NotNil(t, proxyAuth)
-			realm := extractChallengeParam(proxyAuth.Value(), "realm")
-			nonce := extractChallengeParam(proxyAuth.Value(), "nonce")
-			algorithm := extractChallengeParam(proxyAuth.Value(), "algorithm")
-			if algorithm == "" {
-				algorithm = "MD5"
-			}
-			qop := extractChallengeParam(proxyAuth.Value(), "qop")
-			ha1 := trecs_sip.ComputeHA1("alice", realm, "wrongpass", algorithm)
-			digestResponse := trecs_sip.ComputeDigestResponse(ha1, nonce, "00000001", "cnonce", qop, "INVITE", invite.Recipient.String(), algorithm)
-			authValue := fmt.Sprintf(`Digest username="alice", realm=%q, nonce=%q, uri=%q, response=%q, algorithm=%s, cnonce="cnonce", nc=00000001, qop=%s`,
-				realm, nonce, invite.Recipient.String(), digestResponse, algorithm, qop)
-
-			authReq := invite.Clone()
-			authReq.AppendHeader(sipgo_sip.NewHeader("Proxy-Authorization", authValue))
-			badRes, err := client.Do(t.Context(), authReq)
+			// First wrong password → challenged again (count=1, below threshold).
+			authReq := integrationtest.BuildProxyAuthRequest(t, invite, res, "alice", "wrongpass")
+			res2, err := client.Do(t.Context(), authReq)
 			require.NoError(t, err)
-			require.Equal(t, proto.SIPStatusForbidden, badRes.StatusCode, "Wrong password should get 403")
+			require.Equal(t, proto.SIPStatusProxyAuthenticationRequired, res2.StatusCode, "First wrong password should be challenged")
+
+			// Second wrong password → 403 lockout (count=2, threshold reached).
+			authReq2 := integrationtest.BuildProxyAuthRequest(t, invite, res2, "alice", "wrongpass")
+			badRes, err := client.Do(t.Context(), authReq2)
+			require.NoError(t, err)
+			require.Equal(t, proto.SIPStatusForbidden, badRes.StatusCode, "Wrong password should get 403 after threshold")
 
 			client.Close()
 			ua.Close()

@@ -193,3 +193,46 @@ func assertWWWChallenge(t *testing.T, res *sipgo_sip.Response, realm, algorithm 
 	require.Contains(t, val, "nonce=", "WWW-Authenticate must include nonce per RFC 3261 §22.1")
 	require.NotContains(t, val, "stale=TRUE", "Initial challenge should not have stale=TRUE")
 }
+
+func TestIntegration_RegisterWrongPasswordRetryThenLockout(t *testing.T) {
+	store := integrationtest.NewTestPasswordStore("127.0.0.1", "SHA-256",
+		integrationtest.TestUser("alice", "secret", "sip:alice@127.0.0.1"),
+	)
+
+	t.Run("UDP", func(t *testing.T) {
+		ts := integrationtest.StartTestServerWithAuthUsers(t, "127.0.0.1", store)
+		ts.SetMaxFailedAuthAttempts(2)
+		defer ts.Stop()
+
+		ua, err := sipgo.NewUA(sipgo.WithUserAgentHostname(ts.Domain))
+		require.NoError(t, err)
+		client, err := sipgo.NewClient(ua, sipgo.WithClientAddr("127.0.0.1:0"))
+		require.NoError(t, err)
+
+		req := buildRegisterRequest(ts.Domain, ts.UDPPort)
+
+		// No auth → 401 challenge.
+		res, err := client.Do(t.Context(), req)
+		require.NoError(t, err)
+		require.Equal(t, proto.SIPStatusUnauthorized, res.StatusCode, "Should get 401 when no auth provided")
+
+		// First wrong password → challenged again (count=1).
+		res2, err := client.DoDigestAuth(t.Context(), req, res, sipgo.DigestAuth{
+			Username: "alice",
+			Password: "wrongpass",
+		})
+		require.NoError(t, err)
+		require.Equal(t, proto.SIPStatusUnauthorized, res2.StatusCode, "First wrong password should be challenged")
+
+		// Second wrong password → 403 lockout (count=2).
+		res3, err := client.DoDigestAuth(t.Context(), req, res2, sipgo.DigestAuth{
+			Username: "alice",
+			Password: "wrongpass",
+		})
+		require.NoError(t, err)
+		require.Equal(t, proto.SIPStatusForbidden, res3.StatusCode, "Second wrong password should be locked out")
+
+		client.Close()
+		ua.Close()
+	})
+}

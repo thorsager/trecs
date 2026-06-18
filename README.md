@@ -108,6 +108,10 @@ trecsd --addr :5060 --auth-users docs/examples/users.json
 This enables Digest authentication for both REGISTER and INVITE/BYE (proxy
 auth). Registering with a matching password grants binding to the user's AOR.
 
+By default, a client gets up to three consecutive auth attempts before the
+server responds with `403 Forbidden`. Use `--auth-max-failed-attempts` to
+change the threshold (range 1–10).
+
 ### Dialplan
 
 [`docs/examples/dialplan.json`](docs/examples/dialplan.json) maps extensions

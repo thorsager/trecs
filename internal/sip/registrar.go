@@ -34,11 +34,13 @@ type Binding struct {
 // Registrar manages SIP registration bindings per RFC 3261 §10.
 // It is safe for concurrent use.
 type Registrar struct {
-	bindings map[string][]*Binding
-	lastCSeq map[string]int
-	mu       sync.RWMutex
-	passwd   PasswordStore // nil = no authentication (accept all)
-	nonces   *NonceManager // always non-nil; created in NewRegistrar
+	bindings          map[string][]*Binding
+	lastCSeq          map[string]int
+	mu                sync.RWMutex
+	passwd            PasswordStore // nil = no authentication (accept all)
+	nonces            *NonceManager // always non-nil; created in NewRegistrar
+	authTracker       *AuthAttemptTracker
+	maxFailedAttempts int
 }
 
 // SetPasswordStore enables Digest authentication for REGISTER requests.
@@ -48,12 +50,21 @@ func (r *Registrar) SetPasswordStore(store PasswordStore) {
 	r.passwd = store
 }
 
+// SetMaxFailedAuthAttempts sets the number of consecutive auth failures allowed
+// before a 403 Forbidden lockout. The value is clamped to the range [1, 10];
+// the default is 3.
+func (r *Registrar) SetMaxFailedAuthAttempts(n int) {
+	r.maxFailedAttempts = ClampMaxFailedAuthAttempts(n)
+}
+
 // NewRegistrar creates a new Registrar with no bindings.
 func NewRegistrar() *Registrar {
 	return &Registrar{
-		bindings: make(map[string][]*Binding),
-		lastCSeq: make(map[string]int),
-		nonces:   NewNonceManager(300 * time.Second),
+		bindings:          make(map[string][]*Binding),
+		lastCSeq:          make(map[string]int),
+		nonces:            NewNonceManager(300 * time.Second),
+		authTracker:       NewAuthAttemptTracker(AuthAttemptTTL),
+		maxFailedAttempts: DefaultMaxFailedAuthAttempts,
 	}
 }
 
@@ -69,6 +80,7 @@ func (r *Registrar) Start(ctx context.Context) {
 		case <-ticker.C:
 			r.sweep()
 			r.nonces.Sweep()
+			r.authTracker.Sweep()
 		}
 	}
 }
@@ -154,20 +166,24 @@ func (r *Registrar) HandleRegister(ctx context.Context, req *proto.SIPMessage, t
 
 	if r.passwd != nil {
 		creds := VerifyDigestRequest(req, tx,
-			r.passwd, r.nonces,
+			r.passwd, r.nonces, r.authTracker,
 			"Authorization", "WWW-Authenticate",
 			401, "Unauthorized",
-			"REGISTER", log)
+			"REGISTER", log, r.maxFailedAttempts)
 		if creds == nil {
 			return
 		}
 
 		allowedAORs, _ := r.passwd.AORs(creds.Username)
+		key := AuthAttemptKey(tx, callID)
 		if !AORAllowed(allowedAORs, aor) {
 			log.Warn("REGISTER: AOR not authorized", "username", creds.Username, "aor", aor)
-			tx.Respond(proto.NewResponse(req, 403, "Forbidden"))
+			sendAuthFailureResponse(r.authTracker, r.maxFailedAttempts, key, req, tx,
+				r.passwd, r.nonces, "WWW-Authenticate", 401, "Unauthorized",
+				false, log)
 			return
 		}
+		r.authTracker.Reset(key)
 	}
 
 	r.mu.Lock()

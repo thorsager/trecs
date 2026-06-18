@@ -17,13 +17,14 @@ import (
 )
 
 var (
-	flagAddr      string
-	flagRTPMin    int
-	flagRTPMax    int
-	flagDialplan  string
-	flagAuthUsers string
-	flagLogLevel  string
-	flagLogFormat string
+	flagAddr               string
+	flagRTPMin             int
+	flagRTPMax             int
+	flagDialplan           string
+	flagAuthUsers          string
+	flagAuthMaxFailed      int
+	flagLogLevel           string
+	flagLogFormat          string
 )
 
 var serverIP = "127.0.0.1"
@@ -34,6 +35,7 @@ func init() {
 	flag.IntVar(&flagRTPMax, "rtp-max", 0, "RTP port range end (0 = OS-assigned)")
 	flag.StringVar(&flagDialplan, "dialplan", "", "Path to dialplan JSON file")
 	flag.StringVar(&flagAuthUsers, "auth-users", "", "Path to users JSON file for digest authentication")
+	flag.IntVar(&flagAuthMaxFailed, "auth-max-failed-attempts", sip.DefaultMaxFailedAuthAttempts, "Max consecutive auth failures before 403 (1-10)")
 	flag.StringVar(&flagLogLevel, "log-level", "info", "Log level (trace, debug, info, warn, error)")
 	flag.StringVar(&flagLogFormat, "log-format", "text", "Log format (text, json, or compact)")
 	flag.Parse()
@@ -120,6 +122,14 @@ func main() {
 		RTPPortMax:     flagRTPMax,
 	})
 
+	if flagAuthMaxFailed < 1 || flagAuthMaxFailed > 10 {
+		slog.Error("Invalid auth-max-failed-attempts", "value", flagAuthMaxFailed, "allowed", "1-10")
+		stop()
+		os.Exit(1)
+	}
+	reg.SetMaxFailedAuthAttempts(flagAuthMaxFailed)
+	h.SetMaxFailedAuthAttempts(flagAuthMaxFailed)
+
 	if flagAuthUsers != "" {
 		store, err := sip.NewJSONPasswordStore(flagAuthUsers)
 		if err != nil {
@@ -129,7 +139,7 @@ func main() {
 		}
 		reg.SetPasswordStore(store)
 		h.SetProxyPasswordStore(store, ctx)
-		slog.Info("Digest authentication enabled", "path", flagAuthUsers, "realm", store.Realm(), "algorithm", store.Algorithm())
+		slog.Info("Digest authentication enabled", "path", flagAuthUsers, "realm", store.Realm(), "algorithm", store.Algorithm(), "maxFailedAttempts", flagAuthMaxFailed)
 	}
 
 	server.On(proto.SIPMethodREGISTER, reg.HandleRegister)
