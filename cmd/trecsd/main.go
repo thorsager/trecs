@@ -17,14 +17,14 @@ import (
 )
 
 var (
-	flagAddr               string
-	flagRTPMin             int
-	flagRTPMax             int
-	flagDialplan           string
-	flagAuthUsers          string
-	flagAuthMaxFailed      int
-	flagLogLevel           string
-	flagLogFormat          string
+	flagAddr          string
+	flagRTPMin        int
+	flagRTPMax        int
+	flagDialplan      string
+	flagAuthUsers     string
+	flagAuthMaxFailed int
+	flagLogLevel      string
+	flagLogFormat     string
 )
 
 var serverIP = "127.0.0.1"
