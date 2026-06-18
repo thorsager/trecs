@@ -73,9 +73,6 @@ jobs:
       - name: Unit tests
         run: go test -race $(go list ./... | grep -v integrationtest)
 
-      - name: Integration tests
-        run: go test -race ./integrationtest/...
-
   integration_tests:
     name: "Integration tests"
     runs-on: ubuntu-latest

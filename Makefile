@@ -24,7 +24,10 @@ integrationtest:
 bench:
 	$(GO) test ./... -bench=. -benchmem -benchtime=1000ms
 
+race:
+	$(GO) test -race -count=1 $(PACKAGES)
+
 lint:
 	golangci-lint run
 
-.PHONY: build install clean test integrationtest bench lint
+.PHONY: build install clean test integrationtest bench race lint

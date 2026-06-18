@@ -72,6 +72,7 @@ type UACTransaction struct {
 	state     UACState
 	stateMu   sync.Mutex
 	reliable  bool
+	t1Override time.Duration // for tests; zero means use global T1
 }
 
 func newUACTransaction(ctx context.Context, method proto.SIPMethod, transport Transport, target *Target) *UACTransaction {
@@ -192,15 +193,24 @@ func (u *UACTransaction) transitionToCompleted() {
 }
 
 func (u *UACTransaction) startTimerA() {
+	u.stateMu.Lock()
 	u.retxCount = 0
+	u.stateMu.Unlock()
 	u.scheduleTimerA()
 }
 
 func (u *UACTransaction) scheduleTimerA() {
-	interval := T1 << uint(u.retxCount)
+	u.stateMu.Lock()
+	t1 := u.t1Override
+	u.stateMu.Unlock()
+	if t1 == 0 {
+		t1 = T1
+	}
+	interval := t1 << uint(u.retxCount)
 	if interval > T2 {
 		interval = T2
 	}
+	u.stateMu.Lock()
 	u.timerA = time.AfterFunc(interval, func() {
 		u.stateMu.Lock()
 		if u.state != UACStateCalling {
@@ -217,10 +227,19 @@ func (u *UACTransaction) scheduleTimerA() {
 		u.stateMu.Unlock()
 		u.scheduleTimerA()
 	})
+	u.stateMu.Unlock()
 }
 
 func (u *UACTransaction) startTimerB() {
-	u.timerB = time.AfterFunc(64*T1, func() {
+	u.stateMu.Lock()
+	t1 := u.t1Override
+	u.stateMu.Unlock()
+	if t1 == 0 {
+		t1 = T1
+	}
+	d := 64 * t1
+	u.stateMu.Lock()
+	u.timerB = time.AfterFunc(d, func() {
 		u.stateMu.Lock()
 		u.state = UACStateTerminated
 		if u.timerA != nil {
@@ -237,6 +256,7 @@ func (u *UACTransaction) startTimerB() {
 			u.manager.Deregister(u.Branch)
 		}
 	})
+	u.stateMu.Unlock()
 }
 
 // sendACK generates an ACK for a 300-699 final response to INVITE
