@@ -80,7 +80,7 @@ func buildDigestAuthRequest(t *testing.T, req *sipgo_sip.Request, challengeRes *
 	b.WriteString(`", algorithm=`)
 	b.WriteString(algorithm)
 	b.WriteString(`, cnonce="`)
-	b.WriteString(fmt.Sprintf("%016x", cnonce))
+	fmt.Fprintf(&b, "%016x", cnonce)
 	b.WriteString(`", nc=`)
 	b.WriteString(nc)
 	b.WriteString(`, qop=`)

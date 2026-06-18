@@ -122,11 +122,12 @@ func (at *AuthAttemptTracker) Sweep() {
 func AuthAttemptKey(tx Transaction, callID string) string {
 	target := tx.Target()
 	var remote string
-	if target.Addr != nil {
+	switch {
+	case target.Addr != nil:
 		remote = target.Addr.String()
-	} else if target.Conn != nil {
+	case target.Conn != nil:
 		remote = target.Conn.RemoteAddr().String()
-	} else {
+	default:
 		remote = "unknown"
 	}
 	transport := "?"
@@ -137,8 +138,7 @@ func AuthAttemptKey(tx Transaction, callID string) string {
 }
 
 // sendAuthFailureResponse records a failed attempt and sends either a fresh
-// 401/407 challenge or a 403 lockout response. It returns true if a 403 was
-// sent.
+// 401/407 challenge or a 403 lockout response.
 func sendAuthFailureResponse(
 	tracker *AuthAttemptTracker,
 	maxAttempts int,
@@ -152,7 +152,7 @@ func sendAuthFailureResponse(
 	statusText string,
 	stale bool,
 	log *slog.Logger,
-) bool {
+) {
 	if maxAttempts < 1 {
 		maxAttempts = 1
 	}
@@ -164,12 +164,11 @@ func sendAuthFailureResponse(
 		res := proto.NewResponse(req, challengeStatus, statusText)
 		res.Headers.Add(respChallengeKey, challenge)
 		tx.Respond(res)
-		return false
+		return
 	}
 	log.Warn("auth failure threshold reached, locking out", "count", count, "maxAttempts", maxAttempts)
 	tracker.Reset(key)
 	tx.Respond(proto.NewResponse(req, 403, "Forbidden"))
-	return true
 }
 
 // ParseDigest parses the value of a Digest-type header (Authorization,
