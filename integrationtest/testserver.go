@@ -46,6 +46,13 @@ func (ts *TestServer) SetProxyPasswordStore(store trecs_sip.PasswordStore) {
 	ts.Handler.SetProxyPasswordStore(store, ts.ctx)
 }
 
+// SetMaxFailedAuthAttempts configures the retry/lockout threshold for both
+// registrar and proxy authentication.
+func (ts *TestServer) SetMaxFailedAuthAttempts(n int) {
+	ts.Reg.SetMaxFailedAuthAttempts(n)
+	ts.Handler.SetMaxFailedAuthAttempts(n)
+}
+
 // Stop shuts down the test server and restores the original slog default.
 func (ts *TestServer) Stop() {
 	ts.cancel()

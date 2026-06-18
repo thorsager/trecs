@@ -30,33 +30,36 @@ type Config struct {
 // Handler implements SIP request handlers for the T-REC B2BUA server,
 // including echo service, file playback, B2BUA call bridging, and call teardown.
 type Handler struct {
-	reg         *sip.Registrar
-	sm          *media.SessionManager
-	server      *sip.Server
-	serverIP    string
-	serverAddr  string
-	uacMgr      *sip.UACManager
-	dp          dialplan.Dialplan
-	rtpMin      int
-	rtpMax      int
-	store       *Store
-	proxyPasswd sip.PasswordStore
-	proxyNonces *sip.NonceManager
+	reg               *sip.Registrar
+	sm                *media.SessionManager
+	server            *sip.Server
+	serverIP          string
+	serverAddr        string
+	uacMgr            *sip.UACManager
+	dp                dialplan.Dialplan
+	rtpMin            int
+	rtpMax            int
+	store             *Store
+	proxyPasswd       sip.PasswordStore
+	proxyNonces       *sip.NonceManager
+	authTracker       *sip.AuthAttemptTracker
+	maxFailedAttempts int
 }
 
 // NewHandler creates a new B2BUA handler with the given configuration.
 func NewHandler(cfg Config) *Handler {
 	return &Handler{
-		reg:        cfg.Registrar,
-		sm:         cfg.SessionManager,
-		server:     cfg.Server,
-		serverIP:   cfg.ServerIP,
-		serverAddr: cfg.ServerAddr,
-		uacMgr:     cfg.UACManager,
-		dp:         cfg.Dialplan,
-		rtpMin:     cfg.RTPPortMin,
-		rtpMax:     cfg.RTPPortMax,
-		store:      NewStore(),
+		reg:               cfg.Registrar,
+		sm:                cfg.SessionManager,
+		server:            cfg.Server,
+		serverIP:          cfg.ServerIP,
+		serverAddr:        cfg.ServerAddr,
+		uacMgr:            cfg.UACManager,
+		dp:                cfg.Dialplan,
+		rtpMin:            cfg.RTPPortMin,
+		rtpMax:            cfg.RTPPortMax,
+		store:             NewStore(),
+		maxFailedAttempts: sip.DefaultMaxFailedAuthAttempts,
 	}
 }
 
@@ -66,7 +69,15 @@ func NewHandler(cfg Config) *Handler {
 func (h *Handler) SetProxyPasswordStore(store sip.PasswordStore, ctx context.Context) {
 	h.proxyPasswd = store
 	h.proxyNonces = sip.NewNonceManager(300 * time.Second)
+	h.authTracker = sip.NewAuthAttemptTracker(sip.AuthAttemptTTL)
 	sip.StartNonceSweeper(ctx, h.proxyNonces, 30*time.Second)
+}
+
+// SetMaxFailedAuthAttempts sets the number of consecutive auth failures allowed
+// before a 403 Forbidden lockout. The value is clamped to the range [1, 10];
+// the default is 3.
+func (h *Handler) SetMaxFailedAuthAttempts(n int) {
+	h.maxFailedAttempts = sip.ClampMaxFailedAuthAttempts(n)
 }
 
 // requireProxyAuth checks the Proxy-Authorization header on req.
@@ -81,11 +92,13 @@ func (h *Handler) requireProxyAuth(ctx context.Context, req *proto.SIPMessage, t
 	log := logutil.FromContext(ctx)
 
 	creds := sip.VerifyDigestRequest(req, tx,
-		h.proxyPasswd, h.proxyNonces,
+		h.proxyPasswd, h.proxyNonces, h.authTracker,
 		"Proxy-Authorization", "Proxy-Authenticate",
 		407, "Proxy Authentication Required",
-		method, log)
+		method, log, h.maxFailedAttempts)
 	if creds != nil {
+		key := sip.AuthAttemptKey(tx, req.Headers.GetFirst("Call-ID"))
+		h.authTracker.Reset(key)
 		log.Debug("proxy auth: verified", "username", creds.Username, "method", method)
 	}
 	return creds

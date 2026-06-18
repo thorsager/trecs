@@ -1380,6 +1380,7 @@ func TestRegistrar_Auth_ValidCredentials(t *testing.T) {
 
 func TestRegistrar_Auth_WrongPassword(t *testing.T) {
 	reg := NewRegistrar()
+	reg.SetMaxFailedAuthAttempts(1)
 	store := newTestAuthStore("secret")
 	reg.SetPasswordStore(store)
 	tx := &mockTx{}
@@ -1414,6 +1415,7 @@ func TestRegistrar_Auth_WrongPassword(t *testing.T) {
 
 func TestRegistrar_Auth_WrongAOR(t *testing.T) {
 	reg := NewRegistrar()
+	reg.SetMaxFailedAuthAttempts(1)
 	store := newTestAuthStore("secret")
 	reg.SetPasswordStore(store)
 	tx := &mockTx{}
@@ -1531,6 +1533,253 @@ func TestRegistrar_Auth_NoAuthWhenNotConfigured(t *testing.T) {
 	res := tx.last()
 	if res == nil || res.StatusCode() != proto.SIPStatusOK {
 		t.Fatalf("expected 200 OK when no auth configured, got %v", statusOrNil(res))
+	}
+}
+
+func TestRegistrar_Auth_WrongPassword_RetryThenLockout(t *testing.T) {
+	reg := NewRegistrar()
+	reg.SetMaxFailedAuthAttempts(3)
+	store := newTestAuthStore("secret")
+	reg.SetPasswordStore(store)
+
+	wrongHa1 := ComputeHA1("alice", "example.com", "wrong", "SHA-256")
+	cnonce := "test-cnonce"
+	uri := "sip:alice@example.com"
+
+	for i := 1; i <= 2; i++ {
+		tx := &mockTx{}
+		nonce := reg.nonces.NewNonce()
+		authHeader := buildAuthHeader(nonce, "alice", wrongHa1, "example.com", "SHA-256", cnonce, uri, uint64(i))
+
+		req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+			"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+			"From: <sip:alice@example.com>;tag=abc\r\n" +
+			"To: <sip:alice@example.com>\r\n" +
+			"Call-ID: call-retry\r\n" +
+			"CSeq: " + strconv.Itoa(i) + " REGISTER\r\n" +
+			"Authorization: " + authHeader + "\r\n" +
+			"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+			"Content-Length: 0\r\n\r\n")
+
+		reg.HandleRegister(t.Context(), req, tx)
+
+		res := tx.last()
+		if res == nil || res.StatusCode() != proto.SIPStatusUnauthorized {
+			t.Fatalf("attempt %d: expected 401 Unauthorized, got %v", i, statusOrNil(res))
+		}
+	}
+
+	// Third failed attempt should trigger lockout.
+	tx := &mockTx{}
+	nonce := reg.nonces.NewNonce()
+	authHeader := buildAuthHeader(nonce, "alice", wrongHa1, "example.com", "SHA-256", cnonce, uri, 3)
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-retry\r\n" +
+		"CSeq: 3 REGISTER\r\n" +
+		"Authorization: " + authHeader + "\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(t.Context(), req, tx)
+
+	res := tx.last()
+	if res == nil || res.StatusCode() != proto.SIPStatusForbidden {
+		t.Fatalf("attempt 3: expected 403 Forbidden, got %v", statusOrNil(res))
+	}
+
+	bindings := reg.GetBindings("sip:alice@example.com")
+	if len(bindings) != 0 {
+		t.Fatal("expected no bindings after lockout")
+	}
+}
+
+func TestRegistrar_Auth_WrongPasswordThenSuccess(t *testing.T) {
+	reg := NewRegistrar()
+	reg.SetMaxFailedAuthAttempts(3)
+	store := newTestAuthStore("secret")
+	reg.SetPasswordStore(store)
+
+	wrongHa1 := ComputeHA1("alice", "example.com", "wrong", "SHA-256")
+	cnonce := "test-cnonce"
+	uri := "sip:alice@example.com"
+
+	// First attempt with wrong password.
+	tx1 := &mockTx{}
+	nonce1 := reg.nonces.NewNonce()
+	authHeader1 := buildAuthHeader(nonce1, "alice", wrongHa1, "example.com", "SHA-256", cnonce, uri, 1)
+
+	req1 := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-recovery\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Authorization: " + authHeader1 + "\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(t.Context(), req1, tx1)
+	if res := tx1.last(); res == nil || res.StatusCode() != proto.SIPStatusUnauthorized {
+		t.Fatalf("first wrong attempt: expected 401, got %v", statusOrNil(res))
+	}
+
+	// Second attempt with correct password.
+	tx2 := &mockTx{}
+	nonce2 := reg.nonces.NewNonce()
+	authHeader2 := buildAuthHeader(nonce2, "alice", store.users["alice"].ha1, "example.com", "SHA-256", cnonce, uri, 2)
+
+	req2 := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-recovery\r\n" +
+		"CSeq: 2 REGISTER\r\n" +
+		"Authorization: " + authHeader2 + "\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(t.Context(), req2, tx2)
+	if res := tx2.last(); res == nil || res.StatusCode() != proto.SIPStatusOK {
+		t.Fatalf("correct attempt: expected 200 OK, got %v", statusOrNil(res))
+	}
+
+	// Counter should be reset; a fresh wrong attempt starts at 1 again (401).
+	tx3 := &mockTx{}
+	nonce3 := reg.nonces.NewNonce()
+	authHeader3 := buildAuthHeader(nonce3, "alice", wrongHa1, "example.com", "SHA-256", cnonce, uri, 1)
+
+	req3 := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-recovery\r\n" +
+		"CSeq: 3 REGISTER\r\n" +
+		"Authorization: " + authHeader3 + "\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(t.Context(), req3, tx3)
+	if res := tx3.last(); res == nil || res.StatusCode() != proto.SIPStatusUnauthorized {
+		t.Fatalf("wrong attempt after success: expected 401, got %v", statusOrNil(res))
+	}
+}
+
+func TestRegistrar_Auth_WrongAOR_RetryThenLockout(t *testing.T) {
+	reg := NewRegistrar()
+	reg.SetMaxFailedAuthAttempts(2)
+	store := newTestAuthStore("secret")
+	reg.SetPasswordStore(store)
+
+	nonce := reg.nonces.NewNonce()
+	cnonce := "test-cnonce"
+	authHeader := buildAuthHeader(nonce, "alice", store.users["alice"].ha1, "example.com", "SHA-256", cnonce, "sip:bob@example.com", 1)
+
+	req := sipMessage("REGISTER sip:bob@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:bob@example.com>;tag=abc\r\n" +
+		"To: <sip:bob@example.com>\r\n" +
+		"Call-ID: call-aor-retry\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Authorization: " + authHeader + "\r\n" +
+		"Contact: <sip:bob@192.168.1.6>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	// First AOR failure counts but is below threshold.
+	reg.HandleRegister(t.Context(), req, &mockTx{})
+
+	// Second attempt with the same Call-ID reaches threshold.
+	tx := &mockTx{}
+	nonce2 := reg.nonces.NewNonce()
+	authHeader2 := buildAuthHeader(nonce2, "alice", store.users["alice"].ha1, "example.com", "SHA-256", cnonce, "sip:bob@example.com", 1)
+
+	req2 := sipMessage("REGISTER sip:bob@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:bob@example.com>;tag=abc\r\n" +
+		"To: <sip:bob@example.com>\r\n" +
+		"Call-ID: call-aor-retry\r\n" +
+		"CSeq: 2 REGISTER\r\n" +
+		"Authorization: " + authHeader2 + "\r\n" +
+		"Contact: <sip:bob@192.168.1.6>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(t.Context(), req2, tx)
+
+	res := tx.last()
+	if res == nil || res.StatusCode() != proto.SIPStatusForbidden {
+		t.Fatalf("expected 403 Forbidden, got %v", statusOrNil(res))
+	}
+}
+
+func TestRegistrar_Auth_UnknownNonce_RetryThenLockout(t *testing.T) {
+	reg := NewRegistrar()
+	reg.SetMaxFailedAuthAttempts(2)
+	store := newTestAuthStore("secret")
+	reg.SetPasswordStore(store)
+
+	cnonce := "test-cnonce"
+	authHeader := buildAuthHeader("unknown-nonce", "alice", store.users["alice"].ha1, "example.com", "SHA-256", cnonce, "sip:alice@example.com", 1)
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-nonce-retry\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Authorization: " + authHeader + "\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	// First unknown nonce counts but is below threshold.
+	reg.HandleRegister(t.Context(), req, &mockTx{})
+
+	// Second attempt reaches threshold.
+	tx := &mockTx{}
+	authHeader2 := buildAuthHeader("another-unknown-nonce", "alice", store.users["alice"].ha1, "example.com", "SHA-256", cnonce, "sip:alice@example.com", 1)
+
+	req2 := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-nonce-retry\r\n" +
+		"CSeq: 2 REGISTER\r\n" +
+		"Authorization: " + authHeader2 + "\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(t.Context(), req2, tx)
+
+	res := tx.last()
+	if res == nil || res.StatusCode() != proto.SIPStatusForbidden {
+		t.Fatalf("expected 403 Forbidden, got %v", statusOrNil(res))
+	}
+}
+
+func TestRegistrar_Auth_MalformedHeader_RetryThenLockout(t *testing.T) {
+	reg := NewRegistrar()
+	reg.SetMaxFailedAuthAttempts(1)
+	store := newTestAuthStore("secret")
+	reg.SetPasswordStore(store)
+	tx := &mockTx{}
+
+	req := sipMessage("REGISTER sip:alice@example.com SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest\r\n" +
+		"From: <sip:alice@example.com>;tag=abc\r\n" +
+		"To: <sip:alice@example.com>\r\n" +
+		"Call-ID: call-malformed\r\n" +
+		"CSeq: 1 REGISTER\r\n" +
+		"Authorization: Digest username=\\\"alice, realm=\\\"x\\\"\r\n" +
+		"Contact: <sip:alice@192.168.1.5>;expires=3600\r\n" +
+		"Content-Length: 0\r\n\r\n")
+
+	reg.HandleRegister(t.Context(), req, tx)
+
+	res := tx.last()
+	if res == nil || res.StatusCode() != proto.SIPStatusForbidden {
+		t.Fatalf("expected 403 Forbidden for malformed header with maxAttempts=1, got %v", statusOrNil(res))
 	}
 }
 
