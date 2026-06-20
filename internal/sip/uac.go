@@ -202,11 +202,12 @@ func (u *UACTransaction) startTimerA() {
 func (u *UACTransaction) scheduleTimerA() {
 	u.stateMu.Lock()
 	t1 := u.t1Override
+	retx := u.retxCount
 	u.stateMu.Unlock()
 	if t1 == 0 {
 		t1 = T1
 	}
-	interval := t1 << uint(u.retxCount)
+	interval := t1 << uint(retx)
 	if interval > T2 {
 		interval = T2
 	}
