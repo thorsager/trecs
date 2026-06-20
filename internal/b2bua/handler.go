@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/thorsager/trecs/internal/dialplan"
@@ -25,6 +27,7 @@ type Config struct {
 	Dialplan       dialplan.Dialplan
 	RTPPortMin     int
 	RTPPortMax     int
+	PRACKEnabled   bool
 }
 
 // Handler implements SIP request handlers for the T-REC B2BUA server,
@@ -44,11 +47,12 @@ type Handler struct {
 	proxyNonces       *sip.NonceManager
 	authTracker       *sip.AuthAttemptTracker
 	maxFailedAttempts int
+	prackMgr         *sip.ReliableProvisionalManager
 }
 
 // NewHandler creates a new B2BUA handler with the given configuration.
 func NewHandler(cfg Config) *Handler {
-	return &Handler{
+	h := &Handler{
 		reg:               cfg.Registrar,
 		sm:                cfg.SessionManager,
 		server:            cfg.Server,
@@ -61,6 +65,10 @@ func NewHandler(cfg Config) *Handler {
 		store:             NewStore(),
 		maxFailedAttempts: sip.DefaultMaxFailedAuthAttempts,
 	}
+	if cfg.PRACKEnabled {
+		h.prackMgr = sip.NewReliableProvisionalManager()
+	}
+	return h
 }
 
 // SetProxyPasswordStore enables proxy authentication for INVITE and BYE
@@ -120,10 +128,29 @@ func (h *Handler) HandleOptions(ctx context.Context, req *proto.SIPMessage, tx s
 	res := proto.NewResponse(req, 200, "OK")
 	res.Headers["Allow"] = []string{h.server.AllowMethods()}
 	res.Headers["Accept"] = []string{"application/sdp"}
-	res.Headers["Supported"] = []string{"timer"}
+	supported := []string{"timer"}
+	if h.prackMgr != nil {
+		supported = append(supported, "100rel")
+	}
+	res.Headers["Supported"] = supported
 	tx.Respond(res)
 
 	log.Debug("OPTIONS responded", "statusCode", 200)
+}
+
+// HandlePRACK handles incoming PRACK requests for reliable provisional responses.
+func (h *Handler) HandlePRACK(ctx context.Context, req *proto.SIPMessage, tx sip.Transaction) {
+	if h.prackMgr == nil {
+		tx.Respond(proto.NewResponse(req, 501, "Not Implemented"))
+		return
+	}
+	h.prackMgr.HandlePRACK(ctx, req, tx)
+}
+
+func (h *Handler) cancelPRACK(callID string) {
+	if h.prackMgr != nil {
+		h.prackMgr.Cancel(callID)
+	}
 }
 
 // HandleInvite dispatches to dialplan services or B2BUA call routing.
@@ -464,6 +491,16 @@ func (h *Handler) handleB2BUAInvite(ctx context.Context, req *proto.SIPMessage, 
 		return
 	}
 
+	aliceSupports100rel := false
+	if h.prackMgr != nil {
+		supp := strings.ToLower(req.Headers.GetFirst("Supported"))
+		reqrel := strings.ToLower(req.Headers.GetFirst("Require"))
+		aliceSupports100rel = strings.Contains(supp, "100rel") || strings.Contains(reqrel, "100rel")
+		if strings.Contains(reqrel, "100rel") {
+			log.Info("B2BUA: Alice requires 100rel, enabling reliable provisionals")
+		}
+	}
+
 	from, err := req.From()
 	if err != nil {
 		res := proto.NewResponse(req, 400, "Bad Request")
@@ -550,13 +587,16 @@ func (h *Handler) handleB2BUAInvite(ctx context.Context, req *proto.SIPMessage, 
 	bobInvite.Headers.Add("Max-Forwards", "70")
 	bobInvite.Headers.Add("Record-Route", recordRoute)
 	bobInvite.Headers.Add("Content-Type", "application/sdp")
+	if h.prackMgr != nil {
+		bobInvite.Headers.Add("Supported", "100rel")
+	}
 	bobInvite.Body = bobSDPBytes
 
 	go h.b2buaResponseLoop(ctx, req, tx, target, transportImpl, uac,
 		rtpConnA, rtpConnB, from, aliceFromTag, serverTag, callID,
 		calleeTag, bobCallID, to, selectedPT, hasEarlyOffer,
 		aliceSDPOffer, aliceSDPBytes, recordRoute,
-		bobInvite, serverPort, binding)
+		bobInvite, serverPort, binding, aliceSupports100rel)
 
 	log.Debug("B2BUA: INVITE sent to Bob",
 		"bobContact", binding.ContactURI,
@@ -576,6 +616,7 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context,
 	recordRoute string,
 	bobInvite *proto.SIPMessage, serverPort string,
 	binding *sip.Binding,
+	aliceSupports100rel bool,
 ) {
 	ctx = logutil.WithValues(ctx,
 		"bobCallID", bobCallID,
@@ -594,6 +635,10 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context,
 	}
 	log.Info("B2BUA: sent INVITE to Bob", "contact", binding.ContactURI, "branch", uac.Branch)
 
+	defer func() {
+		h.cancelPRACK(callID)
+	}()
+
 	for {
 		select {
 		case resp := <-uac.Responses:
@@ -602,13 +647,66 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context,
 			if sc >= 100 && sc < 200 {
 				if sc == 180 || sc == 183 {
 					log.Info("B2BUA: Bob progress, forwarding to Alice", "statusCode", sc, "reason", resp.Status())
-					prov := proto.NewResponse(req, sc, resp.Status())
-					tx.Respond(prov)
+					reason := resp.Status()
+					if idx := strings.Index(reason, " "); idx != -1 {
+						reason = reason[idx+1:]
+					}
+					prov := proto.NewResponse(req, sc, reason)
+					prov.Headers.Set("To", []string{fmt.Sprintf("<%s>;tag=%s", to.URI, serverTag)})
+					if len(resp.Body) > 0 {
+						prov.Body = resp.Body
+						if ct := resp.Headers["Content-Type"]; len(ct) > 0 {
+							prov.Headers["Content-Type"] = ct
+						}
+						prov.Headers.Set("Content-Length", []string{strconv.Itoa(len(resp.Body))})
+					}
+
+					// UAC side: send PRACK if Bob sent a reliable provisional
+					bobRequire := resp.Headers.GetFirst("Require")
+					bobRSeq := resp.Headers.GetFirst("RSeq")
+					needsPRACK := bobRequire != "" && bobRSeq != "" &&
+						strings.Contains(strings.ToLower(bobRequire), "100rel")
+					if needsPRACK && h.prackMgr != nil {
+						rseqVal := bobRSeq
+						cseqVal := strconv.Itoa(resp.CSeq.Seq)
+						prack := proto.NewRequest(proto.SIPMethodPRACK, binding.ContactURI)
+						prack.Headers.Add("Via", fmt.Sprintf("SIP/2.0/%s %s:%s;branch=%s",
+							sip.TransportName(transportImpl), h.serverIP, serverPort, sip.GenerateBranch()))
+						prack.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s", from.URI, calleeTag))
+						prack.Headers.Add("To", fmt.Sprintf("<%s>", to.URI))
+						prack.Headers.Add("Call-ID", bobCallID)
+						prack.CSeq = proto.CSeq{Method: proto.SIPMethodPRACK, Seq: resp.CSeq.Seq}
+						prack.Headers.Add("RAck", rseqVal+" "+cseqVal+" INVITE")
+						prack.Headers.Add("Max-Forwards", "70")
+						prack.Headers.Add("Content-Length", "0")
+
+						prackTx := h.uacMgr.NewTransaction(ctx, proto.SIPMethodPRACK, transportImpl, target)
+						if err := prackTx.Send(prack); err != nil {
+							log.Error("B2BUA: failed to send PRACK", "error", err)
+						} else {
+							log.Info("B2BUA: sent PRACK for Bob's reliable provisional", "rseq", rseqVal)
+						}
+					}
+
+					// UAS side: send reliable provisional if Alice supports 100rel
+					if aliceSupports100rel && h.prackMgr != nil {
+						prackTimeout := func() {
+							log.Warn("B2BUA: PRACK timeout, tearing down call", "rseq",
+								prov.Headers.GetFirst("RSeq"))
+							rtpConnA.Close()
+							rtpConnB.Close()
+							tx.Respond(proto.NewResponse(req, 504, "PRACK Timeout"))
+						}
+						h.prackMgr.SendReliable(ctx, tx, prov, callID, prackTimeout)
+					} else {
+						tx.Respond(prov)
+					}
 				}
 				continue
 			}
 
 			if sc == 200 {
+				h.cancelPRACK(callID)
 				h.handleBob200OK(ctx, resp, req, tx, target, transportImpl,
 					rtpConnA, rtpConnB, from, aliceFromTag, serverTag, callID,
 					calleeTag, bobCallID, to, selectedPT, hasEarlyOffer,
@@ -618,15 +716,21 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context,
 			}
 
 			if sc >= 300 {
+				h.cancelPRACK(callID)
 				rtpConnA.Close()
 				rtpConnB.Close()
 				log.Info("B2BUA: Bob error response, forwarding to Alice", "statusCode", sc, "reason", resp.Status())
-				errResp := proto.NewResponse(req, sc, resp.Status())
+				errReason := resp.Status()
+				if idx := strings.Index(errReason, " "); idx != -1 {
+					errReason = errReason[idx+1:]
+				}
+				errResp := proto.NewResponse(req, sc, errReason)
 				tx.Respond(errResp)
 				return
 			}
 
 		case err := <-uac.Errors:
+			h.cancelPRACK(callID)
 			rtpConnA.Close()
 			rtpConnB.Close()
 			log.Error("B2BUA: Bob INVITE timed out", "error", err)

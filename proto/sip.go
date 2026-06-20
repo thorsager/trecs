@@ -28,6 +28,7 @@ var (
 		"k": "Supported",           // RFC 3261
 		"l": "Content-Length",      // RFC 3261
 		"m": "Contact",             // RFC 3261
+		"n": "RSeq",                // RFC 3262
 		"o": "Event",               // RFC 6665
 		"r": "Refer-To",            // RFC 3515
 		"s": "Subject",             // RFC 3261
@@ -77,6 +78,8 @@ func compactKey(k string) string {
 		return "l"
 	case "Contact":
 		return "m"
+	case "RSeq":
+		return "n"
 	case "Event":
 		return "o"
 	case "Refer-To":
