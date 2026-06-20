@@ -33,6 +33,16 @@ type TestServer struct {
 	TCPPort  int
 }
 
+// ServerOption configures the test server.
+type ServerOption func(*b2bua.Config)
+
+// WithPRACK enables PRACK (RFC 3262) support.
+func WithPRACK() ServerOption {
+	return func(cfg *b2bua.Config) {
+		cfg.PRACKEnabled = true
+	}
+}
+
 // StartTestServer creates and starts a trecs server with a registrar, dialplan,
 // and B2BUA handler for integration testing. Logging is routed to t.Log(). The server
 // binds to host:0 (random OS-assigned port). The caller must call Stop() when done.
@@ -71,8 +81,8 @@ func (ts *TestServer) Port() int {
 // StartTestServerWithDialplan creates and starts a trecs server with a registrar,
 // dialplan, and B2BUA handler for integration testing. Logging is routed to t.Log().
 // The server binds to host:0 (random OS-assigned port). The caller must call Stop()
-// when done.
-func StartTestServerWithDialplan(t *testing.T, host string, dp dialplan.Dialplan) *TestServer {
+// when done. Options can configure PRACK and other features.
+func StartTestServerWithDialplan(t *testing.T, host string, dp dialplan.Dialplan, opts ...ServerOption) *TestServer {
 	t.Helper()
 
 	oldLog := slog.Default()
@@ -94,7 +104,7 @@ func StartTestServerWithDialplan(t *testing.T, host string, dp dialplan.Dialplan
 	sm := media.NewSessionManager()
 	uacMgr := trecs_sip.NewUACManager()
 
-	h := b2bua.NewHandler(b2bua.Config{
+	cfg := b2bua.Config{
 		Registrar:      reg,
 		SessionManager: sm,
 		Server:         srv,
@@ -104,12 +114,18 @@ func StartTestServerWithDialplan(t *testing.T, host string, dp dialplan.Dialplan
 		Dialplan:       dp,
 		RTPPortMin:     0,
 		RTPPortMax:     0,
-	})
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	h := b2bua.NewHandler(cfg)
 
 	srv.On(proto.SIPMethodREGISTER, reg.HandleRegister)
 	srv.On(proto.SIPMethodOPTIONS, h.HandleOptions)
 	srv.On(proto.SIPMethodINVITE, h.HandleInvite)
 	srv.On(proto.SIPMethodBYE, h.HandleBye)
+	srv.On(proto.SIPMethodPRACK, h.HandlePRACK)
 	srv.OnAck(h.HandleAck)
 	srv.OnResponse(h.HandleResponse)
 

@@ -25,6 +25,7 @@ var (
 	flagAuthMaxFailed int
 	flagLogLevel      string
 	flagLogFormat     string
+	flagPRACK         bool
 )
 
 var serverIP = "127.0.0.1"
@@ -38,6 +39,7 @@ func init() {
 	flag.IntVar(&flagAuthMaxFailed, "auth-max-failed-attempts", sip.DefaultMaxFailedAuthAttempts, "Max consecutive auth failures before 403 (1-10)")
 	flag.StringVar(&flagLogLevel, "log-level", "info", "Log level (trace, debug, info, warn, error)")
 	flag.StringVar(&flagLogFormat, "log-format", "text", "Log format (text, json, or compact)")
+	flag.BoolVar(&flagPRACK, "prack", false, "Enable PRACK (RFC 3262) support for reliable provisional responses")
 	flag.Parse()
 }
 
@@ -120,6 +122,7 @@ func main() {
 		Dialplan:       dp,
 		RTPPortMin:     flagRTPMin,
 		RTPPortMax:     flagRTPMax,
+		PRACKEnabled:   flagPRACK,
 	})
 
 	if flagAuthMaxFailed < 1 || flagAuthMaxFailed > 10 {
@@ -146,6 +149,7 @@ func main() {
 	server.On(proto.SIPMethodOPTIONS, h.HandleOptions)
 	server.On(proto.SIPMethodINVITE, h.HandleInvite)
 	server.On(proto.SIPMethodBYE, h.HandleBye)
+	server.On(proto.SIPMethodPRACK, h.HandlePRACK)
 	server.OnAck(h.HandleAck)
 	server.OnResponse(h.HandleResponse)
 
