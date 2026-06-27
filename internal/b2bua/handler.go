@@ -47,7 +47,7 @@ type Handler struct {
 	proxyNonces       *sip.NonceManager
 	authTracker       *sip.AuthAttemptTracker
 	maxFailedAttempts int
-	prackMgr         *sip.ReliableProvisionalManager
+	prackMgr          *sip.ReliableProvisionalManager
 }
 
 // NewHandler creates a new B2BUA handler with the given configuration.
