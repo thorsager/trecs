@@ -63,13 +63,13 @@ func (m *ReliableProvisionalManager) SendReliable(
 	pr := m.pending[callID]
 	if pr == nil {
 		pr = &pendingReliable{
-			callID:     callID,
-			rseqsSent:  make(map[int]bool),
-			transport:  tx.Transport(),
-			target:     copyTarget(tx.Target()),
-			logger:     logutil.FromContext(ctx).With("callID", callID),
-			onTimeout:  onTimeout,
-			manager:    m,
+			callID:    callID,
+			rseqsSent: make(map[int]bool),
+			transport: tx.Transport(),
+			target:    copyTarget(tx.Target()),
+			logger:    logutil.FromContext(ctx).With("callID", callID),
+			onTimeout: onTimeout,
+			manager:   m,
 		}
 		m.pending[callID] = pr
 	}

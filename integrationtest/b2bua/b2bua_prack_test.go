@@ -693,8 +693,6 @@ func TestIntegration_B2BUAPRACK_UAC(t *testing.T) {
 	require.Equal(t, proto.SIPStatusOK, byeRes.StatusCode, "BYE should get 200 OK")
 }
 
-
-
 func TestIntegration_B2BUAPRACK_WithAuth(t *testing.T) {
 	store := integrationtest.NewTestPasswordStore("127.0.0.1", "SHA-256",
 		integrationtest.TestUser("bob", "password", "sip:bob@127.0.0.1"),
