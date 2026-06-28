@@ -51,6 +51,9 @@ type prackBob struct {
 	expectedBobSSRC    uint32
 
 	inviteOKSignal chan struct{} // when non-nil, wait on this before sending 200 OK for INVITE
+
+	// when true, 183 includes an SDP body (early media)
+	sendEarly183SDP bool
 }
 
 func newPrackBob(t *testing.T, ts *integrationtest.TestServer) *prackBob {
@@ -215,16 +218,33 @@ func (b *prackBob) handleInvite(msg string, writeFunc func([]byte) error) {
 
 	// Send reliable 183 with RSeq=1
 	rseq := "1"
-	reliable183 := fmt.Sprintf("SIP/2.0 183 Session Progress\r\n"+
-		"Via: %s\r\n"+
-		"Call-ID: %s\r\n"+
-		"From: %s\r\n"+
-		"To: <sip:bob@%s>;tag=%s\r\n"+
-		"CSeq: %d INVITE\r\n"+
-		"Require: 100rel\r\n"+
-		"RSeq: %s\r\n"+
-		"Content-Length: 0\r\n\r\n",
-		viaHeader, b.callID, fromLine, b.ts.Domain, b.toTag, b.cseq, rseq)
+	var reliable183 string
+	if b.sendEarly183SDP {
+		sdp := fmt.Sprintf("v=0\r\no=- %d 1 IN IP4 127.0.0.1\r\ns=bob\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio %d RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n",
+			time.Now().UnixNano(), b.rtp.LocalAddr().(*net.UDPAddr).Port)
+		reliable183 = fmt.Sprintf("SIP/2.0 183 Session Progress\r\n"+
+			"Via: %s\r\n"+
+			"Call-ID: %s\r\n"+
+			"From: %s\r\n"+
+			"To: <sip:bob@%s>;tag=%s\r\n"+
+			"CSeq: %d INVITE\r\n"+
+			"Require: 100rel\r\n"+
+			"RSeq: %s\r\n"+
+			"Content-Type: application/sdp\r\n"+
+			"Content-Length: %d\r\n\r\n%s",
+			viaHeader, b.callID, fromLine, b.ts.Domain, b.toTag, b.cseq, rseq, len(sdp), sdp)
+	} else {
+		reliable183 = fmt.Sprintf("SIP/2.0 183 Session Progress\r\n"+
+			"Via: %s\r\n"+
+			"Call-ID: %s\r\n"+
+			"From: %s\r\n"+
+			"To: <sip:bob@%s>;tag=%s\r\n"+
+			"CSeq: %d INVITE\r\n"+
+			"Require: 100rel\r\n"+
+			"RSeq: %s\r\n"+
+			"Content-Length: 0\r\n\r\n",
+			viaHeader, b.callID, fromLine, b.ts.Domain, b.toTag, b.cseq, rseq)
+	}
 
 	b.t.Logf("prackBob sending reliable 183 (RSeq=%s)", rseq)
 	if err := writeFunc([]byte(reliable183)); err != nil {
@@ -561,6 +581,177 @@ func TestIntegration_B2BUAPRACK_UAS(t *testing.T) {
 
 	// Alice sends PRACK, then signals Bob to send 200 OK for INVITE
 	alice.sendPRACK(rseq, "1")
+	pb.inviteOKSignal <- struct{}{}
+
+	// Read 200 OK for PRACK
+	msg = alice.readResponse(5 * time.Second)
+	require.NotEmpty(t, msg, "Should receive 200 OK for PRACK")
+	require.Contains(t, msg, "200 OK")
+
+	// Read 200 OK for INVITE
+	msg = alice.readResponse(5 * time.Second)
+	require.NotEmpty(t, msg, "Should receive 200 OK for INVITE")
+	require.Contains(t, msg, "200 OK")
+	require.Contains(t, msg, "application/sdp")
+
+	if alice.serverTag == "" {
+		alice.serverTag = extractTagParam(msg, "To", "tag")
+	}
+
+	sdpAnswer, err := proto.UnmarshalSDPBytes([]byte(extractBody(msg)))
+	require.NoError(t, err)
+	_, serverRTPPort := integrationtest.ExtractRTPAddr(sdpAnswer)
+	require.NotZero(t, serverRTPPort)
+
+	// ACK
+	alice.sendACK()
+	time.Sleep(100 * time.Millisecond)
+
+	// RTP verification
+	aliceSSRC := integrationtest.RandomSSRC()
+	bobSSRC := integrationtest.RandomSSRC()
+	pb.expectedClientSSRC = aliceSSRC
+	pb.expectedBobSSRC = bobSSRC
+
+	serverRTPAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: serverRTPPort}
+	sendAliceToBob(t, alice.rtp, serverRTPAddr, pb.rtpCount, aliceSSRC)
+
+	var serverRTPPortB int
+	select {
+	case serverRTPPortB = <-pb.serverRTPPortBCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Timeout waiting for Bob to extract server RTP port")
+	}
+	serverRTPAddrB := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: serverRTPPortB}
+
+	sendBobToAlice(t, pb.rtp, serverRTPAddrB, alice.rtp, bobSSRC)
+
+	// BYE
+	alice.sendBYE()
+	msg = alice.readResponse(5 * time.Second)
+	for !strings.Contains(msg, "200 OK") {
+		msg = alice.readResponse(5 * time.Second)
+	}
+}
+
+func TestIntegration_B2BUAPRACK_AliceNo100rel(t *testing.T) {
+	// Verifies backward compatibility: when Alice does NOT advertise 100rel,
+	// the server must not forward RSeq/Require:100rel in provisional responses.
+	// The server still handles PRACK on the UAC side (to Bob) transparently.
+	ts := integrationtest.StartTestServerWithDialplan(t, "127.0.0.1", nil, integrationtest.WithPRACK())
+	defer ts.Stop()
+
+	pb := newPrackBob(t, ts)
+	pb.inviteOKSignal = make(chan struct{}, 1)
+	defer pb.close()
+	pb.register(t)
+	time.Sleep(100 * time.Millisecond)
+
+	alice := newAliceRawUAC(t, ts)
+	defer alice.close()
+
+	// Alice sends INVITE WITHOUT Supported: 100rel
+	alice.sendINVITE(false)
+
+	// Read 100 Trying
+	msg := alice.readResponse(5 * time.Second)
+	require.Contains(t, msg, "100 Trying")
+
+	// Read 183 Session Progress — must NOT have RSeq or Require: 100rel
+	msg = alice.readResponse(5 * time.Second)
+	require.Contains(t, msg, "183 Session Progress")
+	require.NotContains(t, msg, "RSeq", "183 should not have RSeq when Alice lacks 100rel support")
+	require.NotContains(t, msg, "Require: 100rel", "183 should not have Require when Alice lacks 100rel support")
+
+	alice.serverTag = extractTagParam(msg, "To", "tag")
+	require.NotEmpty(t, alice.serverTag)
+
+	// Signal Bob to send 200 OK for INVITE
+	pb.inviteOKSignal <- struct{}{}
+
+	// Read 200 OK for INVITE
+	msg = alice.readResponse(5 * time.Second)
+	require.NotEmpty(t, msg, "Should receive 200 OK for INVITE")
+	require.Contains(t, msg, "200 OK")
+	require.Contains(t, msg, "application/sdp")
+
+	sdpAnswer, err := proto.UnmarshalSDPBytes([]byte(extractBody(msg)))
+	require.NoError(t, err)
+	_, serverRTPPort := integrationtest.ExtractRTPAddr(sdpAnswer)
+	require.NotZero(t, serverRTPPort)
+
+	// ACK
+	alice.sendACK()
+	time.Sleep(100 * time.Millisecond)
+
+	// RTP verification
+	aliceSSRC := integrationtest.RandomSSRC()
+	bobSSRC := integrationtest.RandomSSRC()
+	pb.expectedClientSSRC = aliceSSRC
+	pb.expectedBobSSRC = bobSSRC
+
+	serverRTPAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: serverRTPPort}
+	sendAliceToBob(t, alice.rtp, serverRTPAddr, pb.rtpCount, aliceSSRC)
+
+	var serverRTPPortB int
+	select {
+	case serverRTPPortB = <-pb.serverRTPPortBCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Timeout waiting for Bob to extract server RTP port")
+	}
+	serverRTPAddrB := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: serverRTPPortB}
+
+	sendBobToAlice(t, pb.rtp, serverRTPAddrB, alice.rtp, bobSSRC)
+
+	// BYE
+	alice.sendBYE()
+	msg = alice.readResponse(5 * time.Second)
+	for !strings.Contains(msg, "200 OK") {
+		msg = alice.readResponse(5 * time.Second)
+	}
+}
+
+func TestIntegration_B2BUAPRACK_EarlyMedia(t *testing.T) {
+	// Verifies PRACK with early media: Bob sends 183 with SDP body,
+	// requiring PRACK. Alice supports 100rel, receives SDP in the 183,
+	// sends PRACK, and the call completes with RTP flowing correctly.
+	ts := integrationtest.StartTestServerWithDialplan(t, "127.0.0.1", nil, integrationtest.WithPRACK())
+	defer ts.Stop()
+
+	pb := newPrackBob(t, ts)
+	pb.sendEarly183SDP = true
+	pb.inviteOKSignal = make(chan struct{}, 1)
+	defer pb.close()
+	pb.register(t)
+	time.Sleep(100 * time.Millisecond)
+
+	alice := newAliceRawUAC(t, ts)
+	defer alice.close()
+
+	// Alice sends INVITE with Supported: 100rel and SDP (early offer)
+	alice.sendINVITE(true)
+
+	// Read 100 Trying
+	msg := alice.readResponse(5 * time.Second)
+	require.Contains(t, msg, "100 Trying")
+
+	// Read 183 Session Progress with SDP (early media), RSeq, Require: 100rel
+	msg = alice.readResponse(5 * time.Second)
+	require.Contains(t, msg, "183 Session Progress")
+	require.Contains(t, msg, "RSeq", "183 must have RSeq for 100rel")
+	require.Contains(t, msg, "Require: 100rel")
+	require.Contains(t, msg, "application/sdp", "183 should carry SDP (early media)")
+
+	rseq := extractHeader(msg, "RSeq")
+	require.NotEmpty(t, rseq)
+
+	alice.serverTag = extractTagParam(msg, "To", "tag")
+	require.NotEmpty(t, alice.serverTag)
+
+	// Alice sends PRACK for RSeq=1
+	alice.sendPRACK(rseq, "1")
+
+	// Signal Bob to send 200 OK for INVITE
 	pb.inviteOKSignal <- struct{}{}
 
 	// Read 200 OK for PRACK
