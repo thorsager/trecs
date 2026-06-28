@@ -327,9 +327,10 @@ func (u *UACTransaction) SendCancel() error {
 		u.stateMu.Unlock()
 		return fmt.Errorf("cannot cancel %s transaction: request not yet sent", u.Method)
 	}
-	if u.state != UACStateCalling && u.state != UACStateProceeding {
+	state := u.state
+	if state != UACStateCalling && state != UACStateProceeding {
 		u.stateMu.Unlock()
-		return fmt.Errorf("cannot cancel %s transaction in state %v", u.Method, u.state)
+		return fmt.Errorf("cannot cancel %s transaction in state %v", u.Method, state)
 	}
 	req := u.request
 	u.stateMu.Unlock()
