@@ -44,6 +44,8 @@ type bobUAS struct {
 	serverContact    string
 	answered         bool
 	rejected         bool
+	ringBeforeAnswer bool          // if true, send 180 Ringing then wait for answerNow
+	answerNow        chan struct{} // signals ringBeforeAnswer mode to send 200 OK
 	byeReceived      chan struct{}
 	byeOnce          sync.Once
 	rtpCount         chan int
@@ -201,6 +203,8 @@ func newBobUAS(t *testing.T, ts *integrationtest.TestServer, transport string) *
 		ctx:              ctx,
 		cancel:           cancel,
 		transport:        transport,
+		ringBeforeAnswer: false,
+		answerNow:        make(chan struct{}, 1),
 		byeReceived:      make(chan struct{}),
 		rtpCount:         make(chan int, 1),
 		sipDone:          make(chan struct{}),
@@ -264,10 +268,13 @@ func (b *bobUAS) handleSIPUDP() {
 		}
 		b.t.Logf("Bob received %d bytes from %s: %q", n, remoteAddr, msg[:min(n, 100)])
 
-		if strings.HasPrefix(msg, "INVITE") {
+		switch {
+		case strings.HasPrefix(msg, "INVITE"):
 			b.handleIncomingInvite(msg, writeFunc)
-		} else if strings.HasPrefix(msg, "BYE") {
+		case strings.HasPrefix(msg, "BYE"):
 			b.handleIncomingBye(msg, writeFunc)
+		case strings.HasPrefix(msg, "CANCEL"):
+			b.handleIncomingCancel(msg, writeFunc)
 		}
 	}
 }
@@ -342,10 +349,13 @@ func (b *bobUAS) handleTCPConn(conn net.Conn) {
 			}
 			b.t.Logf("Bob received %d bytes on TCP: %q", totalLen, msg[:min(len(msg), 100)])
 
-			if strings.HasPrefix(msg, "INVITE") {
+			switch {
+			case strings.HasPrefix(msg, "INVITE"):
 				b.handleIncomingInvite(msg, writeFunc)
-			} else if strings.HasPrefix(msg, "BYE") {
+			case strings.HasPrefix(msg, "BYE"):
 				b.handleIncomingBye(msg, writeFunc)
+			case strings.HasPrefix(msg, "CANCEL"):
+				b.handleIncomingCancel(msg, writeFunc)
 			}
 		}
 	}
@@ -433,6 +443,25 @@ func (b *bobUAS) handleIncomingInvite(msg string, writeFunc func([]byte) error) 
 	sdp := fmt.Sprintf("v=0\r\no=- %d 1 IN IP4 127.0.0.1\r\ns=bob\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio %d RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n",
 		time.Now().UnixNano(), b.rtp.LocalAddr().(*net.UDPAddr).Port)
 
+	if b.ringBeforeAnswer {
+		// Send 180 Ringing instead of immediate 200 OK.
+		ringing := fmt.Sprintf("SIP/2.0 180 Ringing\r\nVia: %s\r\nCall-ID: %s\r\nFrom: %s\r\nTo: <sip:bob@%s>;tag=%s\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n",
+			viaHeader, b.callID, b.extractFromHeader(msg), b.ts.Domain, b.toTag)
+		if err := writeFunc([]byte(ringing)); err != nil {
+			b.t.Logf("Bob failed to send 180 Ringing: %v", err)
+		} else {
+			b.t.Logf("Bob sent 180 Ringing, waiting for answerNow signal")
+		}
+
+		// Wait for the signal to answer (or context cancellation).
+		select {
+		case <-b.answerNow:
+		case <-b.ctx.Done():
+			b.t.Logf("Bob context canceled while waiting to answer")
+			return
+		}
+	}
+
 	resp := fmt.Sprintf("SIP/2.0 200 OK\r\nVia: %s\r\nCall-ID: %s\r\nFrom: %s\r\nTo: <sip:bob@%s>;tag=%s\r\nCSeq: 1 INVITE\r\nContent-Type: application/sdp\r\nContent-Length: %d\r\n\r\n%s",
 		viaHeader, b.callID, b.extractFromHeader(msg), b.ts.Domain, b.toTag, len(sdp), sdp)
 
@@ -453,6 +482,34 @@ func (b *bobUAS) handleIncomingBye(msg string, writeFunc func([]byte) error) {
 		b.callID, b.extractFromHeader(msg), b.ts.Domain, b.toTag)
 	_ = writeFunc([]byte(resp))
 	b.byeOnce.Do(func() { close(b.byeReceived) })
+}
+
+func (b *bobUAS) handleIncomingCancel(msg string, writeFunc func([]byte) error) {
+	b.t.Logf("Bob handling CANCEL")
+
+	// Extract CSeq from the CANCEL request for the response.
+	cancelCSeq := "1 CANCEL"
+	if idx := strings.Index(msg, "CSeq:"); idx != -1 {
+		line := msg[idx:]
+		if end := strings.Index(line, "\r\n"); end != -1 {
+			cancelCSeq = strings.TrimSpace(line[len("CSeq:"):end])
+		}
+	}
+
+	resp := fmt.Sprintf("SIP/2.0 200 OK\r\nVia: %s\r\nCall-ID: %s\r\nFrom: %s\r\nTo: <sip:bob@%s>;tag=%s\r\nCSeq: %s\r\nContent-Length: 0\r\n\r\n",
+		b.extractViaFromMessage(msg), b.callID, b.extractFromHeader(msg), b.ts.Domain, b.toTag, cancelCSeq)
+	_ = writeFunc([]byte(resp))
+	b.t.Logf("Bob sent 200 OK for CANCEL")
+}
+
+func (b *bobUAS) extractViaFromMessage(msg string) string {
+	if idx := strings.Index(msg, "Via:"); idx != -1 {
+		line := msg[idx:]
+		if end := strings.Index(line, "\r\n"); end != -1 {
+			return strings.TrimSpace(line[len("Via:"):end])
+		}
+	}
+	return ""
 }
 
 func (b *bobUAS) extractFromHeader(msg string) string {
