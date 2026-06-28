@@ -34,6 +34,8 @@ type pendingReliable struct {
 	logger     *slog.Logger
 	counter    int
 	manager    *ReliableProvisionalManager
+	cseq       int
+	method     string
 }
 
 func NewReliableProvisionalManager() *ReliableProvisionalManager {
@@ -70,6 +72,8 @@ func (m *ReliableProvisionalManager) SendReliable(
 			logger:    logutil.FromContext(ctx).With("callID", callID),
 			onTimeout: onTimeout,
 			manager:   m,
+			cseq:      res.CSeq.Seq,
+			method:    string(res.CSeq.Method),
 		}
 		m.pending[callID] = pr
 	}
@@ -99,6 +103,10 @@ func (m *ReliableProvisionalManager) SendReliable(
 
 func (m *ReliableProvisionalManager) HandlePRACK(ctx context.Context, prack *proto.SIPMessage, tx Transaction) {
 	callID := prack.Headers.GetFirst("Call-ID")
+	if callID == "" {
+		tx.Respond(proto.NewResponse(prack, 400, "Bad Request"))
+		return
+	}
 	rackStr := prack.Headers.GetFirst("RAck")
 	if rackStr == "" {
 		tx.Respond(proto.NewResponse(prack, 400, "Bad Request"))
@@ -115,10 +123,12 @@ func (m *ReliableProvisionalManager) HandlePRACK(ctx context.Context, prack *pro
 		tx.Respond(proto.NewResponse(prack, 400, "Bad Request"))
 		return
 	}
-	if _, err := strconv.Atoi(parts[1]); err != nil {
+	rackCSeq, err := strconv.Atoi(parts[1])
+	if err != nil {
 		tx.Respond(proto.NewResponse(prack, 400, "Bad Request"))
 		return
 	}
+	rackMethod := parts[2]
 
 	ctx = logutil.WithValues(ctx, "callID", callID, "rackRSeq", rseq)
 	log := logutil.FromContext(ctx)
@@ -135,6 +145,15 @@ func (m *ReliableProvisionalManager) HandlePRACK(ctx context.Context, prack *pro
 	if !pr.rseqsSent[rseq] {
 		m.mu.Unlock()
 		log.Warn("PRACK with unknown RSeq", "rseq", rseq, "sentRSeqs", pr.rseqsSent)
+		tx.Respond(proto.NewResponse(prack, 481, "Call/Transaction Does Not Exist"))
+		return
+	}
+
+	if rackCSeq != pr.cseq || !strings.EqualFold(rackMethod, pr.method) {
+		m.mu.Unlock()
+		log.Warn("PRACK with mismatched CSeq or method",
+			"rackCSeq", rackCSeq, "rackMethod", rackMethod,
+			"expectedCSeq", pr.cseq, "expectedMethod", pr.method)
 		tx.Respond(proto.NewResponse(prack, 481, "Call/Transaction Does Not Exist"))
 		return
 	}
@@ -160,6 +179,7 @@ func (m *ReliableProvisionalManager) Cancel(callID string) {
 	if pr == nil {
 		return
 	}
+	pr.done = true
 	pr.stopTimer()
 	delete(m.pending, callID)
 }

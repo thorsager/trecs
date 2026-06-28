@@ -149,7 +149,9 @@ func main() {
 	server.On(proto.SIPMethodOPTIONS, h.HandleOptions)
 	server.On(proto.SIPMethodINVITE, h.HandleInvite)
 	server.On(proto.SIPMethodBYE, h.HandleBye)
-	server.On(proto.SIPMethodPRACK, h.HandlePRACK)
+	if !flagNoPRACK {
+		server.On(proto.SIPMethodPRACK, h.HandlePRACK)
+	}
 	server.OnAck(h.HandleAck)
 	server.OnResponse(h.HandleResponse)
 

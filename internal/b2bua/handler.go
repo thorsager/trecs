@@ -443,47 +443,7 @@ func (h *Handler) handleB2BUAInvite(ctx context.Context, req *proto.SIPMessage, 
 		return
 	}
 
-	var binding *sip.Binding
-	var target *sip.Target
-	var transport string
-
-	// Prefer bindings with live TCP flows, then newest bindings.
-	for i := len(bindings) - 1; i >= 0; i-- {
-		b := bindings[i]
-
-		if b.OB && b.FlowID != "" {
-			if fc := h.server.Pool().GetByFlowID(b.FlowID); fc != nil {
-				binding = b
-				target = &sip.Target{Conn: fc.Conn, FlowID: fc.Key.String()}
-				transport = "TCP"
-				log.Info("B2BUA: reusing TCP flow", "flowID", b.FlowID, "contact", b.ContactURI)
-				break
-			}
-		}
-
-		tgt, tr, err := sip.TargetFromContact(b.ContactURI)
-		if err != nil {
-			log.Warn("B2BUA: unresolvable contact", "contact", b.ContactURI, "error", err)
-			continue
-		}
-
-		if tr == "TCP" && tgt.Conn != nil {
-			wrapped, werr := h.server.TCPTransport().HandleOutbound(tgt.Conn)
-			if werr != nil {
-				log.Error("B2BUA: HandleOutbound failed", "contact", b.ContactURI, "error", werr)
-				tgt.Conn.Close()
-				continue
-			}
-			tgt.Conn = wrapped
-			log.Info("B2BUA: registered outbound TCP flow", "contact", b.ContactURI)
-		}
-
-		binding = b
-		target = tgt
-		transport = tr
-		break
-	}
-
+	binding, target, transport := h.selectBinding(bindings, log)
 	if target == nil {
 		log.Warn("B2BUA: no reachable binding", "aor", aor)
 		res := proto.NewResponse(req, 502, "Bad Gateway")
@@ -491,15 +451,7 @@ func (h *Handler) handleB2BUAInvite(ctx context.Context, req *proto.SIPMessage, 
 		return
 	}
 
-	aliceSupports100rel := false
-	if h.prackMgr != nil {
-		supp := strings.ToLower(req.Headers.GetFirst("Supported"))
-		reqrel := strings.ToLower(req.Headers.GetFirst("Require"))
-		aliceSupports100rel = strings.Contains(supp, "100rel") || strings.Contains(reqrel, "100rel")
-		if strings.Contains(reqrel, "100rel") {
-			log.Info("B2BUA: Alice requires 100rel, enabling reliable provisionals")
-		}
-	}
+	aliceSupports100rel := detect100relSupport(req, h.prackMgr, log)
 
 	from, err := req.From()
 	if err != nil {
@@ -605,6 +557,57 @@ func (h *Handler) handleB2BUAInvite(ctx context.Context, req *proto.SIPMessage, 
 		"rtpPortB", rtpConnB.LocalAddr().(*net.UDPAddr).Port)
 }
 
+func (h *Handler) selectBinding(bindings []*sip.Binding, log *slog.Logger) (*sip.Binding, *sip.Target, string) {
+	for i := len(bindings) - 1; i >= 0; i-- {
+		b := bindings[i]
+
+		if b.OB && b.FlowID != "" {
+			if fc := h.server.Pool().GetByFlowID(b.FlowID); fc != nil {
+				return b, &sip.Target{Conn: fc.Conn, FlowID: fc.Key.String()}, "TCP"
+			}
+		}
+
+		tgt, tr, err := sip.TargetFromContact(b.ContactURI)
+		if err != nil {
+			log.Warn("B2BUA: unresolvable contact", "contact", b.ContactURI, "error", err)
+			continue
+		}
+
+		if tr == "TCP" && tgt.Conn != nil {
+			wrapped, werr := h.server.TCPTransport().HandleOutbound(tgt.Conn)
+			if werr != nil {
+				log.Error("B2BUA: HandleOutbound failed", "contact", b.ContactURI, "error", werr)
+				tgt.Conn.Close()
+				continue
+			}
+			tgt.Conn = wrapped
+			log.Info("B2BUA: registered outbound TCP flow", "contact", b.ContactURI)
+		}
+
+		return b, tgt, tr
+	}
+
+	return nil, nil, ""
+}
+
+func detect100relSupport(req *proto.SIPMessage, prackMgr *sip.ReliableProvisionalManager, log *slog.Logger) bool {
+	if prackMgr == nil {
+		return false
+	}
+	for _, v := range req.Headers["Supported"] {
+		if strings.Contains(strings.ToLower(v), "100rel") {
+			return true
+		}
+	}
+	for _, v := range req.Headers["Require"] {
+		if strings.Contains(strings.ToLower(v), "100rel") {
+			log.Info("B2BUA: Alice requires 100rel, enabling reliable provisionals")
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Handler) b2buaResponseLoop(ctx context.Context,
 	req *proto.SIPMessage, tx sip.Transaction,
 	target *sip.Target, transportImpl sip.Transport, uac *sip.UACTransaction,
@@ -639,8 +642,13 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context,
 		h.cancelPRACK(callID)
 	}()
 
+	prackDone := make(chan struct{})
+
 	for {
 		select {
+		case <-prackDone:
+			log.Warn("B2BUA: response loop exiting due to PRACK timeout")
+			return
 		case resp := <-uac.Responses:
 			sc := resp.StatusCode()
 
@@ -669,13 +677,18 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context,
 					if needsPRACK && h.prackMgr != nil {
 						rseqVal := bobRSeq
 						cseqVal := strconv.Itoa(resp.CSeq.Seq)
+						bobRespTo, _ := resp.To()
+						bobRespTag := ""
+						if bobRespTo != nil {
+							bobRespTag = bobRespTo.Tag
+						}
 						prack := proto.NewRequest(proto.SIPMethodPRACK, binding.ContactURI)
 						prack.Headers.Add("Via", fmt.Sprintf("SIP/2.0/%s %s:%s;branch=%s",
 							sip.TransportName(transportImpl), h.serverIP, serverPort, sip.GenerateBranch()))
 						prack.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s", from.URI, calleeTag))
-						prack.Headers.Add("To", fmt.Sprintf("<%s>", to.URI))
+						prack.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s", to.URI, bobRespTag))
 						prack.Headers.Add("Call-ID", bobCallID)
-						prack.CSeq = proto.CSeq{Method: proto.SIPMethodPRACK, Seq: resp.CSeq.Seq}
+						prack.CSeq = proto.CSeq{Method: proto.SIPMethodPRACK, Seq: resp.CSeq.Seq + 1}
 						prack.Headers.Add("RAck", rseqVal+" "+cseqVal+" INVITE")
 						prack.Headers.Add("Max-Forwards", "70")
 						prack.Headers.Add("Content-Length", "0")
@@ -696,6 +709,7 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context,
 							rtpConnA.Close()
 							rtpConnB.Close()
 							tx.Respond(proto.NewResponse(req, 504, "PRACK Timeout"))
+							close(prackDone)
 						}
 						h.prackMgr.SendReliable(ctx, tx, prov, callID, prackTimeout)
 					} else {
