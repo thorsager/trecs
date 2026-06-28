@@ -1,6 +1,7 @@
 package b2bua
 
 import (
+	"context"
 	"net"
 	"sync"
 
@@ -32,10 +33,23 @@ type Call struct {
 	BridgeReady     bool
 }
 
+// EarlyCall tracks a pending B2BUA call while Bob is ringing (before answer).
+// Used to support CANCEL propagation to the Bob leg.
+type EarlyCall struct {
+	AliceCallID    string
+	BobCallID      string
+	AliceServerTag string
+	BobTx          *sip.UACTransaction
+	RTPConnA       *media.RTPConn
+	RTPConnB       *media.RTPConn
+	Cancel         context.CancelFunc
+}
+
 // Store provides safe concurrent access to active B2BUA calls.
 type Store struct {
 	calls      map[string]*Call
 	bobToAlice map[string]string
+	early      map[string]*EarlyCall
 	mu         sync.Mutex
 }
 
@@ -44,6 +58,7 @@ func NewStore() *Store {
 	return &Store{
 		calls:      make(map[string]*Call),
 		bobToAlice: make(map[string]string),
+		early:      make(map[string]*EarlyCall),
 	}
 }
 
@@ -80,4 +95,25 @@ func (s *Store) Remove(aliceCID string) {
 			call.BobConn.Close()
 		}
 	}
+}
+
+// StoreEarly adds a pending (ringing) call for CANCEL tracking.
+func (s *Store) StoreEarly(ec *EarlyCall) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.early[ec.AliceCallID] = ec
+}
+
+// GetEarly retrieves a pending call by Alice Call-ID.
+func (s *Store) GetEarly(callID string) *EarlyCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.early[callID]
+}
+
+// RemoveEarly removes a pending call by Alice Call-ID.
+func (s *Store) RemoveEarly(aliceCID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.early, aliceCID)
 }

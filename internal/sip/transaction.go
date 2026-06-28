@@ -179,19 +179,20 @@ func (s ISTState) String() string {
 
 // InviteTransaction implements the IST state machine per RFC 3261 §17.2.1.
 type InviteTransaction struct {
-	transport Transport
-	timerH    *time.Timer
-	logger    *slog.Logger
-	lastResp  *proto.SIPMessage
-	timerG    *time.Timer
-	manager   *TransactionManager
-	timerI    *time.Timer
-	target    Target
-	branch    string
-	state     ISTState
-	gCount    int
-	mu        sync.Mutex
-	reliable  bool
+	transport    Transport
+	timerH       *time.Timer
+	logger       *slog.Logger
+	lastResp     *proto.SIPMessage
+	cancelOKResp *proto.SIPMessage // 200 OK for CANCEL, stored for retransmission
+	timerG       *time.Timer
+	manager      *TransactionManager
+	timerI       *time.Timer
+	target       Target
+	branch       string
+	state        ISTState
+	gCount       int
+	mu           sync.Mutex
+	reliable     bool
 }
 
 // Respond implements Transaction per RFC 3261 §17.2.1.
@@ -371,7 +372,19 @@ func (tm *TransactionManager) HandleRequest(ctx context.Context, ev MessageEvent
 	tm.mu.Unlock()
 
 	if exists {
+		if ev.Msg.Method() == proto.SIPMethodCANCEL {
+			tm.handleCancelRequest(ctx, ev, transport, existing, handler)
+			return
+		}
 		tm.handleRetransmission(existing)
+		return
+	}
+
+	if ev.Msg.Method() == proto.SIPMethodCANCEL {
+		logutil.FromContext(ctx).Warn("CANCEL received with no matching INVITE transaction",
+			"branch", branch, "callID", ev.Msg.Headers.GetFirst("Call-ID"))
+		res := proto.NewResponse(ev.Msg, 481, "Call Leg/Transaction Does Not Exist")
+		transport.Send(res, &ev.Target) //nolint:errcheck
 		return
 	}
 
@@ -431,6 +444,96 @@ func (tm *TransactionManager) handleRetransmission(tx Transaction) {
 			t.logger.Debug("Retransmission of INVITE, re-sending final response")
 			t.transport.Send(t.lastResp, &t.target) //nolint:errcheck
 		}
+	}
+}
+
+// handleCancelRequest processes a CANCEL request matching an existing
+// INVITE server transaction per RFC 3261 §9.2.
+// If the IST is in Trying or Proceeding, it sends 200 OK for the CANCEL
+// and delegates 487 generation to the handler (which uses ist.Respond()
+// for correct transport, To tag, and state machine).
+// If no handler is provided, it sends 487 directly (backward compat).
+// On retransmitted CANCEL in Completed state, re-sends the stored 200 OK.
+// Otherwise it sends 481.
+func (tm *TransactionManager) handleCancelRequest(ctx context.Context, ev MessageEvent, transport Transport, existing Transaction, handler RequestHandler) {
+	ist, ok := existing.(*InviteTransaction)
+	if !ok {
+		logutil.FromContext(ctx).Warn("CANCEL matched non-INVITE transaction")
+		res := proto.NewResponse(ev.Msg, 481, "Call Leg/Transaction Does Not Exist")
+		transport.Send(res, &ev.Target) //nolint:errcheck
+		return
+	}
+
+	ist.mu.Lock()
+
+	switch {
+	case ist.state == ISTTrying || ist.state == ISTProceeding:
+		// Send 200 OK for the CANCEL itself.
+		okResp := proto.NewResponse(ev.Msg, 200, "OK")
+		ist.logger.Debug("CANCEL: sending 200 OK for CANCEL, IST in state", "istState", ist.state)
+		if err := transport.Send(okResp, &ev.Target); err != nil {
+			ist.logger.Error("CANCEL: 200 OK send error", "error", err)
+		}
+		ist.cancelOKResp = okResp
+
+		if handler != nil {
+			// Delegate 487 generation to the handler, which uses
+			// ist.Respond() to send via the correct transport and set
+			// the To tag per RFC 3261 §12.1.1.
+			ist.mu.Unlock()
+			handler(ctx, ev.Msg, ist)
+			return
+		}
+
+		// No handler: send 487 directly and manage state machine.
+		inviteResp := proto.NewResponse(ev.Msg, 487, "Request Terminated")
+		inviteResp.CSeq = proto.CSeq{Method: proto.SIPMethodINVITE, Seq: ev.Msg.CSeq.Seq}
+		ist.lastResp = inviteResp
+		if err := ist.transport.Send(inviteResp, &ist.target); err != nil {
+			ist.logger.Error("CANCEL: 487 send error", "error", err)
+		}
+
+		prev := ist.state
+		ist.state = ISTCompleted
+		ist.stopTimers()
+		ist.logger.Debug("IST state transition due to CANCEL",
+			"from", prev, "to", "Completed")
+
+		logger := ist.logger
+		branch := ist.branch
+		ist.timerH = time.AfterFunc(64*T1, func() {
+			ist.mu.Lock()
+			ist.state = ISTTerminated
+			ist.stopTimers()
+			ist.mu.Unlock()
+
+			tm.mu.Lock()
+			delete(tm.serverTxs, branch)
+			tm.mu.Unlock()
+			logger.Debug("IST terminated", "reason", "Timer H (after CANCEL)")
+		})
+
+		if !ist.reliable {
+			ist.gCount = 0
+			ist.scheduleTimerG()
+		}
+
+		ist.mu.Unlock()
+
+	case ist.state == ISTCompleted && ist.cancelOKResp != nil:
+		// CANCEL retransmission after successful cancel: re-send 200 OK.
+		ist.logger.Debug("CANCEL: retransmission, re-sending 200 OK")
+		transport.Send(ist.cancelOKResp, &ev.Target) //nolint:errcheck
+		ist.mu.Unlock()
+
+	default:
+		// IST is already in Completed (not from cancel), Confirmed, or
+		// Terminated — CANCEL is too late.
+		state := ist.state
+		ist.mu.Unlock()
+		ist.logger.Debug("CANCEL ignored: IST already in state", "state", state)
+		res := proto.NewResponse(ev.Msg, 481, "Call Leg/Transaction Does Not Exist")
+		transport.Send(res, &ev.Target) //nolint:errcheck
 	}
 }
 

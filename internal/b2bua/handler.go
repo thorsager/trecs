@@ -544,7 +544,21 @@ func (h *Handler) handleB2BUAInvite(ctx context.Context, req *proto.SIPMessage, 
 	}
 	bobInvite.Body = bobSDPBytes
 
-	go h.b2buaResponseLoop(ctx, req, tx, target, transportImpl, uac,
+	// Create a cancelable context for the response loop lifecycle
+	// so that CANCEL can abort the pending INVITE to Bob.
+	responseCtx, responseCancel := context.WithCancel(ctx)
+	early := &EarlyCall{
+		AliceCallID:    callID,
+		BobCallID:      bobCallID,
+		AliceServerTag: serverTag,
+		BobTx:          uac,
+		RTPConnA:       rtpConnA,
+		RTPConnB:       rtpConnB,
+		Cancel:         responseCancel,
+	}
+	h.store.StoreEarly(early)
+
+	go h.b2buaResponseLoop(responseCtx, req, tx, target, transportImpl, uac,
 		rtpConnA, rtpConnB, from, aliceFromTag, serverTag, callID,
 		calleeTag, bobCallID, to, selectedPT, hasEarlyOffer,
 		aliceSDPOffer, aliceSDPBytes, recordRoute,
@@ -629,6 +643,10 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context,
 
 	log.Debug("B2BUA: response loop started")
 
+	// Clean up the early call tracking when the response loop exits
+	// (whether by answer, error, or cancellation).
+	defer h.store.RemoveEarly(callID)
+
 	if err := uac.Send(bobInvite); err != nil {
 		rtpConnA.Close()
 		rtpConnB.Close()
@@ -648,6 +666,12 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context,
 		select {
 		case <-prackDone:
 			log.Warn("B2BUA: response loop exiting due to PRACK timeout")
+			return
+		case <-ctx.Done():
+			log.Info("B2BUA: response loop canceled")
+			rtpConnA.Close()
+			rtpConnB.Close()
+			h.cancelPRACK(callID)
 			return
 		case resp := <-uac.Responses:
 			sc := resp.StatusCode()
@@ -1134,6 +1158,66 @@ func (h *Handler) HandleBye(ctx context.Context, req *proto.SIPMessage, tx sip.T
 	res.Headers["Allow"] = []string{h.server.AllowMethods()}
 	tx.Respond(res)
 	log.Debug("BYE responded", "statusCode", 200)
+}
+
+// HandleCancel handles incoming CANCEL requests for B2BUA calls.
+// The transaction layer has already sent 200 OK for the CANCEL.
+// This handler sends 487 Request Terminated for the INVITE using
+// the correct transport (ist.transport) and To tag, then propagates
+// the CANCEL to Bob and cleans up early call resources.
+func (h *Handler) HandleCancel(ctx context.Context, req *proto.SIPMessage, tx sip.Transaction) {
+	callID := req.Headers.GetFirst("Call-ID")
+	ctx = logutil.WithValues(ctx,
+		"callID", callID,
+		"from", req.Headers.GetFirst("From"),
+		"to", req.Headers.GetFirst("To"))
+	log := logutil.FromContext(ctx)
+
+	log.Debug("CANCEL received in B2BUA handler")
+
+	// If the call is already established, CANCEL is too late.
+	if call := h.store.Get(callID); call != nil {
+		log.Debug("CANCEL: call already answered, ignoring")
+		return
+	}
+
+	// Look up the early (ringing) call.
+	early := h.store.GetEarly(callID)
+	if early == nil {
+		log.Debug("CANCEL: no pending call found")
+		return
+	}
+
+	// Build and send 487 Request Terminated with the correct To tag
+	// per RFC 3261 §12.1.1 and using ist.transport (fixes #30 review).
+	inviteResp := proto.NewResponse(req, 487, "Request Terminated")
+	inviteResp.CSeq = proto.CSeq{Method: proto.SIPMethodINVITE, Seq: req.CSeq.Seq}
+	toHeader := req.Headers.GetFirst("To")
+	if !strings.Contains(toHeader, "tag=") {
+		toHeader = fmt.Sprintf("%s;tag=%s", toHeader, early.AliceServerTag)
+		inviteResp.Headers.Set("To", []string{toHeader})
+	}
+	tx.Respond(inviteResp)
+
+	// Cancel the response loop context to abort the pending INVITE to Bob.
+	early.Cancel()
+
+	// Send CANCEL to Bob if the UAC transaction is still pending.
+	if err := early.BobTx.SendCancel(); err != nil {
+		log.Error("CANCEL: failed to send CANCEL to Bob", "error", err)
+	} else {
+		log.Info("CANCEL: sent CANCEL to Bob")
+	}
+
+	// Close RTP connections (Close is idempotent; response loop may also close them).
+	early.RTPConnA.Close()
+	early.RTPConnB.Close()
+
+	// Remove from early store and cancel pending PRACK.
+	h.store.RemoveEarly(callID)
+	h.cancelPRACK(callID)
+
+	log.Info("CANCEL: handled, propagation to Bob complete")
 }
 
 // HandleResponse routes incoming SIP responses to the UAC manager.

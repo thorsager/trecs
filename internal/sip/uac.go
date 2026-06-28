@@ -317,6 +317,49 @@ func (u *UACTransaction) Cancel() {
 	}
 }
 
+// SendCancel constructs and sends a CANCEL request matching the original
+// INVITE per RFC 3261 §9.1.
+// The CANCEL uses the same Via branch, Call-ID, From, To, and CSeq sequence
+// number as the INVITE. It is only valid in Calling or Proceeding state.
+func (u *UACTransaction) SendCancel() error {
+	u.stateMu.Lock()
+	if u.request == nil {
+		u.stateMu.Unlock()
+		return fmt.Errorf("cannot cancel %s transaction: request not yet sent", u.Method)
+	}
+	state := u.state
+	if state != UACStateCalling && state != UACStateProceeding {
+		u.stateMu.Unlock()
+		return fmt.Errorf("cannot cancel %s transaction in state %v", u.Method, state)
+	}
+	req := u.request
+	u.stateMu.Unlock()
+
+	cancel := proto.NewRequest(proto.SIPMethodCANCEL, req.RequestURI())
+
+	viaTransport := TransportName(u.transport)
+	cancel.Headers.Add("Via", fmt.Sprintf("SIP/2.0/%s %s;branch=%s",
+		viaTransport, req.ViaSentBy(), u.Branch))
+
+	if fromVals := req.Headers["From"]; len(fromVals) > 0 {
+		cancel.Headers.Add("From", fromVals[0])
+	}
+	if toVals := req.Headers["To"]; len(toVals) > 0 {
+		cancel.Headers.Add("To", toVals[0])
+	}
+	cancel.Headers.Add("Call-ID", req.Headers.GetFirst("Call-ID"))
+	cancel.CSeq = proto.CSeq{Method: proto.SIPMethodCANCEL, Seq: req.CSeq.Seq}
+	cancel.Headers.Add("Max-Forwards", "70")
+	cancel.Headers.Add("Content-Length", "0")
+
+	u.logger.Debug("UAC sending CANCEL",
+		"callID", req.Headers.GetFirst("Call-ID"),
+		"branch", u.Branch,
+		"cseq", cancel.CSeq.Seq)
+
+	return u.transport.Send(cancel, u.target)
+}
+
 type TimeoutError struct {
 	Method proto.SIPMethod
 }
