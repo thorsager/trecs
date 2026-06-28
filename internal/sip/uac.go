@@ -323,31 +323,36 @@ func (u *UACTransaction) Cancel() {
 // number as the INVITE. It is only valid in Calling or Proceeding state.
 func (u *UACTransaction) SendCancel() error {
 	u.stateMu.Lock()
+	if u.request == nil {
+		u.stateMu.Unlock()
+		return fmt.Errorf("cannot cancel %s transaction: request not yet sent", u.Method)
+	}
 	if u.state != UACStateCalling && u.state != UACStateProceeding {
 		u.stateMu.Unlock()
 		return fmt.Errorf("cannot cancel %s transaction in state %v", u.Method, u.state)
 	}
+	req := u.request
 	u.stateMu.Unlock()
 
-	cancel := proto.NewRequest(proto.SIPMethodCANCEL, u.request.RequestURI())
+	cancel := proto.NewRequest(proto.SIPMethodCANCEL, req.RequestURI())
 
 	viaTransport := TransportName(u.transport)
 	cancel.Headers.Add("Via", fmt.Sprintf("SIP/2.0/%s %s;branch=%s",
-		viaTransport, u.request.ViaSentBy(), u.Branch))
+		viaTransport, req.ViaSentBy(), u.Branch))
 
-	if fromVals := u.request.Headers["From"]; len(fromVals) > 0 {
+	if fromVals := req.Headers["From"]; len(fromVals) > 0 {
 		cancel.Headers.Add("From", fromVals[0])
 	}
-	if toVals := u.request.Headers["To"]; len(toVals) > 0 {
+	if toVals := req.Headers["To"]; len(toVals) > 0 {
 		cancel.Headers.Add("To", toVals[0])
 	}
-	cancel.Headers.Add("Call-ID", u.request.Headers.GetFirst("Call-ID"))
-	cancel.CSeq = proto.CSeq{Method: proto.SIPMethodCANCEL, Seq: u.request.CSeq.Seq}
+	cancel.Headers.Add("Call-ID", req.Headers.GetFirst("Call-ID"))
+	cancel.CSeq = proto.CSeq{Method: proto.SIPMethodCANCEL, Seq: req.CSeq.Seq}
 	cancel.Headers.Add("Max-Forwards", "70")
 	cancel.Headers.Add("Content-Length", "0")
 
 	u.logger.Debug("UAC sending CANCEL",
-		"callID", u.request.Headers.GetFirst("Call-ID"),
+		"callID", req.Headers.GetFirst("Call-ID"),
 		"branch", u.Branch,
 		"cseq", cancel.CSeq.Seq)
 

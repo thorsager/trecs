@@ -179,19 +179,20 @@ func (s ISTState) String() string {
 
 // InviteTransaction implements the IST state machine per RFC 3261 §17.2.1.
 type InviteTransaction struct {
-	transport Transport
-	timerH    *time.Timer
-	logger    *slog.Logger
-	lastResp  *proto.SIPMessage
-	timerG    *time.Timer
-	manager   *TransactionManager
-	timerI    *time.Timer
-	target    Target
-	branch    string
-	state     ISTState
-	gCount    int
-	mu        sync.Mutex
-	reliable  bool
+	transport    Transport
+	timerH       *time.Timer
+	logger       *slog.Logger
+	lastResp     *proto.SIPMessage
+	cancelOKResp *proto.SIPMessage // 200 OK for CANCEL, stored for retransmission
+	timerG       *time.Timer
+	manager      *TransactionManager
+	timerI       *time.Timer
+	target       Target
+	branch       string
+	state        ISTState
+	gCount       int
+	mu           sync.Mutex
+	reliable     bool
 }
 
 // Respond implements Transaction per RFC 3261 §17.2.1.
@@ -449,9 +450,11 @@ func (tm *TransactionManager) handleRetransmission(tx Transaction) {
 // handleCancelRequest processes a CANCEL request matching an existing
 // INVITE server transaction per RFC 3261 §9.2.
 // If the IST is in Trying or Proceeding, it sends 200 OK for the CANCEL
-// and 487 for the INVITE, then transitions to Completed.
+// and delegates 487 generation to the handler (which uses ist.Respond()
+// for correct transport, To tag, and state machine).
+// If no handler is provided, it sends 487 directly (backward compat).
+// On retransmitted CANCEL in Completed state, re-sends the stored 200 OK.
 // Otherwise it sends 481.
-// It then calls the application handler for downstream propagation.
 func (tm *TransactionManager) handleCancelRequest(ctx context.Context, ev MessageEvent, transport Transport, existing Transaction, handler RequestHandler) {
 	ist, ok := existing.(*InviteTransaction)
 	if !ok {
@@ -463,25 +466,33 @@ func (tm *TransactionManager) handleCancelRequest(ctx context.Context, ev Messag
 
 	ist.mu.Lock()
 
-	if ist.state == ISTTrying || ist.state == ISTProceeding {
+	switch {
+	case ist.state == ISTTrying || ist.state == ISTProceeding:
 		// Send 200 OK for the CANCEL itself.
 		okResp := proto.NewResponse(ev.Msg, 200, "OK")
 		ist.logger.Debug("CANCEL: sending 200 OK for CANCEL, IST in state", "istState", ist.state)
 		if err := transport.Send(okResp, &ev.Target); err != nil {
 			ist.logger.Error("CANCEL: 200 OK send error", "error", err)
 		}
+		ist.cancelOKResp = okResp
 
-		// Send 487 Request Terminated for the INVITE.
-		// CSeq method must be INVITE (not CANCEL), per RFC 3261 §9.2.
+		if handler != nil {
+			// Delegate 487 generation to the handler, which uses
+			// ist.Respond() to send via the correct transport and set
+			// the To tag per RFC 3261 §12.1.1.
+			ist.mu.Unlock()
+			handler(ctx, ev.Msg, ist)
+			return
+		}
+
+		// No handler: send 487 directly and manage state machine.
 		inviteResp := proto.NewResponse(ev.Msg, 487, "Request Terminated")
 		inviteResp.CSeq = proto.CSeq{Method: proto.SIPMethodINVITE, Seq: ev.Msg.CSeq.Seq}
 		ist.lastResp = inviteResp
-		ist.logger.Debug("CANCEL: sending 487 for INVITE")
-		if err := transport.Send(inviteResp, &ist.target); err != nil {
+		if err := ist.transport.Send(inviteResp, &ist.target); err != nil {
 			ist.logger.Error("CANCEL: 487 send error", "error", err)
 		}
 
-		// Transition to Completed and start Timers H and G.
 		prev := ist.state
 		ist.state = ISTCompleted
 		ist.stopTimers()
@@ -509,18 +520,21 @@ func (tm *TransactionManager) handleCancelRequest(ctx context.Context, ev Messag
 
 		ist.mu.Unlock()
 
-		// Call the application handler for downstream propagation.
-		if handler != nil {
-			handler(ctx, ev.Msg, ist)
-		}
-		return
-	}
+	case ist.state == ISTCompleted && ist.cancelOKResp != nil:
+		// CANCEL retransmission after successful cancel: re-send 200 OK.
+		ist.logger.Debug("CANCEL: retransmission, re-sending 200 OK")
+		transport.Send(ist.cancelOKResp, &ev.Target) //nolint:errcheck
+		ist.mu.Unlock()
 
-	// IST is already in Completed, Confirmed, or Terminated — CANCEL is too late.
-	ist.mu.Unlock()
-	ist.logger.Debug("CANCEL ignored: IST already in state", "state", ist.state)
-	res := proto.NewResponse(ev.Msg, 481, "Call Leg/Transaction Does Not Exist")
-	transport.Send(res, &ev.Target) //nolint:errcheck
+	default:
+		// IST is already in Completed (not from cancel), Confirmed, or
+		// Terminated — CANCEL is too late.
+		state := ist.state
+		ist.mu.Unlock()
+		ist.logger.Debug("CANCEL ignored: IST already in state", "state", state)
+		res := proto.NewResponse(ev.Msg, 481, "Call Leg/Transaction Does Not Exist")
+		transport.Send(res, &ev.Target) //nolint:errcheck
+	}
 }
 
 // HandleACK processes an incoming ACK. Non-2xx ACKs are matched to the

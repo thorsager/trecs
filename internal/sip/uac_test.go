@@ -311,6 +311,38 @@ func TestUAC_CancelStopsTimers(t *testing.T) {
 	}
 }
 
+func TestUAC_SendCancelNilRequest(t *testing.T) {
+	mock := &mockTransport{}
+	target := &Target{}
+	uac := newUACTransaction(t.Context(), proto.SIPMethodINVITE, mock, target)
+	uac.reliable = true
+
+	// SendCancel before Send — request is nil.
+	err := uac.SendCancel()
+	if err == nil {
+		t.Fatal("expected error when SendCancel called before Send")
+	}
+}
+
+func TestUAC_SendCancelWrongState(t *testing.T) {
+	mock := &mockTransport{}
+	target := &Target{}
+	uac := newUACTransaction(t.Context(), proto.SIPMethodINVITE, mock, target)
+	uac.reliable = true
+
+	req := testRequest(t, proto.SIPMethodINVITE, uac.Branch, false)
+	if err := uac.Send(req); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	uac.HandleResponse(proto.NewResponse(req, 200, "OK"))
+
+	err := uac.SendCancel()
+	if err == nil {
+		t.Fatal("expected error when SendCancel called after 2xx")
+	}
+}
+
 func TestUAC_ProceedingStopsRetransmit(t *testing.T) {
 	mock := &mockTransport{}
 	target := &Target{}

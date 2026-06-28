@@ -36,12 +36,13 @@ type Call struct {
 // EarlyCall tracks a pending B2BUA call while Bob is ringing (before answer).
 // Used to support CANCEL propagation to the Bob leg.
 type EarlyCall struct {
-	AliceCallID string
-	BobCallID   string
-	BobTx       *sip.UACTransaction
-	RTPConnA    *media.RTPConn
-	RTPConnB    *media.RTPConn
-	Cancel      context.CancelFunc
+	AliceCallID    string
+	BobCallID      string
+	AliceServerTag string
+	BobTx          *sip.UACTransaction
+	RTPConnA       *media.RTPConn
+	RTPConnB       *media.RTPConn
+	Cancel         context.CancelFunc
 }
 
 // Store provides safe concurrent access to active B2BUA calls.
