@@ -125,7 +125,9 @@ func StartTestServerWithDialplan(t *testing.T, host string, dp dialplan.Dialplan
 	srv.On(proto.SIPMethodOPTIONS, h.HandleOptions)
 	srv.On(proto.SIPMethodINVITE, h.HandleInvite)
 	srv.On(proto.SIPMethodBYE, h.HandleBye)
-	srv.On(proto.SIPMethodPRACK, h.HandlePRACK)
+	if cfg.PRACKEnabled {
+		srv.On(proto.SIPMethodPRACK, h.HandlePRACK)
+	}
 	srv.OnAck(h.HandleAck)
 	srv.OnResponse(h.HandleResponse)
 
