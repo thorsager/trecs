@@ -43,6 +43,8 @@ var (
 	rfcOverride = map[string]string{
 		"Call-Id":          "Call-ID",
 		"Cseq":             "CSeq",
+		"Rack":             "RAck",
+		"Rseq":             "RSeq",
 		"Www-Authenticate": "WWW-Authenticate",
 	}
 )
