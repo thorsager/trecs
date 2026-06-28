@@ -548,12 +548,13 @@ func (h *Handler) handleB2BUAInvite(ctx context.Context, req *proto.SIPMessage, 
 	// so that CANCEL can abort the pending INVITE to Bob.
 	responseCtx, responseCancel := context.WithCancel(ctx)
 	early := &EarlyCall{
-		AliceCallID: callID,
-		BobCallID:   bobCallID,
-		BobTx:       uac,
-		RTPConnA:    rtpConnA,
-		RTPConnB:    rtpConnB,
-		Cancel:      responseCancel,
+		AliceCallID:    callID,
+		BobCallID:      bobCallID,
+		AliceServerTag: serverTag,
+		BobTx:          uac,
+		RTPConnA:       rtpConnA,
+		RTPConnB:       rtpConnB,
+		Cancel:         responseCancel,
 	}
 	h.store.StoreEarly(early)
 
@@ -1160,9 +1161,10 @@ func (h *Handler) HandleBye(ctx context.Context, req *proto.SIPMessage, tx sip.T
 }
 
 // HandleCancel handles incoming CANCEL requests for B2BUA calls.
-// The transaction layer has already sent 200 OK (for CANCEL) and 487
-// (for the INVITE) back to Alice. This handler propagates the CANCEL
-// to Bob and cleans up early call resources.
+// The transaction layer has already sent 200 OK for the CANCEL.
+// This handler sends 487 Request Terminated for the INVITE using
+// the correct transport (ist.transport) and To tag, then propagates
+// the CANCEL to Bob and cleans up early call resources.
 func (h *Handler) HandleCancel(ctx context.Context, req *proto.SIPMessage, tx sip.Transaction) {
 	callID := req.Headers.GetFirst("Call-ID")
 	ctx = logutil.WithValues(ctx,
@@ -1173,8 +1175,7 @@ func (h *Handler) HandleCancel(ctx context.Context, req *proto.SIPMessage, tx si
 
 	log.Debug("CANCEL received in B2BUA handler")
 
-	// If the call is already established, CANCEL is too late — the
-	// transaction layer has already sent 481.
+	// If the call is already established, CANCEL is too late.
 	if call := h.store.Get(callID); call != nil {
 		log.Debug("CANCEL: call already answered, ignoring")
 		return
@@ -1186,6 +1187,17 @@ func (h *Handler) HandleCancel(ctx context.Context, req *proto.SIPMessage, tx si
 		log.Debug("CANCEL: no pending call found")
 		return
 	}
+
+	// Build and send 487 Request Terminated with the correct To tag
+	// per RFC 3261 §12.1.1 and using ist.transport (fixes #30 review).
+	inviteResp := proto.NewResponse(req, 487, "Request Terminated")
+	inviteResp.CSeq = proto.CSeq{Method: proto.SIPMethodINVITE, Seq: req.CSeq.Seq}
+	toHeader := req.Headers.GetFirst("To")
+	if !strings.Contains(toHeader, "tag=") {
+		toHeader = fmt.Sprintf("%s;tag=%s", toHeader, early.AliceServerTag)
+		inviteResp.Headers.Set("To", []string{toHeader})
+	}
+	tx.Respond(inviteResp)
 
 	// Cancel the response loop context to abort the pending INVITE to Bob.
 	early.Cancel()

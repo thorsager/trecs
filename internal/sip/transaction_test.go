@@ -1186,15 +1186,18 @@ func TestCancelISTInTryingSends200And487(t *testing.T) {
 		t.Fatal("handler should be called for INVITE")
 	}
 
-	// Send CANCEL with same branch.
+	// Send CANCEL with same branch. Handler must call tx.Respond(487)
+	// since handleCancelRequest now delegates 487 generation to the handler.
 	cancelHandlerCalled := false
 	ce := cancelEvent(t, "cancel-trying", true)
 	tm.HandleRequest(t.Context(), ce, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
 		cancelHandlerCalled = true
+		inviteResp := proto.NewResponse(r, 487, "Request Terminated")
+		inviteResp.CSeq = proto.CSeq{Method: proto.SIPMethodINVITE, Seq: r.CSeq.Seq}
+		tx.Respond(inviteResp)
 	})
 
 	// Should have sent 200 (for CANCEL) and 487 (for INVITE).
-	// The 487 lastResp may be re-sent as retransmission, so count >= 2.
 	sent := trans.sentCount()
 	if sent < 2 {
 		t.Fatalf("expected at least 2 sends (200 + 487), got %d", sent)
@@ -1380,6 +1383,66 @@ func TestCancelHandlerCalledForMatch(t *testing.T) {
 	if _, ok := handlerTx.(*InviteTransaction); !ok {
 		t.Fatal("handler should receive the InviteTransaction")
 	}
+}
+
+func TestCancelRetransmissionInCompletedSends200(t *testing.T) {
+	tm := NewTransactionManager()
+	trans := &mockTransport{}
+	req := testRequest(t, proto.SIPMethodINVITE, "cancel-retrans", true)
+	ev := MessageEvent{Msg: req, Target: Target{}}
+
+	// Create IST.
+	tm.HandleRequest(t.Context(), ev, trans, nil)
+
+	// First CANCEL — should transition to Completed.
+	ce := cancelEvent(t, "cancel-retrans", true)
+	tm.HandleRequest(t.Context(), ce, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
+		inviteResp := proto.NewResponse(r, 487, "Request Terminated")
+		inviteResp.CSeq = proto.CSeq{Method: proto.SIPMethodINVITE, Seq: r.CSeq.Seq}
+		tx.Respond(inviteResp)
+	})
+
+	// Verify IST is in Completed and cancelOKResp is set.
+	tm.mu.Lock()
+	existing, exists := tm.serverTxs["cancel-retrans"]
+	tm.mu.Unlock()
+	if !exists {
+		t.Fatal("expected IST to exist")
+	}
+	ist := existing.(*InviteTransaction)
+	ist.mu.Lock()
+	state := ist.state
+	hasCancelResp := ist.cancelOKResp != nil
+	sentBefore := trans.sentCount()
+	ist.mu.Unlock()
+
+	if state != ISTCompleted {
+		t.Fatalf("expected IST in Completed, got %s", state)
+	}
+	if !hasCancelResp {
+		t.Fatal("expected cancelOKResp to be set")
+	}
+
+	// Second CANCEL — retransmission, should re-send 200 OK, not 481.
+	ce2 := cancelEvent(t, "cancel-retrans", true)
+	tm.HandleRequest(t.Context(), ce2, trans, nil)
+
+	// Should have sent at least one more message (the 200 OK re-send).
+	if trans.sentCount() <= sentBefore {
+		t.Fatal("expected additional send for CANCEL retransmission")
+	}
+	// The last sent message should be 200 OK, not 481.
+	last := trans.lastSent()
+	if last == nil || last.StatusCode() != 200 {
+		t.Fatalf("expected 200 OK for CANCEL retransmission, got status %d", last.StatusCode())
+	}
+
+	// Stop Timer H.
+	ist.mu.Lock()
+	if ist.timerH != nil {
+		ist.timerH.Stop()
+	}
+	ist.mu.Unlock()
 }
 
 func TestCancel487CSeqMethodIsINVITE(t *testing.T) {
