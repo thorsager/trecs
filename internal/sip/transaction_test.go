@@ -1139,7 +1139,326 @@ func TestManagerHandleACKEmptyBranch(t *testing.T) {
 	// Should not panic.
 }
 
-func TestACKAfterTerminatedNoop(t *testing.T) {
+// ============================================================================
+// CANCEL — RFC 3261 §9.2
+// ============================================================================
+
+// cancelRequest builds a CANCEL request with the given branch.
+func cancelRequest(t testing.TB, branch string, reliable bool) *proto.SIPMessage {
+	t.Helper()
+	protoVal := "UDP"
+	if reliable {
+		protoVal = "TCP"
+	}
+	raw := "CANCEL sip:test SIP/2.0\r\n" +
+		"Via: SIP/2.0/" + protoVal + " 127.0.0.1;branch=" + branch + "\r\n" +
+		"From: <sip:a>;tag=tag1\r\n" +
+		"To: <sip:b>\r\n" +
+		"Call-ID: test-cancel\r\n" +
+		"CSeq: 1 CANCEL\r\n" +
+		"Content-Length: 0\r\n\r\n"
+	msg, err := proto.UnmarshalSIPDatagram([]byte(raw))
+	if err != nil {
+		t.Fatalf("UnmarshalSIPDatagram: %v", err)
+	}
+	return msg
+}
+
+// cancelEvent creates a MessageEvent from a CANCEL request.
+func cancelEvent(t testing.TB, branch string, reliable bool) MessageEvent {
+	t.Helper()
+	msg := cancelRequest(t, branch, reliable)
+	return MessageEvent{Msg: msg, Target: Target{}}
+}
+
+func TestCancelISTInTryingSends200And487(t *testing.T) {
+	tm := NewTransactionManager()
+	trans := &mockTransport{}
+	req := testRequest(t, proto.SIPMethodINVITE, "cancel-trying", true)
+	ev := MessageEvent{Msg: req, Target: Target{}}
+
+	// Create IST in Trying.
+	handlerCalled := false
+	tm.HandleRequest(t.Context(), ev, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
+		handlerCalled = true
+	})
+	if !handlerCalled {
+		t.Fatal("handler should be called for INVITE")
+	}
+
+	// Send CANCEL with same branch.
+	cancelHandlerCalled := false
+	ce := cancelEvent(t, "cancel-trying", true)
+	tm.HandleRequest(t.Context(), ce, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
+		cancelHandlerCalled = true
+	})
+
+	// Should have sent 200 (for CANCEL) and 487 (for INVITE).
+	// The 487 lastResp may be re-sent as retransmission, so count >= 2.
+	sent := trans.sentCount()
+	if sent < 2 {
+		t.Fatalf("expected at least 2 sends (200 + 487), got %d", sent)
+	}
+
+	// Check that the CANCEL handler was called.
+	if !cancelHandlerCalled {
+		t.Fatal("handler should be called for CANCEL matching IST")
+	}
+
+	// IST should be in Completed after CANCEL.
+	tm.mu.Lock()
+	existing, exists := tm.serverTxs["cancel-trying"]
+	tm.mu.Unlock()
+	if !exists {
+		t.Fatal("expected IST to still exist in manager")
+	}
+	ist := existing.(*InviteTransaction)
+	ist.mu.Lock()
+	if ist.state != ISTCompleted {
+		t.Fatalf("expected IST in Completed after CANCEL, got %s", ist.state)
+	}
+	ist.mu.Unlock()
+
+	// Stop Timer H to avoid logging after test.
+	ist.mu.Lock()
+	if ist.timerH != nil {
+		ist.timerH.Stop()
+	}
+	ist.mu.Unlock()
+}
+
+func TestCancelISTInProceedingSends200And487(t *testing.T) {
+	tm := NewTransactionManager()
+	trans := &mockTransport{}
+	req := testRequest(t, proto.SIPMethodINVITE, "cancel-proceeding", true)
+	ev := MessageEvent{Msg: req, Target: Target{}}
+
+	// Create IST and transition to Proceeding via 180.
+	handlerCalled := false
+	tm.HandleRequest(t.Context(), ev, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
+		handlerCalled = true
+		tx.Respond(proto.NewResponse(r, 180, "Ringing"))
+	})
+	if !handlerCalled {
+		t.Fatal("handler should be called for INVITE")
+	}
+
+	// Verify IST is in Proceeding.
+	tm.mu.Lock()
+	existing, exists := tm.serverTxs["cancel-proceeding"]
+	tm.mu.Unlock()
+	if !exists {
+		t.Fatal("expected IST to exist")
+	}
+	ist := existing.(*InviteTransaction)
+	ist.mu.Lock()
+	if ist.state != ISTProceeding {
+		t.Fatalf("expected IST in Proceeding, got %s", ist.state)
+	}
+	ist.mu.Unlock()
+
+	// CANCEL.
+	ce := cancelEvent(t, "cancel-proceeding", true)
+	tm.HandleRequest(t.Context(), ce, trans, nil)
+
+	// Should have sent 200 + 487.
+	sent := trans.sentCount()
+	// Initial sends: 180 (1) + CANCEL: 200 (1) + 487 (1) = 3
+	if sent < 3 {
+		t.Fatalf("expected at least 3 sends (180 + 200 + 487), got %d", sent)
+	}
+}
+
+func TestCancelISTInCompletedSends481(t *testing.T) {
+	tm := NewTransactionManager()
+	trans := &mockTransport{}
+	req := testRequest(t, proto.SIPMethodINVITE, "cancel-completed", true)
+	ev := MessageEvent{Msg: req, Target: Target{}}
+
+	// Create IST in Completed via 404 response.
+	tm.HandleRequest(t.Context(), ev, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
+		tx.Respond(proto.NewResponse(r, 404, "Not Found"))
+	})
+
+	sentBefore := trans.sentCount()
+
+	// CANCEL with same branch — IST is already Completed.
+	ce := cancelEvent(t, "cancel-completed", true)
+	tm.HandleRequest(t.Context(), ce, trans, nil)
+
+	// A 481 should be sent.
+	if trans.sentCount() <= sentBefore {
+		t.Fatal("expected additional response for CANCEL in Completed")
+	}
+	last := trans.lastSent()
+	if last == nil || last.StatusCode() != 481 {
+		t.Fatalf("expected 481 for CANCEL in Completed, got %d", last.StatusCode())
+	}
+}
+
+func TestCancelNonInviteTransactionSends481(t *testing.T) {
+	tm := NewTransactionManager()
+	trans := &mockTransport{}
+	req := testRequest(t, proto.SIPMethodOPTIONS, "cancel-noninvite", true)
+	ev := MessageEvent{Msg: req, Target: Target{}}
+
+	// Create NIST.
+	tm.HandleRequest(t.Context(), ev, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
+		tx.Respond(proto.NewResponse(r, 200, "OK"))
+	})
+
+	// CANCEL with same branch — but it's a NIST, not IST.
+	ce := cancelEvent(t, "cancel-noninvite", true)
+	tm.HandleRequest(t.Context(), ce, trans, nil)
+
+	last := trans.lastSent()
+	if last == nil || last.StatusCode() != 481 {
+		t.Fatalf("expected 481 for CANCEL matching non-INVITE tx, got %d", last.StatusCode())
+	}
+}
+
+func TestCancelNoMatchingTransactionSends481(t *testing.T) {
+	tm := NewTransactionManager()
+	trans := &mockTransport{}
+
+	// CANCEL with branch that doesn't match any transaction.
+	ce := cancelEvent(t, "no-such-transaction", true)
+	handlerCalled := false
+	tm.HandleRequest(t.Context(), ce, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
+		handlerCalled = true
+	})
+
+	if handlerCalled {
+		t.Fatal("handler should NOT be called for CANCEL with no matching transaction")
+	}
+
+	last := trans.lastSent()
+	if last == nil || last.StatusCode() != 481 {
+		t.Fatalf("expected 481 for CANCEL with no matching tx, got %d", last.StatusCode())
+	}
+}
+
+func TestCancelHandlerNotCalledForNoMatch(t *testing.T) {
+	tm := NewTransactionManager()
+	trans := &mockTransport{}
+
+	handlerCalled := false
+	ce := cancelEvent(t, "handler-no-match", true)
+	tm.HandleRequest(t.Context(), ce, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
+		handlerCalled = true
+	})
+
+	if handlerCalled {
+		t.Fatal("handler should NOT be called when CANCEL has no matching transaction")
+	}
+}
+
+func TestCancelHandlerCalledForMatch(t *testing.T) {
+	tm := NewTransactionManager()
+	trans := &mockTransport{}
+	req := testRequest(t, proto.SIPMethodINVITE, "cancel-handler-match", true)
+	ev := MessageEvent{Msg: req, Target: Target{}}
+
+	// Create IST.
+	tm.HandleRequest(t.Context(), ev, trans, nil)
+
+	// CANCEL with same branch — handler should be called.
+	handlerCalled := false
+	var handlerTx Transaction
+	ce := cancelEvent(t, "cancel-handler-match", true)
+	tm.HandleRequest(t.Context(), ce, trans, func(ctx context.Context, r *proto.SIPMessage, tx Transaction) {
+		handlerCalled = true
+		handlerTx = tx
+	})
+
+	if !handlerCalled {
+		t.Fatal("handler should be called for CANCEL matching IST")
+	}
+	if handlerTx == nil {
+		t.Fatal("handler should receive a Transaction")
+	}
+	if _, ok := handlerTx.(*InviteTransaction); !ok {
+		t.Fatal("handler should receive the InviteTransaction")
+	}
+}
+
+func TestCancel487CSeqMethodIsINVITE(t *testing.T) {
+	tm := NewTransactionManager()
+	trans := &mockTransport{}
+	req := testRequest(t, proto.SIPMethodINVITE, "cancel-cseq", true)
+	ev := MessageEvent{Msg: req, Target: Target{}}
+
+	// Create IST.
+	tm.HandleRequest(t.Context(), ev, trans, nil)
+
+	// CANCEL.
+	ce := cancelEvent(t, "cancel-cseq", true)
+	tm.HandleRequest(t.Context(), ce, trans, nil)
+
+	// Find the 487 response among sent messages.
+	found487 := false
+	trans.mu.Lock()
+	for _, msg := range trans.sent {
+		if msg.StatusCode() == 487 {
+			found487 = true
+			if msg.CSeq.Method != proto.SIPMethodINVITE {
+				t.Fatalf("487 CSeq method should be INVITE, got %s", msg.CSeq.Method)
+			}
+			if msg.CSeq.Seq != 1 {
+				t.Fatalf("487 CSeq seq should be 1, got %d", msg.CSeq.Seq)
+			}
+		}
+	}
+	trans.mu.Unlock()
+	if !found487 {
+		t.Fatal("expected 487 response to be sent")
+	}
+}
+
+func TestACKAfterCancelTransaction(t *testing.T) {
+	tm := NewTransactionManager()
+	trans := &mockTransport{}
+	req := testRequest(t, proto.SIPMethodINVITE, "cancel-ack", true)
+	ev := MessageEvent{Msg: req, Target: Target{}}
+
+	// Create IST.
+	tm.HandleRequest(t.Context(), ev, trans, nil)
+
+	// CANCEL.
+	ce := cancelEvent(t, "cancel-ack", true)
+	tm.HandleRequest(t.Context(), ce, trans, nil)
+
+	// IST should be in Completed.
+	tm.mu.Lock()
+	_, exists := tm.serverTxs["cancel-ack"]
+	tm.mu.Unlock()
+	if !exists {
+		t.Fatal("expected IST to exist after CANCEL")
+	}
+
+	// ACK for the 487 should transition to Confirmed/Terminated.
+	ackRaw := "ACK sip:test SIP/2.0\r\n" +
+		"Via: SIP/2.0/TCP 127.0.0.1;branch=cancel-ack\r\n" +
+		"From: <sip:a>;tag=tag1\r\n" +
+		"To: <sip:b>\r\n" +
+		"Call-ID: test-cancel\r\n" +
+		"CSeq: 1 ACK\r\n" +
+		"Content-Length: 0\r\n\r\n"
+	ack, _ := proto.UnmarshalSIPDatagram([]byte(ackRaw))
+	ackEv := MessageEvent{Msg: ack, Target: Target{}}
+
+	tm.HandleACK(t.Context(), ackEv, trans)
+
+	// Timer I = 0 for reliable → terminates synchronously.
+	tm.mu.Lock()
+	_, existsAfter := tm.serverTxs["cancel-ack"]
+	tm.mu.Unlock()
+	if existsAfter {
+		t.Fatal("expected IST removed from manager after ACK following CANCEL")
+	}
+}
+
+func TestACKAfterTerminatedTransactionNoop(t *testing.T) {
 	tm := NewTransactionManager()
 	trans := &mockTransport{}
 	req := testRequest(t, proto.SIPMethodINVITE, "ist-ack-after-term", true)

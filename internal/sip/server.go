@@ -192,11 +192,12 @@ func (s *Server) defaultHandler(ctx context.Context, req *proto.SIPMessage, tx T
 // Close gracefully shuts down the server.
 func (s *Server) Close() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if !s.started {
+		s.mu.Unlock()
 		return nil
 	}
+	s.started = false
+	s.mu.Unlock()
 
 	var err error
 	if e := s.udpTransport.Close(); e != nil {
@@ -206,7 +207,6 @@ func (s *Server) Close() error {
 		err = e
 	}
 	s.wg.Wait()
-	s.started = false
 	slog.Info("SIP server stopped")
 	return err
 }
