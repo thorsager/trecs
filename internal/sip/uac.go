@@ -410,6 +410,24 @@ func (m *UACManager) Deregister(branch string) {
 	slog.Debug("UACManager deregistered", "branch", branch)
 }
 
+// Stop stops all pending transactions and clears the manager.
+// Callers must not use the UACManager after calling Stop.
+func (m *UACManager) Stop() {
+	m.mu.Lock()
+	branches := make([]string, 0, len(m.pending))
+	for b := range m.pending {
+		branches = append(branches, b)
+	}
+	m.mu.Unlock()
+
+	for _, b := range branches {
+		tx := m.Get(b)
+		if tx != nil {
+			tx.Cancel()
+		}
+	}
+}
+
 func (m *UACManager) Get(branch string) *UACTransaction {
 	m.mu.Lock()
 	tx := m.pending[branch]

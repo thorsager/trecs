@@ -25,6 +25,7 @@ type TestServer struct {
 	Reg      *trecs_sip.Registrar
 	Handler  *b2bua.Handler
 	Dialplan dialplan.Dialplan
+	uacMgr   *trecs_sip.UACManager
 	cancel   context.CancelFunc
 	oldLog   *slog.Logger
 	Addr     string
@@ -66,6 +67,7 @@ func (ts *TestServer) SetMaxFailedAuthAttempts(n int) {
 // Stop shuts down the test server and restores the original slog default.
 func (ts *TestServer) Stop() {
 	ts.cancel()
+	ts.uacMgr.Stop()
 	ts.Server.Close()
 	time.Sleep(100 * time.Millisecond)
 	slog.SetDefault(ts.oldLog)
@@ -150,6 +152,7 @@ func StartTestServerWithDialplan(t *testing.T, host string, dp dialplan.Dialplan
 		Reg:      reg,
 		Handler:  h,
 		Dialplan: dp,
+		uacMgr:   uacMgr,
 		Addr:     tcpAddr,
 		Domain:   actualHost,
 		UDPPort:  udpPort,

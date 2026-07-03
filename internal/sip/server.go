@@ -207,6 +207,7 @@ func (s *Server) Close() error {
 		err = e
 	}
 	s.wg.Wait()
+	s.txMgr.Stop()
 	slog.Info("SIP server stopped")
 	return err
 }
