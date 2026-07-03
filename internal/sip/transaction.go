@@ -131,6 +131,15 @@ func (tx *NonInviteTransaction) Respond(res *proto.SIPMessage) {
 	}
 }
 
+func (tx *NonInviteTransaction) stopTimers() {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+	if tx.timerJ != nil {
+		tx.timerJ.Stop()
+		tx.timerJ = nil
+	}
+}
+
 func (tx *NonInviteTransaction) doSend(res *proto.SIPMessage) {
 	if err := tx.transport.Send(res, &tx.target); err != nil {
 		tx.logger.Error("Send error", "error", err)
@@ -353,6 +362,22 @@ type TransactionManager struct {
 func NewTransactionManager() *TransactionManager {
 	return &TransactionManager{
 		serverTxs: make(map[string]Transaction),
+	}
+}
+
+// Stop stops all pending transactions. Callers must not use the
+// TransactionManager after calling Stop.
+func (tm *TransactionManager) Stop() {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	for branch, tx := range tm.serverTxs {
+		switch t := tx.(type) {
+		case *InviteTransaction:
+			t.stopTimers()
+		case *NonInviteTransaction:
+			t.stopTimers()
+		}
+		delete(tm.serverTxs, branch)
 	}
 }
 
