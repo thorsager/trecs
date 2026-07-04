@@ -4,11 +4,15 @@ Project for basic telephony (SIP for now) recording.
 
 ## Protocol library
 
-The `proto` package provides wire-format parsing and serialization for SIP, SDP, RTP, and RTCP. See [proto/PROTO.md](proto/PROTO.md) for usage examples.
+The `proto` package provides wire-format parsing and serialization for SIP,
+SDP, RTP, and RTCP. See [proto/PROTO.md](proto/PROTO.md) for usage examples.
 
 ## Echo test
 
-The echo test validates real-time audio loopback over RTP: a SIP client calls the server, negotiates a media session (early-offer or delayed-offer), sends an RTP packet, and verifies the server echoes the exact payload back. The flow is described in detail in [internal/media/media_test.go](internal/media/media_test.go).
+The echo test validates real-time audio loopback over RTP: a SIP client calls
+the server, negotiates a media session (early-offer or delayed-offer), sends
+an RTP packet, and verifies the server echoes the exact payload back. The flow
+is described in detail in [internal/media/media_test.go](internal/media/media_test.go).
 
 ### Prerequisites
 
@@ -22,7 +26,8 @@ The echo test validates real-time audio loopback over RTP: a SIP client calls th
 go test -v -run TestEcho -timeout 60s ./internal/media/
 ```
 
-This runs `TestEchoEarlyOffer` and `TestEchoDelayedOffer`, testing both offer modes in-process, no external tools needed.
+This runs `TestEchoEarlyOffer` and `TestEchoDelayedOffer`, testing both offer
+modes in-process, no external tools needed.
 
 ### Automated end-to-end test with sox + pjsua
 
@@ -77,6 +82,7 @@ pjsua --id "sip:bob@example.com" \
 ```
 
 Breakdown:
+
 - `--registrar` — points at TRECS' SIP address
 - `--local-port 5062` — avoids conflicting with T-REC on 5061
 - `--no-udp` — forces TCP transport only
@@ -96,8 +102,8 @@ Digest authentication (MD5, realm `127.0.0.1`):
 
 | User  | Password   | AOR                       |
 |-------|------------|---------------------------|
-| alice | `secret`   | `sip:alice@127.0.0.1`    |
-| bob   | `password` | `sip:bob@127.0.0.1`      |
+| alice | `secret`   | `sip:alice@127.0.0.1`     |
+| bob   | `password` | `sip:bob@127.0.0.1`       |
 
 The server can be started with auth enabled:
 

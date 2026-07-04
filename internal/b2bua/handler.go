@@ -799,6 +799,15 @@ func (h *Handler) handleBob200OK(
 	log.Debug("B2BUA: handling Bob 200 OK")
 	log.Info("B2BUA: Bob answered 200 OK")
 
+	// Guard: if the response loop was canceled (e.g. by concurrent CANCEL
+	// from Alice), discard Bob's answer per RFC 3261 §12.1.1.
+	if ctx.Err() != nil {
+		log.Info("B2BUA: call was canceled, discarding Bob's 200 OK")
+		rtpConnA.Close()
+		rtpConnB.Close()
+		return
+	}
+
 	bobTo, err := resp.To()
 	if err != nil {
 		rtpConnA.Close()

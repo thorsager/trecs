@@ -470,6 +470,24 @@ func (a *aliceRawUAC) sendPRACK(rackRSeq, rackCSeq string) {
 	require.NoError(a.t, err)
 }
 
+func (a *aliceRawUAC) sendCANCEL() {
+	cancel := fmt.Sprintf("CANCEL sip:bob@%s SIP/2.0\r\n"+
+		"Via: SIP/2.0/UDP 127.0.0.1:%d;branch=z9hG4bK-%s\r\n"+
+		"From: <sip:alice@%s>;tag=%s\r\n"+
+		"To: <sip:bob@%s>\r\n"+
+		"Call-ID: %s\r\n"+
+		"CSeq: 1 CANCEL\r\n"+
+		"Max-Forwards: 70\r\n"+
+		"Content-Length: 0\r\n\r\n",
+		a.ts.Domain, a.conn.LocalAddr().(*net.UDPAddr).Port, a.callID,
+		a.ts.Domain, a.fromTag, a.ts.Domain,
+		a.callID)
+
+	a.t.Logf("Alice sending CANCEL")
+	_, err := a.conn.WriteToUDP([]byte(cancel), a.addr)
+	require.NoError(a.t, err)
+}
+
 func (a *aliceRawUAC) sendACK() {
 	ack := fmt.Sprintf("ACK sip:bob@%s SIP/2.0\r\n"+
 		"Via: SIP/2.0/UDP 127.0.0.1:%d;branch=z9hG4bK-ack-%s\r\n"+
