@@ -125,6 +125,99 @@ func TestUnsupportedMethod(t *testing.T) {
 	}
 }
 
+func TestServer_CancelWithoutHandlerSends487(t *testing.T) {
+	server, err := NewServer("127.0.0.1:15065")
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	// Register INVITE but intentionally not CANCEL. The transaction layer
+	// must still respond to CANCEL per RFC 3261 §9.2 (200 OK for CANCEL +
+	// 487 for INVITE) instead of falling back to the default 501 handler.
+	server.On(proto.SIPMethodINVITE, func(ctx context.Context, req *proto.SIPMessage, tx Transaction) {
+		// Leave INVITE pending so CANCEL applies.
+	})
+
+	server.Start()
+	defer server.Close()
+
+	clientConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP: %v", err)
+	}
+	defer clientConn.Close()
+
+	branch := "z9hG4bKcancel-no-handler"
+	invite := "INVITE sip:bob@localhost SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:9999;branch=" + branch + "\r\n" +
+		"From: <sip:alice@localhost>;tag=alice\r\n" +
+		"To: <sip:bob@localhost>\r\n" +
+		"Call-ID: cancel-no-handler-call-id\r\n" +
+		"CSeq: 1 INVITE\r\n" +
+		"Content-Length: 0\r\n\r\n"
+
+	cancel := "CANCEL sip:bob@localhost SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:9999;branch=" + branch + "\r\n" +
+		"From: <sip:alice@localhost>;tag=alice\r\n" +
+		"To: <sip:bob@localhost>\r\n" +
+		"Call-ID: cancel-no-handler-call-id\r\n" +
+		"CSeq: 1 CANCEL\r\n" +
+		"Content-Length: 0\r\n\r\n"
+
+	serverAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:15065")
+
+	_, err = clientConn.WriteToUDP([]byte(invite), serverAddr)
+	if err != nil {
+		t.Fatalf("WriteToUDP: %v", err)
+	}
+
+	// Give the server time to create the IST.
+	time.Sleep(50 * time.Millisecond)
+
+	_, err = clientConn.WriteToUDP([]byte(cancel), serverAddr)
+	if err != nil {
+		t.Fatalf("WriteToUDP: %v", err)
+	}
+
+	clientConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	gotCancel200 := false
+	gotInvite487 := false
+
+	for range 2 {
+		buf := make([]byte, 4096)
+		n, _, err := clientConn.ReadFromUDP(buf)
+		if err != nil {
+			t.Fatalf("ReadFromUDP: %v", err)
+		}
+		msg, err := proto.UnmarshalSIPDatagram(buf[:n])
+		if err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+
+		switch msg.StatusCode() {
+		case 200:
+			if msg.CSeq.Method != proto.SIPMethodCANCEL {
+				t.Fatalf("expected 200 OK for CANCEL, got CSeq method %s", msg.CSeq.Method)
+			}
+			gotCancel200 = true
+		case 487:
+			if msg.CSeq.Method != proto.SIPMethodINVITE {
+				t.Fatalf("expected 487 for INVITE, got CSeq method %s", msg.CSeq.Method)
+			}
+			gotInvite487 = true
+		default:
+			t.Fatalf("unexpected response %d %s", msg.StatusCode(), msg.Status())
+		}
+	}
+
+	if !gotCancel200 {
+		t.Fatal("did not receive 200 OK for CANCEL")
+	}
+	if !gotInvite487 {
+		t.Fatal("did not receive 487 for INVITE")
+	}
+}
+
 // --- RFC 3261 §8.1.3.2: Max-Forwards validation ---
 
 func TestServerRoute_MaxForwardsZero(t *testing.T) {

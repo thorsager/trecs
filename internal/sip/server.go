@@ -176,7 +176,11 @@ func (s *Server) route(ctx context.Context, ev MessageEvent, transport Transport
 	}
 
 	handler := s.handlers[method]
-	if handler == nil {
+	if handler == nil && method != proto.SIPMethodCANCEL {
+		// CANCEL is special: the transaction layer already knows how to
+		// produce 487 Request Terminated when no application handler is
+		// registered. Routing it to the default 501 handler would be
+		// non-compliant per RFC 3261 §9.2.
 		handler = s.defaultHandler
 	}
 

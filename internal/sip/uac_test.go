@@ -138,6 +138,45 @@ func TestUAC_TerminatedIgnoresResponses(t *testing.T) {
 	}
 }
 
+func TestUAC_IgnoresResponseWithDifferentCSeqMethod(t *testing.T) {
+	mock := &mockTransport{}
+	target := &Target{}
+	uac := newUACTransaction(t.Context(), proto.SIPMethodINVITE, mock, target)
+	uac.reliable = true
+
+	req := testRequest(t, proto.SIPMethodINVITE, uac.Branch, false)
+	if err := uac.Send(req); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	// A 200 OK for CANCEL reuses the INVITE's Via branch but has CSeq method
+	// CANCEL. Per RFC 3261 §9.2 / §17.1.3 it must not be treated as a
+	// successful INVITE response.
+	cancelOK := proto.NewResponse(req, 200, "OK")
+	cancelOK.CSeq = proto.CSeq{Method: proto.SIPMethodCANCEL, Seq: req.CSeq.Seq}
+	uac.HandleResponse(cancelOK)
+
+	select {
+	case <-uac.Responses:
+		t.Fatal("CANCEL 200 OK must not be delivered as INVITE response")
+	default:
+	}
+
+	// The matching INVITE 200 OK should still be processed.
+	inviteOK := proto.NewResponse(req, 200, "OK")
+	inviteOK.CSeq = proto.CSeq{Method: proto.SIPMethodINVITE, Seq: req.CSeq.Seq}
+	uac.HandleResponse(inviteOK)
+
+	select {
+	case r := <-uac.Responses:
+		if r.StatusCode() != proto.SIPStatusOK {
+			t.Fatalf("expected 200, got %d", r.StatusCode())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for INVITE 200 OK")
+	}
+}
+
 func TestUAC_RetransmitOnUDP(t *testing.T) {
 	mock := &mockTransport{}
 	target := &Target{}
@@ -283,6 +322,36 @@ func TestUACManager_BranchRouting(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("uac2 timeout waiting for response")
+	}
+}
+
+func TestUACManager_StopClearsPendingAndCancels(t *testing.T) {
+	mgr := NewUACManager()
+
+	uac := mgr.NewTransaction(t.Context(), proto.SIPMethodINVITE, &mockTransport{}, &Target{})
+	uac.reliable = true
+
+	req := testRequest(t, proto.SIPMethodINVITE, uac.Branch, false)
+	if err := uac.Send(req); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	mgr.Stop()
+
+	if got := stateUAC(t, uac); got != UACStateTerminated {
+		t.Fatalf("expected Terminated after Stop, got %s", got)
+	}
+
+	mgr.mu.Lock()
+	pending := len(mgr.pending)
+	mgr.mu.Unlock()
+
+	if pending != 0 {
+		t.Fatalf("expected pending map to be cleared, got %d entries", pending)
+	}
+
+	if mgr.Get(uac.Branch) != nil {
+		t.Fatal("Get must return nil after Stop")
 	}
 }
 
