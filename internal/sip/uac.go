@@ -118,6 +118,14 @@ func (u *UACTransaction) Send(req *proto.SIPMessage) error {
 }
 
 func (u *UACTransaction) HandleResponse(msg *proto.SIPMessage) {
+	// Responses to a method other than this transaction's method can reuse the
+	// same Via branch (e.g., a 200 OK for CANCEL uses the INVITE's branch per
+	// RFC 3261 §9.1). They must not be processed as responses to this
+	// transaction per §17.1.3 (transaction matching uses branch + CSeq method).
+	if msg.CSeq.Method != u.Method {
+		return
+	}
+
 	u.stateMu.Lock()
 	defer u.stateMu.Unlock()
 
@@ -431,17 +439,15 @@ func (m *UACManager) Deregister(branch string) {
 // Callers must not use the UACManager after calling Stop.
 func (m *UACManager) Stop() {
 	m.mu.Lock()
-	branches := make([]string, 0, len(m.pending))
-	for b := range m.pending {
-		branches = append(branches, b)
+	txs := make([]*UACTransaction, 0, len(m.pending))
+	for _, tx := range m.pending {
+		txs = append(txs, tx)
 	}
+	m.pending = make(map[string]*UACTransaction)
 	m.mu.Unlock()
 
-	for _, b := range branches {
-		tx := m.Get(b)
-		if tx != nil {
-			tx.Cancel()
-		}
+	for _, tx := range txs {
+		tx.Cancel()
 	}
 }
 
