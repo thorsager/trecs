@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/thorsager/trecs/internal/logutil"
@@ -77,6 +78,7 @@ type NonInviteTransaction struct {
 	state     NISTState
 	mu        sync.Mutex
 	reliable  bool
+	stopped   atomic.Bool // set to prevent timer callbacks from executing after stopTimers
 }
 
 // Respond implements Transaction per RFC 3261 §17.2.3.
@@ -107,20 +109,26 @@ func (tx *NonInviteTransaction) Respond(res *proto.SIPMessage) {
 		tx.doSend(res)
 
 		if !tx.reliable {
-			logger := tx.logger
 			tx.timerJ = time.AfterFunc(64*T1, func() {
 				tx.mu.Lock()
+				if tx.stopped.Load() {
+					tx.mu.Unlock()
+					return
+				}
 				tx.state = NISTTerminated
 				tx.mu.Unlock()
 
 				tx.manager.mu.Lock()
 				delete(tx.manager.serverTxs, tx.branch)
 				tx.manager.mu.Unlock()
-				logger.Debug("NIST terminated", "reason", "Timer J")
 			})
 		} else {
 			tx.timerJ = time.AfterFunc(0, func() {
 				tx.mu.Lock()
+				if tx.stopped.Load() {
+					tx.mu.Unlock()
+					return
+				}
 				tx.state = NISTTerminated
 				tx.mu.Unlock()
 				tx.manager.mu.Lock()
@@ -202,6 +210,7 @@ type InviteTransaction struct {
 	gCount       int
 	mu           sync.Mutex
 	reliable     bool
+	stopped      atomic.Bool // set to prevent timer callbacks from executing after stopTimers
 }
 
 // Respond implements Transaction per RFC 3261 §17.2.1.
@@ -246,9 +255,12 @@ func (tx *InviteTransaction) Respond(res *proto.SIPMessage) {
 			tx.logger.Debug("IST state transition", "state", "Completed", "statusCode", sc)
 			tx.doSend(res)
 
-			logger := tx.logger
 			tx.timerH = time.AfterFunc(64*T1, func() {
 				tx.mu.Lock()
+				if tx.stopped.Load() {
+					tx.mu.Unlock()
+					return
+				}
 				tx.state = ISTTerminated
 				tx.stopTimers()
 				tx.mu.Unlock()
@@ -256,7 +268,6 @@ func (tx *InviteTransaction) Respond(res *proto.SIPMessage) {
 				tx.manager.mu.Lock()
 				delete(tx.manager.serverTxs, tx.branch)
 				tx.manager.mu.Unlock()
-				logger.Debug("IST terminated", "reason", "Timer H")
 			})
 
 			if !tx.reliable {
@@ -281,16 +292,18 @@ func (tx *InviteTransaction) ackReceived() {
 	tx.logger.Debug("IST state transition", "state", "Confirmed", "reason", "ACK")
 
 	if !tx.reliable {
-		logger := tx.logger
 		tx.timerI = time.AfterFunc(T4, func() {
 			tx.mu.Lock()
+			if tx.stopped.Load() {
+				tx.mu.Unlock()
+				return
+			}
 			tx.state = ISTTerminated
 			tx.mu.Unlock()
 
 			tx.manager.mu.Lock()
 			delete(tx.manager.serverTxs, tx.branch)
 			tx.manager.mu.Unlock()
-			logger.Debug("IST terminated", "reason", "Timer I")
 		})
 	} else {
 		tx.state = ISTTerminated
@@ -326,7 +339,7 @@ func (tx *InviteTransaction) scheduleTimerG() {
 		tx.mu.Lock()
 		defer tx.mu.Unlock()
 
-		if tx.state != ISTCompleted {
+		if tx.stopped.Load() || tx.state != ISTCompleted {
 			return
 		}
 		tx.doSend(tx.lastResp)
@@ -368,17 +381,49 @@ func NewTransactionManager() *TransactionManager {
 // Stop stops all pending transactions. Callers must not use the
 // TransactionManager after calling Stop.
 func (tm *TransactionManager) Stop() {
+	// Collect transactions without holding per-tx locks to avoid deadlock
+	// with timer callbacks that need tm.mu for map deletion.
 	tm.mu.Lock()
-	defer tm.mu.Unlock()
-	for branch, tx := range tm.serverTxs {
+	txs := make([]struct {
+		ist  *InviteTransaction
+		nist *NonInviteTransaction
+	}, 0, len(tm.serverTxs))
+	for _, tx := range tm.serverTxs {
 		switch t := tx.(type) {
 		case *InviteTransaction:
-			t.stopTimers()
+			txs = append(txs, struct {
+				ist  *InviteTransaction
+				nist *NonInviteTransaction
+			}{ist: t})
 		case *NonInviteTransaction:
-			t.stopTimers()
+			txs = append(txs, struct {
+				ist  *InviteTransaction
+				nist *NonInviteTransaction
+			}{nist: t})
 		}
-		delete(tm.serverTxs, branch)
 	}
+	tm.mu.Unlock()
+
+	for _, e := range txs {
+		switch {
+		case e.ist != nil:
+			e.ist.mu.Lock()
+			e.ist.stopped.Store(true)
+			e.ist.mu.Unlock()
+			e.ist.stopTimers()
+		case e.nist != nil:
+			e.nist.mu.Lock()
+			e.nist.stopped.Store(true)
+			e.nist.mu.Unlock()
+			e.nist.stopTimers()
+		}
+	}
+
+	// Replace the map. Any concurrently running timer callbacks that passed
+	// the stopped check will delete from the old map, which is fine.
+	tm.mu.Lock()
+	tm.serverTxs = make(map[string]Transaction)
+	tm.mu.Unlock()
 }
 
 // HandleRequest processes an incoming request by Via branch match. If an
@@ -524,10 +569,13 @@ func (tm *TransactionManager) handleCancelRequest(ctx context.Context, ev Messag
 		ist.logger.Debug("IST state transition due to CANCEL",
 			"from", prev, "to", "Completed")
 
-		logger := ist.logger
 		branch := ist.branch
 		ist.timerH = time.AfterFunc(64*T1, func() {
 			ist.mu.Lock()
+			if ist.stopped.Load() {
+				ist.mu.Unlock()
+				return
+			}
 			ist.state = ISTTerminated
 			ist.stopTimers()
 			ist.mu.Unlock()
@@ -535,7 +583,6 @@ func (tm *TransactionManager) handleCancelRequest(ctx context.Context, ev Messag
 			tm.mu.Lock()
 			delete(tm.serverTxs, branch)
 			tm.mu.Unlock()
-			logger.Debug("IST terminated", "reason", "Timer H (after CANCEL)")
 		})
 
 		if !ist.reliable {

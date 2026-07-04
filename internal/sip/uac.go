@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/thorsager/trecs/internal/logutil"
@@ -72,6 +73,7 @@ type UACTransaction struct {
 	state      UACState
 	stateMu    sync.Mutex
 	reliable   bool
+	stopped    atomic.Bool   // set to prevent timer callbacks from executing after StopTimers
 	t1Override time.Duration // for tests; zero means use global T1
 }
 
@@ -183,6 +185,10 @@ func (u *UACTransaction) transitionToCompleted() {
 	}
 	u.timerD = time.AfterFunc(d, func() {
 		u.stateMu.Lock()
+		if u.stopped.Load() {
+			u.stateMu.Unlock()
+			return
+		}
 		u.state = UACStateTerminated
 		u.stateMu.Unlock()
 		u.logger.Debug("UAC terminated", "reason", "Timer D")
@@ -214,7 +220,7 @@ func (u *UACTransaction) scheduleTimerA() {
 	u.stateMu.Lock()
 	u.timerA = time.AfterFunc(interval, func() {
 		u.stateMu.Lock()
-		if u.state != UACStateCalling {
+		if u.stopped.Load() || u.state != UACStateCalling {
 			u.stateMu.Unlock()
 			return
 		}
@@ -242,6 +248,10 @@ func (u *UACTransaction) startTimerB() {
 	u.stateMu.Lock()
 	u.timerB = time.AfterFunc(d, func() {
 		u.stateMu.Lock()
+		if u.stopped.Load() {
+			u.stateMu.Unlock()
+			return
+		}
 		u.state = UACStateTerminated
 		if u.timerA != nil {
 			u.timerA.Stop()
@@ -291,6 +301,7 @@ func (u *UACTransaction) sendACK(resp *proto.SIPMessage) {
 
 func (u *UACTransaction) StopTimers() {
 	u.stateMu.Lock()
+	u.stopped.Store(true)
 	defer u.stateMu.Unlock()
 	if u.timerA != nil {
 		u.timerA.Stop()
@@ -350,6 +361,12 @@ func (u *UACTransaction) SendCancel() error {
 	cancel.Headers.Add("Call-ID", req.Headers.GetFirst("Call-ID"))
 	cancel.CSeq = proto.CSeq{Method: proto.SIPMethodCANCEL, Seq: req.CSeq.Seq}
 	cancel.Headers.Add("Max-Forwards", "70")
+
+	// RFC 3261 §9.1: CANCEL must copy Route headers from the INVITE.
+	if routeVals := req.Headers["Route"]; len(routeVals) > 0 {
+		cancel.Headers["Route"] = append([]string{}, routeVals...)
+	}
+
 	cancel.Headers.Add("Content-Length", "0")
 
 	u.logger.Debug("UAC sending CANCEL",

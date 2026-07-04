@@ -47,6 +47,7 @@ type bobUAS struct {
 	ringBeforeAnswer bool          // if true, send 180 Ringing then wait for answerNow
 	answerNow        chan struct{} // signals ringBeforeAnswer mode to send 200 OK
 	byeReceived      chan struct{}
+	cancelReceived   chan struct{} // signaled when Bob receives CANCEL
 	byeOnce          sync.Once
 	rtpCount         chan int
 	sipDone          chan struct{}
@@ -206,6 +207,7 @@ func newBobUAS(t *testing.T, ts *integrationtest.TestServer, transport string) *
 		ringBeforeAnswer: false,
 		answerNow:        make(chan struct{}, 1),
 		byeReceived:      make(chan struct{}),
+		cancelReceived:   make(chan struct{}, 1),
 		rtpCount:         make(chan int, 1),
 		sipDone:          make(chan struct{}),
 		ready:            make(chan struct{}),
@@ -500,6 +502,11 @@ func (b *bobUAS) handleIncomingCancel(msg string, writeFunc func([]byte) error) 
 		b.extractViaFromMessage(msg), b.callID, b.extractFromHeader(msg), b.ts.Domain, b.toTag, cancelCSeq)
 	_ = writeFunc([]byte(resp))
 	b.t.Logf("Bob sent 200 OK for CANCEL")
+
+	select {
+	case b.cancelReceived <- struct{}{}:
+	default:
+	}
 }
 
 func (b *bobUAS) extractViaFromMessage(msg string) string {
