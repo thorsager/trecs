@@ -171,6 +171,7 @@ type TCPTransport struct {
 	wg                sync.WaitGroup
 	keepaliveInterval time.Duration
 	closeOnce         sync.Once
+	messagesCloseOnce sync.Once
 }
 
 // SetLogger sets the logger for trace output.
@@ -221,7 +222,6 @@ func (t *TCPTransport) Start() {
 }
 
 func (t *TCPTransport) acceptLoop() {
-	defer close(t.messages)
 	for {
 		conn, err := t.listener.Accept()
 		if err != nil {
@@ -431,6 +431,9 @@ func (t *TCPTransport) Close() error {
 		err = t.listener.Close()
 	})
 	t.wg.Wait()
+	t.messagesCloseOnce.Do(func() {
+		close(t.messages)
+	})
 	return err
 }
 
