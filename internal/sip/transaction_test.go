@@ -1544,3 +1544,44 @@ func TestACKAfterTerminatedTransactionNoop(t *testing.T) {
 	tm.HandleACK(t.Context(), ackEv, trans)
 	// Should not panic, ACK silently dropped.
 }
+
+func TestTransactionManager_StopRaceWithRespond(t *testing.T) {
+	tm := NewTransactionManager()
+	transport := &mockTransport{}
+
+	ev := testEvent(t, proto.SIPMethodINVITE, "z9hG4bKstop-race", false)
+	tm.HandleRequest(t.Context(), ev, transport, func(ctx context.Context, req *proto.SIPMessage, tx Transaction) {
+		// leave pending
+	})
+
+	tm.mu.Lock()
+	tx := tm.serverTxs["z9hG4bKstop-race"]
+	tm.mu.Unlock()
+
+	ist, ok := tx.(*InviteTransaction)
+	if !ok {
+		t.Fatal("expected IST")
+	}
+
+	res487 := proto.NewResponse(ev.Msg, 487, "Request Terminated")
+	res487.CSeq = proto.CSeq{Method: proto.SIPMethodINVITE, Seq: 1}
+
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				tm.Stop()
+			}
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				ist.Respond(res487)
+			}
+		}()
+	}
+	wg.Wait()
+}
