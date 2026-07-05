@@ -1192,21 +1192,31 @@ func (h *Handler) HandleCancel(ctx context.Context, req *proto.SIPMessage, tx si
 
 	// Look up the early (ringing) call.
 	early := h.store.GetEarly(callID)
-	if early == nil {
-		log.Debug("CANCEL: no pending call found")
-		return
-	}
 
 	// Build and send 487 Request Terminated with the correct To tag
 	// per RFC 3261 §12.1.1 and using ist.transport (fixes #30 review).
+	// This must always be done: the transaction layer already sent 200 OK
+	// for the CANCEL and delegated INVITE termination to this handler. In
+	// the race window where CANCEL arrives before handleB2BUAInvite stores
+	// the EarlyCall, we still terminate the INVITE transaction even though
+	// there is no Bob leg to propagate the CANCEL to.
 	inviteResp := proto.NewResponse(req, 487, "Request Terminated")
 	inviteResp.CSeq = proto.CSeq{Method: proto.SIPMethodINVITE, Seq: req.CSeq.Seq}
 	toHeader := req.Headers.GetFirst("To")
 	if !strings.Contains(toHeader, "tag=") {
-		toHeader = fmt.Sprintf("%s;tag=%s", toHeader, early.AliceServerTag)
+		serverTag := "trecs-cancel"
+		if early != nil {
+			serverTag = early.AliceServerTag
+		}
+		toHeader = fmt.Sprintf("%s;tag=%s", toHeader, serverTag)
 		inviteResp.Headers.Set("To", []string{toHeader})
 	}
 	tx.Respond(inviteResp)
+
+	if early == nil {
+		log.Debug("CANCEL: no pending call found, 487 sent")
+		return
+	}
 
 	// Cancel the response loop context to abort the pending INVITE to Bob.
 	early.Cancel()

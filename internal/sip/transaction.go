@@ -407,11 +407,17 @@ func (tm *TransactionManager) Stop() {
 	for _, e := range txs {
 		switch {
 		case e.ist != nil:
+			// InviteTransaction.stopTimers() does not lock internally (it is
+			// also called from timer callbacks that already hold tx.mu), so
+			// we must call it while holding ist.mu to avoid races on the
+			// timer pointer fields with concurrent Respond()/ackReceived().
 			e.ist.mu.Lock()
 			e.ist.stopped.Store(true)
-			e.ist.mu.Unlock()
 			e.ist.stopTimers()
+			e.ist.mu.Unlock()
 		case e.nist != nil:
+			// NonInviteTransaction.stopTimers() locks internally, so we set
+			// stopped under the lock and let stopTimers acquire it itself.
 			e.nist.mu.Lock()
 			e.nist.stopped.Store(true)
 			e.nist.mu.Unlock()
