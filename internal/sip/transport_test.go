@@ -318,6 +318,65 @@ func TestTCPInvalidSIPDisconnects(t *testing.T) {
 	assert.Error(t, err, "expected connection to be closed after invalid SIP")
 }
 
+func TestTCPCloseWithActiveSenders(t *testing.T) {
+	transport, err := NewTCPTransport("127.0.0.1:15086")
+	require.NoError(t, err)
+	transport.SetLogger(logutil.NewTestLogger(t))
+	transport.Start()
+
+	n := 3
+	conns := make([]net.Conn, n)
+	for i := range n {
+		conns[i] = dialTCP(t, "127.0.0.1:15086")
+	}
+
+	// Continuously send SIP messages from multiple clients while closing.
+	var sendWg sync.WaitGroup
+	stop := make(chan struct{})
+	for i, c := range conns {
+		sendWg.Add(1)
+		go func(conn net.Conn, idx int) {
+			defer sendWg.Done()
+			msg := []byte(buildSIPRequest(idx))
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					_, _ = conn.Write(msg)
+				}
+			}
+		}(c, i)
+	}
+
+	// Let the senders run briefly to ensure startReader goroutines are busy.
+	time.Sleep(50 * time.Millisecond)
+
+	// Close must complete without racing concurrent sends to t.messages.
+	require.NoError(t, transport.Close())
+
+	close(stop)
+	sendWg.Wait()
+
+	for _, c := range conns {
+		c.Close()
+	}
+
+	// Close must have closed the receive channel. Drain any events that
+	// were buffered before shutdown, then confirm closure.
+	drained := false
+	for !drained {
+		select {
+		case _, ok := <-transport.Receive():
+			if !ok {
+				drained = true
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("timeout waiting for receive channel to close")
+		}
+	}
+}
+
 // --- Concurrent connections ---
 
 func TestTCPConcurrentConnections(t *testing.T) {
