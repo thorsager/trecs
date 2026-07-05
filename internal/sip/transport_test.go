@@ -319,15 +319,20 @@ func TestTCPInvalidSIPDisconnects(t *testing.T) {
 }
 
 func TestTCPCloseWithActiveSenders(t *testing.T) {
-	transport, err := NewTCPTransport("127.0.0.1:15086")
+	transport, err := NewTCPTransport("127.0.0.1:0")
 	require.NoError(t, err)
 	transport.SetLogger(logutil.NewTestLogger(t))
 	transport.Start()
 
+	addr := transport.LocalAddr().String()
+
 	n := 3
 	conns := make([]net.Conn, n)
 	for i := range n {
-		conns[i] = dialTCP(t, "127.0.0.1:15086")
+		conns[i] = dialTCP(t, addr)
+		// Bound each write so a blocked sender returns to the select and
+		// observes the stop signal instead of hanging on a full TCP buffer.
+		_ = conns[i].SetWriteDeadline(time.Now().Add(50 * time.Millisecond))
 	}
 
 	// Continuously send SIP messages from multiple clients while closing.
@@ -356,11 +361,12 @@ func TestTCPCloseWithActiveSenders(t *testing.T) {
 	require.NoError(t, transport.Close())
 
 	close(stop)
-	sendWg.Wait()
-
+	// Close client connections before waiting so any blocked writes are
+	// unblocked and the goroutines can exit promptly.
 	for _, c := range conns {
 		c.Close()
 	}
+	sendWg.Wait()
 
 	// Close must have closed the receive channel. Drain any events that
 	// were buffered before shutdown, then confirm closure.
