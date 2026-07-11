@@ -139,3 +139,95 @@ Both flags can be combined:
 ```bash
 trecsd --addr :5060 --dialplan docs/examples/dialplan.json --auth-users docs/examples/users.json
 ```
+
+### Trunks
+
+[`docs/examples/trunks.json`](docs/examples/trunks.json) defines SIP trunk
+connections to external providers or peer PBXes:
+
+```bash
+trecsd --addr :5060 --trunks docs/examples/trunks.json
+```
+
+#### Trunk types
+
+| Type | Description |
+|------|-------------|
+| `static` | Direct IP peering. The PBX trusts the peer by source IP (see `trusted_ips`). No REGISTER exchange. |
+| `registration` | The PBX authenticates to the peer with Digest credentials and maintains a registration binding. |
+
+#### Common fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | required | Unique trunk identifier |
+| `host` | string | required | Peer hostname or IP address |
+| `port` | int | required | Peer SIP port |
+| `transport` | string | `udp` | SIP transport (`udp` or `tcp`) |
+| `max_channels` | int | `0` (unlimited) | Max concurrent calls. Exceeding returns `503 Service Unavailable`. |
+| `caller_id` | string | `""` | Sets `P-Asserted-Identity` on outbound trunk INVITEs. The PAI contains `<sip:<caller_id>@<server_ip>>`. |
+| `strip_headers` | [string] | `[]` | List of SIP header names to remove from outbound trunk INVITEs (e.g., internal headers like `X-Extension`). Headers are matched case-insensitively per RFC 3261. |
+| `session_expires_sec` | int | `0` (disabled) | Enables RFC 4028 session timer. When non-zero, adds `Session-Expires: <N>;refresher=uac` to outbound INVITEs. If the timer expires without a BYE from the peer, the server tears down the call, sends BYE to the caller, and releases the trunk channel. |
+
+#### Registration trunk fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `auth_user` | string | required | Username for Digest authentication during REGISTER |
+| `auth_password` | string | required | Password for Digest authentication |
+| `realm` | string | peer host | SIP realm for Digest authentication |
+| `register_uri` | string | auto | Override the registration target URI (default: `sip:<auth_user>@<host>`) |
+
+#### Static trunk fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `trusted_ips` | [string] | `[]` | CIDR ranges (e.g. `["10.0.1.0/24"]`) that are trusted without proxy authentication. When an incoming INVITE matches a static trunk's trusted range, proxy auth is skipped. |
+
+#### Outbound Routes
+
+Routes match calling-party digits and dispatch calls to a specific trunk.
+First-match-wins (config order).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | required | Route identifier |
+| `pattern` | string | required | Go regexp matched against the dialled user part of the Request-URI |
+| `trunk` | string | required | Target trunk name (must match a trunk's `name`) |
+| `strip_digits` | int | `0` | Number of leading digits to strip from the dialled number before forwarding |
+| `prefix` | string | `""` | Digits to prepend to the dialled number before forwarding (applied after `strip_digits`) |
+
+#### Example
+
+```json
+{
+  "trunks": [
+    {
+      "name": "office-pbx",
+      "type": "static",
+      "host": "10.0.1.50",
+      "port": 5061,
+      "transport": "tcp",
+      "trusted_ips": ["10.0.1.0/24"],
+      "max_channels": 20,
+      "caller_id": "pbx-main",
+      "session_expires_sec": 1800,
+      "strip_headers": ["X-Extension"]
+    }
+  ],
+  "outbound_routes": [
+    {
+      "name": "local",
+      "pattern": "^\\d{3,5}$",
+      "trunk": "office-pbx"
+    }
+  ]
+}
+```
+
+#### Inbound trust
+
+When an INVITE arrives from a source IP that matches a static trunk's
+`trusted_ips`, proxy authentication (Digest auth) is bypassed. The call
+proceeds directly to the dialplan or registrar lookup. This is configured
+per-trunk and does not apply to registration-type trunks.

@@ -1177,6 +1177,30 @@ func TestHeaders_Get_NilOnEmptyMap(t *testing.T) {
 	assert.Nil(t, h.Get("NonExistent"))
 }
 
+func TestHeaders_Delete_RemovesKey(t *testing.T) {
+	h := SIPHeaders{
+		"Via":                 {"SIP/2.0/UDP host"},
+		"X-Extension":         {"internal-value"},
+		"P-Asserted-Identity": {"<sip:trunk>"},
+	}
+	h.Delete("X-Extension")
+	assert.Nil(t, h.Get("X-Extension"))
+	assert.NotNil(t, h.Get("Via"))
+	assert.NotNil(t, h.Get("P-Asserted-Identity"))
+}
+
+func TestHeaders_Delete_CanonicalizesKey(t *testing.T) {
+	h := SIPHeaders{"X-Extension": {"value"}}
+	h.Delete("x-extension")
+	assert.Nil(t, h.Get("X-Extension"))
+}
+
+func TestHeaders_Delete_NoOpOnMissing(t *testing.T) {
+	h := SIPHeaders{"Via": {"SIP/2.0/UDP host"}}
+	h.Delete("NonExistent")
+	assert.NotNil(t, h.Get("Via"))
+}
+
 func TestParseHeaders_ExpandsCompactForm(t *testing.T) {
 	input := "INVITE sip:x SIP/2.0\r\nf: <sip:alice@atlanta.com>;tag=1928\r\nContent-Length: 0\r\n\r\n"
 	tp := newTestReader(input)

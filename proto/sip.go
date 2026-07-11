@@ -136,8 +136,13 @@ func (h SIPHeaders) Set(k string, v []string) {
 
 // Add appends a value to header k.
 func (h SIPHeaders) Add(k, v string) {
-	can := canonicalHeaderKey(k)
-	h[can] = append(h[can], v)
+	k = canonicalHeaderKey(k)
+	h[k] = append(h[k], v)
+}
+
+// Delete removes all values for header k. It is a no-op if k is not present.
+func (h SIPHeaders) Delete(k string) {
+	delete(h, canonicalHeaderKey(k))
 }
 
 // SIPAddress represents a parsed SIP address as used in From, To, and
