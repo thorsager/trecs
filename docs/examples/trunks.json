@@ -1,0 +1,42 @@
+{
+  "trunks": [
+    {
+      "name": "itsp",
+      "type": "registration",
+      "host": "sip.example.com",
+      "port": 5060,
+      "transport": "udp",
+      "auth_user": "TR12345",
+      "auth_password": "secret",
+      "realm": "sip.example.com",
+      "max_channels": 10,
+      "caller_id": "+15551234567",
+      "session_expires_sec": 1800,
+      "strip_headers": ["X-Internal-Info", "X-Call-Tag"]
+    },
+    {
+      "name": "office-pbx",
+      "type": "static",
+      "host": "10.0.1.50",
+      "port": 5061,
+      "transport": "tcp",
+      "trusted_ips": ["10.0.1.0/24"],
+      "max_channels": 20,
+      "caller_id": "pbx-main",
+      "strip_headers": ["X-Extension"]
+    }
+  ],
+  "outbound_routes": [
+    {
+      "name": "local",
+      "pattern": "^\\d{3,5}$",
+      "trunk": "office-pbx"
+    },
+    {
+      "name": "external",
+      "pattern": "^9(\\d{10})$",
+      "trunk": "itsp",
+      "strip_digits": 1
+    }
+  ]
+}

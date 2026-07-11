@@ -13,6 +13,7 @@ import (
 	"github.com/thorsager/trecs/internal/logutil"
 	"github.com/thorsager/trecs/internal/media"
 	"github.com/thorsager/trecs/internal/sip"
+	"github.com/thorsager/trecs/internal/trunk"
 	"github.com/thorsager/trecs/proto"
 )
 
@@ -26,6 +27,7 @@ var (
 	flagLogLevel      string
 	flagLogFormat     string
 	flagNoPRACK       bool
+	flagTrunks        string
 )
 
 var serverIP = "127.0.0.1"
@@ -40,6 +42,7 @@ func init() {
 	flag.StringVar(&flagLogLevel, "log-level", "info", "Log level (trace, debug, info, warn, error)")
 	flag.StringVar(&flagLogFormat, "log-format", "text", "Log format (text, json, or compact)")
 	flag.BoolVar(&flagNoPRACK, "no-prack", false, "Disable PRACK (RFC 3262) support for reliable provisional responses")
+	flag.StringVar(&flagTrunks, "trunks", "", "Path to trunk configuration JSON file")
 	flag.Parse()
 }
 
@@ -112,6 +115,26 @@ func main() {
 		slog.Info("Dialplan loaded", "path", flagDialplan)
 	}
 
+	var trunkMgr *trunk.TrunkManager
+	if flagTrunks != "" {
+		trunkCfg, err := trunk.LoadConfig(flagTrunks)
+		if err != nil {
+			slog.Error("Failed to load trunk config", "error", err)
+			stop()
+			os.Exit(1)
+		}
+		trunkMgr, err = trunk.NewTrunkManager(trunkCfg, serverIP, flagAddr)
+		if err != nil {
+			slog.Error("Failed to create trunk manager", "error", err)
+			stop()
+			os.Exit(1)
+		}
+		trunkMgr.Start(ctx)
+		slog.Info("Trunk manager started",
+			"trunks", len(trunkCfg.Trunks),
+			"routes", len(trunkCfg.Routes))
+	}
+
 	h := b2bua.NewHandler(b2bua.Config{
 		Registrar:      reg,
 		SessionManager: media.NewSessionManager(),
@@ -123,6 +146,7 @@ func main() {
 		RTPPortMin:     flagRTPMin,
 		RTPPortMax:     flagRTPMax,
 		PRACKEnabled:   !flagNoPRACK,
+		TrunkMgr:       trunkMgr,
 	})
 
 	if flagAuthMaxFailed < 1 || flagAuthMaxFailed > 10 {
@@ -154,7 +178,12 @@ func main() {
 		server.On(proto.SIPMethodPRACK, h.HandlePRACK)
 	}
 	server.OnAck(h.HandleAck)
-	server.OnResponse(h.HandleResponse)
+	server.OnResponse(func(ctx context.Context, msg *proto.SIPMessage, target sip.Target, transport sip.Transport) {
+		h.HandleResponse(ctx, msg, target, transport)
+		if trunkMgr != nil {
+			trunkMgr.HandleResponse(msg)
+		}
+	})
 
 	server.Start()
 	defer server.Close()
@@ -163,4 +192,8 @@ func main() {
 
 	<-ctx.Done()
 	slog.Info("Shutting down...")
+	if trunkMgr != nil {
+		trunkMgr.Stop()
+		slog.Info("Trunk manager stopped")
+	}
 }

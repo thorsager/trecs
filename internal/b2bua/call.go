@@ -31,6 +31,7 @@ type Call struct {
 	BobContactURI   string
 	BobCallID       string
 	BridgeReady     bool
+	TrunkName       string // name of trunk if this is a trunk call, empty for internal
 }
 
 // EarlyCall tracks a pending B2BUA call while Bob is ringing (before answer).

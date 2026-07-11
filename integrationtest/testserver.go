@@ -15,6 +15,7 @@ import (
 	"github.com/thorsager/trecs/internal/logutil"
 	"github.com/thorsager/trecs/internal/media"
 	trecs_sip "github.com/thorsager/trecs/internal/sip"
+	"github.com/thorsager/trecs/internal/trunk"
 	"github.com/thorsager/trecs/proto"
 )
 
@@ -32,6 +33,7 @@ type TestServer struct {
 	Domain   string
 	UDPPort  int
 	TCPPort  int
+	TrunkMgr *trunk.TrunkManager
 }
 
 // ServerOption configures the test server.
@@ -41,6 +43,13 @@ type ServerOption func(*b2bua.Config)
 func WithPRACK() ServerOption {
 	return func(cfg *b2bua.Config) {
 		cfg.PRACKEnabled = true
+	}
+}
+
+// WithTrunkManager attaches a trunk manager to the B2BUA config.
+func WithTrunkManager(tm *trunk.TrunkManager) ServerOption {
+	return func(cfg *b2bua.Config) {
+		cfg.TrunkMgr = tm
 	}
 }
 
@@ -67,6 +76,9 @@ func (ts *TestServer) SetMaxFailedAuthAttempts(n int) {
 // Stop shuts down the test server and restores the original slog default.
 func (ts *TestServer) Stop() {
 	ts.cancel()
+	if ts.TrunkMgr != nil {
+		ts.TrunkMgr.Stop()
+	}
 	ts.uacMgr.Stop()
 	ts.Server.Close()
 	time.Sleep(100 * time.Millisecond)
@@ -132,7 +144,15 @@ func StartTestServerWithDialplan(t *testing.T, host string, dp dialplan.Dialplan
 		srv.On(proto.SIPMethodPRACK, h.HandlePRACK)
 	}
 	srv.OnAck(h.HandleAck)
-	srv.OnResponse(h.HandleResponse)
+
+	if cfg.TrunkMgr != nil {
+		srv.OnResponse(func(ctx context.Context, msg *proto.SIPMessage, target trecs_sip.Target, transport trecs_sip.Transport) {
+			h.HandleResponse(ctx, msg, target, transport)
+			cfg.TrunkMgr.HandleResponse(msg)
+		})
+	} else {
+		srv.OnResponse(h.HandleResponse)
+	}
 
 	srv.Start()
 
@@ -153,6 +173,7 @@ func StartTestServerWithDialplan(t *testing.T, host string, dp dialplan.Dialplan
 		Handler:  h,
 		Dialplan: dp,
 		uacMgr:   uacMgr,
+		TrunkMgr: cfg.TrunkMgr,
 		Addr:     tcpAddr,
 		Domain:   actualHost,
 		UDPPort:  udpPort,
