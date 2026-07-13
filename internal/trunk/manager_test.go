@@ -134,6 +134,16 @@ func TestNewTrunkManager_DuplicateName(t *testing.T) {
 	assert.Contains(t, err.Error(), "duplicate")
 }
 
+func TestTrunkManager_LocalIP(t *testing.T) {
+	m := &TrunkManager{serverIP: "10.0.0.1"}
+
+	trkWithLocal := &Trunk{LocalIP: "192.168.1.1"}
+	assert.Equal(t, "192.168.1.1", m.localIP(trkWithLocal))
+
+	trkWithoutLocal := &Trunk{LocalIP: ""}
+	assert.Equal(t, "10.0.0.1", m.localIP(trkWithoutLocal))
+}
+
 func TestTrunkManager_StartStop(t *testing.T) {
 	cfg := &TrunkConfig{
 		Trunks: []Trunk{

@@ -1,0 +1,45 @@
+services:
+  front:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command:
+      - -addr=:5060
+      - -external-ip=127.0.0.1
+      - -nat-address=host.docker.internal
+      - -rtp-min=40000
+      - -rtp-max=40010
+      - -dialplan=/conf/dialplan.json
+      - -trunks=/conf/trunks.json
+      - -log-level=debug
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "40000-40010:40000-40010/udp"
+    volumes:
+      - ./configs/front/dialplan.json:/conf/dialplan.json:ro
+      - ./configs/front/trunks.json:/conf/trunks.json:ro
+      - ../audio-files:/srv/audio:ro
+    depends_on:
+      - back
+    networks:
+      - trec-net
+
+  back:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command:
+      - -addr=:5060
+      - -external-ip=back
+      - -dialplan=/conf/dialplan.json
+      - -log-level=debug
+    volumes:
+      - ./configs/back/dialplan.json:/conf/dialplan.json:ro
+      - ../audio-files:/srv/audio:ro
+    networks:
+      - trec-net
+
+networks:
+  trec-net:
+    driver: bridge

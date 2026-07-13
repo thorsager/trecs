@@ -21,6 +21,7 @@
       "port": 5061,
       "transport": "tcp",
       "trusted_ips": ["10.0.1.0/24"],
+      "local_ip": "10.0.1.10",
       "max_channels": 20,
       "caller_id": "pbx-main",
       "strip_headers": ["X-Extension"]

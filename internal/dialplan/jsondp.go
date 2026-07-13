@@ -46,6 +46,9 @@ func (j *jsonDialplan) Lookup(req *proto.SIPMessage) (*Entry, bool) {
 	user := sip.ExtractUser(req.RequestURI())
 	e, ok := j.entries[user]
 	if !ok {
+		e, ok = j.entries["*"]
+	}
+	if !ok {
 		return nil, false
 	}
 	return &e, true

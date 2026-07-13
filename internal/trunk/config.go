@@ -33,6 +33,7 @@ type Trunk struct {
 	RegisterURI       string    `json:"register_uri,omitempty"`
 	StripHeaders      []string  `json:"strip_headers,omitempty"`
 	SessionExpiresSec int       `json:"session_expires_sec,omitempty"`
+	LocalIP           string    `json:"local_ip,omitempty"`
 	validCIDRs        []netip.Prefix
 }
 
@@ -171,6 +172,13 @@ func (t *Trunk) TrustedIPMatches(ip string) bool {
 		}
 	}
 	return false
+}
+
+func (t *Trunk) LocalIPWithDefault(defaultIP string) string {
+	if t.LocalIP != "" {
+		return t.LocalIP
+	}
+	return defaultIP
 }
 
 func (t *Trunk) RegisterURIString() string {

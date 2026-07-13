@@ -53,6 +53,13 @@ func WithTrunkManager(tm *trunk.TrunkManager) ServerOption {
 	}
 }
 
+// WithNATAddress sets the NAT address for replacing loopback client SDP addresses.
+func WithNATAddress(natAddr string) ServerOption {
+	return func(cfg *b2bua.Config) {
+		cfg.NATAddress = natAddr
+	}
+}
+
 // StartTestServer creates and starts a trecs server with a registrar, dialplan,
 // and B2BUA handler for integration testing. Logging is routed to t.Log(). The server
 // binds to host:0 (random OS-assigned port). The caller must call Stop() when done.

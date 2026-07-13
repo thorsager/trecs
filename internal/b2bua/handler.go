@@ -30,6 +30,7 @@ type Config struct {
 	RTPPortMax     int
 	PRACKEnabled   bool
 	TrunkMgr       *trunk.TrunkManager
+	NATAddress     string
 }
 
 // Handler implements SIP request handlers for the T-REC B2BUA server,
@@ -51,6 +52,7 @@ type Handler struct {
 	maxFailedAttempts int
 	prackMgr          *sip.ReliableProvisionalManager
 	trunkMgr          *trunk.TrunkManager
+	natAddress        string
 }
 
 // NewHandler creates a new B2BUA handler with the given configuration.
@@ -74,6 +76,7 @@ func NewHandler(cfg Config) *Handler {
 	if cfg.TrunkMgr != nil {
 		h.trunkMgr = cfg.TrunkMgr
 	}
+	h.natAddress = cfg.NATAddress
 	return h
 }
 
@@ -212,6 +215,15 @@ func (h *Handler) HandleInvite(ctx context.Context, req *proto.SIPMessage, tx si
 	h.handleB2BUAInvite(ctx, req, tx)
 }
 
+func (h *Handler) resolveClientAddr(sdpOffer *proto.SDP) (clientIP string, clientPort int) {
+	clientIP, clientPort = media.ExtractRTPAddr(sdpOffer)
+	parsedIP := net.ParseIP(clientIP)
+	if parsedIP != nil && parsedIP.IsLoopback() && h.natAddress != "" {
+		return h.natAddress, clientPort
+	}
+	return clientIP, clientPort
+}
+
 func (h *Handler) handleEchoInvite(ctx context.Context, req *proto.SIPMessage, tx sip.Transaction) {
 	log := logutil.FromContext(ctx)
 
@@ -266,8 +278,15 @@ func (h *Handler) handleEchoInvite(ctx context.Context, req *proto.SIPMessage, t
 	session := media.NewSession(ctx, key, rtpConn, payloadType, rtpAddr)
 
 	if sdpOffer != nil {
-		clientIP, clientPort := media.ExtractRTPAddr(sdpOffer)
-		remoteAddr := &net.UDPAddr{IP: net.ParseIP(clientIP), Port: clientPort}
+		clientIP, clientPort := h.resolveClientAddr(sdpOffer)
+		remoteAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", clientIP, clientPort))
+		if err != nil {
+			rtpConn.Close()
+			log.Error("failed to resolve client RTP address", "clientIP", clientIP, "error", err)
+			res := proto.NewResponse(req, 500, "Internal Server Error")
+			tx.Respond(res)
+			return
+		}
 		session.SetRemoteAddr(remoteAddr)
 		session.SetState(media.SessionActive)
 	} else {
@@ -366,8 +385,15 @@ func (h *Handler) handleFileInvite(ctx context.Context, req *proto.SIPMessage, t
 	session.SipTarget = &txTarget
 
 	if sdpOffer != nil {
-		clientIP, clientPort := media.ExtractRTPAddr(sdpOffer)
-		remoteAddr := &net.UDPAddr{IP: net.ParseIP(clientIP), Port: clientPort}
+		clientIP, clientPort := h.resolveClientAddr(sdpOffer)
+		remoteAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", clientIP, clientPort))
+		if err != nil {
+			rtpConn.Close()
+			log.Error("failed to resolve client RTP address", "clientIP", clientIP, "error", err)
+			res := proto.NewResponse(req, 500, "Internal Server Error")
+			tx.Respond(res)
+			return
+		}
 		session.SetRemoteAddr(remoteAddr)
 		session.SetState(media.SessionActive)
 	} else {
@@ -644,6 +670,11 @@ func (h *Handler) selectBinding(bindings []*sip.Binding, log *slog.Logger) (*sip
 func (h *Handler) handleTrunkInvite(ctx context.Context, req *proto.SIPMessage, tx sip.Transaction, trk *trunk.Trunk, dest string, to *proto.SIPAddress) {
 	log := logutil.FromContext(ctx)
 
+	trunkIP := trk.LocalIP
+	if trunkIP == "" {
+		trunkIP = h.serverIP
+	}
+
 	if !h.trunkMgr.AcquireChannel(trk.Name) {
 		log.Warn("trunk at capacity", "trunk", trk.Name, "max", trk.MaxChannels)
 		res := proto.NewResponse(req, 503, "Service Unavailable")
@@ -684,7 +715,7 @@ func (h *Handler) handleTrunkInvite(ctx context.Context, req *proto.SIPMessage, 
 
 	selectedPT := media.PickPayloadType(aliceSDPOffer)
 
-	bobSDP := media.BuildOffer(rtpConnB.LocalAddr().(*net.UDPAddr).Port, selectedPT, h.serverIP)
+	bobSDP := media.BuildOffer(rtpConnB.LocalAddr().(*net.UDPAddr).Port, selectedPT, trunkIP)
 	bobSDPBytes, _ := bobSDP.Marshal()
 
 	var aliceSDPBytes []byte
@@ -748,15 +779,15 @@ func (h *Handler) handleTrunkInvite(ctx context.Context, req *proto.SIPMessage, 
 	}
 
 	calleeFrom := fmt.Sprintf("<%s>;tag=%s", from.URI, calleeTag)
-	contactHeader := fmt.Sprintf("<sip:trec@%s:%s;transport=%s>", h.serverIP, serverPort, bobTransport)
-	recordRoute := fmt.Sprintf("<sip:trec@%s:%s;lr>", h.serverIP, serverPort)
+	contactHeader := fmt.Sprintf("<sip:trec@%s:%s;transport=%s>", trunkIP, serverPort, bobTransport)
+	recordRoute := fmt.Sprintf("<sip:trec@%s:%s;lr>", trunkIP, serverPort)
 
 	bobReqURI := fmt.Sprintf("sip:%s@%s", dest, bobHostPort)
 	bobInvite := proto.NewRequest(proto.SIPMethodINVITE, bobReqURI)
 
 	uac := h.uacMgr.NewTransaction(ctx, proto.SIPMethodINVITE, transportImpl, bobTarget)
 
-	bobInvite.Headers.Add("Via", fmt.Sprintf("SIP/2.0/%s %s:%s;branch=%s", bobTransport, h.serverIP, serverPort, uac.Branch))
+	bobInvite.Headers.Add("Via", fmt.Sprintf("SIP/2.0/%s %s:%s;branch=%s", bobTransport, trunkIP, serverPort, uac.Branch))
 	bobInvite.Headers.Add("From", calleeFrom)
 	bobInvite.Headers.Add("To", fmt.Sprintf("<%s>", to.URI))
 	bobInvite.Headers.Add("Contact", contactHeader)
@@ -766,7 +797,7 @@ func (h *Handler) handleTrunkInvite(ctx context.Context, req *proto.SIPMessage, 
 	bobInvite.Headers.Add("Content-Type", "application/sdp")
 
 	if trk.CallerID != "" {
-		pai := fmt.Sprintf("<sip:%s@%s>", trk.CallerID, h.serverIP)
+		pai := fmt.Sprintf("<sip:%s@%s>", trk.CallerID, trunkIP)
 		bobInvite.Headers.Add("P-Asserted-Identity", pai)
 		bobInvite.Headers.Add("Privacy", "none")
 	}
@@ -1016,8 +1047,13 @@ func (h *Handler) handleTrunk200OK(
 	}
 	aliceSess := media.NewSession(ctx, aliceKey, rtpConnA, selectedPT, rtpConnA.LocalAddr())
 	if hasEarlyOffer {
-		aIP, aPort := media.ExtractRTPAddr(aliceSDPOffer)
-		aliceSess.SetRemoteAddr(&net.UDPAddr{IP: net.ParseIP(aIP), Port: aPort})
+		aIP, aPort := h.resolveClientAddr(aliceSDPOffer)
+		aRTPAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", aIP, aPort))
+		if err != nil {
+			log.Error("failed to resolve Alice RTP address", "clientIP", aIP, "error", err)
+			return
+		}
+		aliceSess.SetRemoteAddr(aRTPAddr)
 	}
 	h.sm.Add(aliceSess)
 
@@ -1075,8 +1111,12 @@ func (h *Handler) handleTrunk200OK(
 	}
 
 	if hasEarlyOffer {
-		aIP, aPort := media.ExtractRTPAddr(aliceSDPOffer)
-		aRTPAddr := &net.UDPAddr{IP: net.ParseIP(aIP), Port: aPort}
+		aIP, aPort := h.resolveClientAddr(aliceSDPOffer)
+		aRTPAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", aIP, aPort))
+		if err != nil {
+			log.Error("failed to resolve Alice RTP address", "clientIP", aIP, "error", err)
+			return
+		}
 		bridge.SetARemote(aRTPAddr)
 		bridge.SetBRemote(bobRTPAddr)
 		bridge.Start()
@@ -1407,8 +1447,13 @@ func (h *Handler) handleBob200OK(
 	}
 	aliceSess := media.NewSession(ctx, aliceKey, rtpConnA, selectedPT, rtpConnA.LocalAddr())
 	if hasEarlyOffer {
-		aIP, aPort := media.ExtractRTPAddr(aliceSDPOffer)
-		aliceSess.SetRemoteAddr(&net.UDPAddr{IP: net.ParseIP(aIP), Port: aPort})
+		aIP, aPort := h.resolveClientAddr(aliceSDPOffer)
+		aRTPAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", aIP, aPort))
+		if err != nil {
+			log.Error("failed to resolve Alice RTP address", "clientIP", aIP, "error", err)
+			return
+		}
+		aliceSess.SetRemoteAddr(aRTPAddr)
 	}
 	h.sm.Add(aliceSess)
 
@@ -1466,8 +1511,12 @@ func (h *Handler) handleBob200OK(
 	}
 
 	if hasEarlyOffer {
-		aIP, aPort := media.ExtractRTPAddr(aliceSDPOffer)
-		aRTPAddr := &net.UDPAddr{IP: net.ParseIP(aIP), Port: aPort}
+		aIP, aPort := h.resolveClientAddr(aliceSDPOffer)
+		aRTPAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", aIP, aPort))
+		if err != nil {
+			log.Error("failed to resolve Alice RTP address", "clientIP", aIP, "error", err)
+			return
+		}
 		bridge.SetARemote(aRTPAddr)
 		bridge.SetBRemote(bobRTPAddr)
 		bridge.Start()

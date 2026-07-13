@@ -1,0 +1,5 @@
+{
+  "extensions": {
+    "*": { "action": "play", "file": "/srv/audio/the_mentor_8k_lpcm16.wav" }
+  }
+}
