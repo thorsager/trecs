@@ -133,6 +133,54 @@ func TestJSONDialplan_Lookup_UnknownAction(t *testing.T) {
 	assert.Nil(t, entry)
 }
 
+func TestJSONDialplan_Lookup_Wildcard(t *testing.T) {
+	content := `{
+		"extensions": {
+			"*": { "action": "play", "file": "/tmp/tone.wav" }
+		}
+	}`
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "dialplan.json")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+
+	dp, err := NewFromFile(path)
+	require.NoError(t, err)
+
+	req := helperMakeRequestJSON("sip:anything@127.0.0.1:5060")
+	entry, ok := dp.Lookup(req)
+	require.True(t, ok)
+	assert.Equal(t, ActionPlay, entry.Action)
+	assert.Equal(t, "/tmp/tone.wav", entry.File)
+}
+
+func TestJSONDialplan_Lookup_ExactOverridesWildcard(t *testing.T) {
+	content := `{
+		"extensions": {
+			"*": { "action": "play", "file": "/tmp/fallback.wav" },
+			"echo": { "action": "echo" }
+		}
+	}`
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "dialplan.json")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+
+	dp, err := NewFromFile(path)
+	require.NoError(t, err)
+
+	req := helperMakeRequestJSON("sip:echo@127.0.0.1:5060")
+	entry, ok := dp.Lookup(req)
+	require.True(t, ok)
+	assert.Equal(t, ActionEcho, entry.Action)
+
+	req2 := helperMakeRequestJSON("sip:unknown@127.0.0.1:5060")
+	entry2, ok2 := dp.Lookup(req2)
+	require.True(t, ok2)
+	assert.Equal(t, ActionPlay, entry2.Action)
+	assert.Equal(t, "/tmp/fallback.wav", entry2.File)
+}
+
 func TestJSONDialplan_Lookup_EmptyExtensions(t *testing.T) {
 	content := `{
 		"extensions": {}

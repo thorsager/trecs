@@ -1,0 +1,20 @@
+{
+  "trunks": [
+    {
+      "name": "back",
+      "type": "static",
+      "host": "back",
+      "port": 5060,
+      "transport": "udp",
+      "local_ip": "front",
+      "max_channels": 50
+    }
+  ],
+  "outbound_routes": [
+    {
+      "name": "catch-all",
+      "pattern": "^\\d+$",
+      "trunk": "back"
+    }
+  ]
+}

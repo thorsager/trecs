@@ -155,14 +155,15 @@ func (m *TrunkManager) registrationLoop(ctx context.Context, t *Trunk, rs *regis
 func (m *TrunkManager) registerOnce(ctx context.Context, t *Trunk) (time.Duration, error) {
 	registerURI := t.RegisterURIString()
 	hostPort := net.JoinHostPort(t.Host, strconv.Itoa(t.Port))
+	localIP := t.LocalIPWithDefault(m.serverIP)
 
-	contact := fmt.Sprintf("<sip:trec@%s>", m.serverIP)
+	contact := fmt.Sprintf("<sip:trec@%s>", localIP)
 	branch := sip.GenerateBranch()
 	callID := fmt.Sprintf("trunk-reg-%s-%d", t.Name, time.Now().UnixNano())
 
 	var reqBody string
 	reqBody += fmt.Sprintf("REGISTER %s SIP/2.0\r\n", registerURI)
-	reqBody += fmt.Sprintf("Via: SIP/2.0/%s %s;branch=%s\r\n", strings.ToUpper(t.Transport), m.serverIP, branch)
+	reqBody += fmt.Sprintf("Via: SIP/2.0/%s %s;branch=%s\r\n", strings.ToUpper(t.Transport), localIP, branch)
 	reqBody += fmt.Sprintf("From: %s\r\n", registerURI)
 	reqBody += fmt.Sprintf("To: %s\r\n", registerURI)
 	reqBody += fmt.Sprintf("Call-ID: %s\r\n", callID)
@@ -194,6 +195,10 @@ func (m *TrunkManager) registerOnce(ctx context.Context, t *Trunk) (time.Duratio
 	}
 }
 
+func (m *TrunkManager) localIP(t *Trunk) string {
+	return t.LocalIPWithDefault(m.serverIP)
+}
+
 func (m *TrunkManager) authenticatedRegister(ctx context.Context, t *Trunk, registerURI, hostPort, contact, callID, wwwAuth string) (time.Duration, error) {
 	challenge, err := sip.ParseDigest(wwwAuth)
 	if err != nil {
@@ -209,10 +214,11 @@ func (m *TrunkManager) authenticatedRegister(ctx context.Context, t *Trunk, regi
 		t.AuthUser, challenge.Realm, challenge.Nonce, registerURI, digestResp, challenge.Algorithm, nc)
 
 	branch := sip.GenerateBranch()
+	localIP := m.localIP(t)
 
 	var body string
 	body += fmt.Sprintf("REGISTER %s SIP/2.0\r\n", registerURI)
-	body += fmt.Sprintf("Via: SIP/2.0/%s %s;branch=%s\r\n", strings.ToUpper(t.Transport), m.serverIP, branch)
+	body += fmt.Sprintf("Via: SIP/2.0/%s %s;branch=%s\r\n", strings.ToUpper(t.Transport), localIP, branch)
 	body += fmt.Sprintf("From: %s\r\n", registerURI)
 	body += fmt.Sprintf("To: %s\r\n", registerURI)
 	body += fmt.Sprintf("Call-ID: %s\r\n", callID)

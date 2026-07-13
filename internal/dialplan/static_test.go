@@ -54,6 +54,36 @@ func TestStaticDialplan_Lookup_NoMatch(t *testing.T) {
 	assert.Nil(t, entry)
 }
 
+func TestStaticDialplan_Lookup_Wildcard(t *testing.T) {
+	dp := NewStatic(map[string]Entry{
+		"*": {Action: ActionPlay, File: "/tmp/tone.wav"},
+	})
+
+	req := helperMakeRequest("sip:anything@127.0.0.1:5060")
+	entry, ok := dp.Lookup(req)
+	require.True(t, ok)
+	assert.Equal(t, ActionPlay, entry.Action)
+	assert.Equal(t, "/tmp/tone.wav", entry.File)
+}
+
+func TestStaticDialplan_Lookup_ExactOverridesWildcard(t *testing.T) {
+	dp := NewStatic(map[string]Entry{
+		"*":    {Action: ActionPlay, File: "/tmp/fallback.wav"},
+		"echo": {Action: ActionEcho},
+	})
+
+	req := helperMakeRequest("sip:echo@127.0.0.1:5060")
+	entry, ok := dp.Lookup(req)
+	require.True(t, ok)
+	assert.Equal(t, ActionEcho, entry.Action)
+
+	req2 := helperMakeRequest("sip:unknown@127.0.0.1:5060")
+	entry2, ok2 := dp.Lookup(req2)
+	require.True(t, ok2)
+	assert.Equal(t, ActionPlay, entry2.Action)
+	assert.Equal(t, "/tmp/fallback.wav", entry2.File)
+}
+
 func TestStaticDialplan_Lookup_Empty(t *testing.T) {
 	dp := NewStatic(map[string]Entry{})
 

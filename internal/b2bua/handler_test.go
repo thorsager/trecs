@@ -1,8 +1,11 @@
 package b2bua
 
 import (
+	"net"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 
 	"github.com/thorsager/trecs/internal/sip"
 	"github.com/thorsager/trecs/proto"
@@ -37,6 +40,55 @@ func cancelRequest(t *testing.T, toWithTag bool) *proto.SIPMessage {
 		t.Fatalf("UnmarshalSIPDatagram: %v", err)
 	}
 	return msg
+}
+
+func TestResolveClientAddr_LoopbackWithNAT(t *testing.T) {
+	h := NewHandler(Config{NATAddress: "host.docker.internal"})
+
+	sdp := &proto.SDP{
+		Connection: &proto.ConnectionInfo{Address: "127.0.0.1"},
+		MediaDescs: []proto.MediaDescription{
+			{Type: "audio", Port: 7078},
+		},
+	}
+
+	ip, port := h.resolveClientAddr(sdp)
+	assert.Equal(t, 7078, port)
+	if resolved := net.ParseIP(ip); resolved != nil {
+		assert.False(t, resolved.IsLoopback(), "expected non-loopback IP when NATAddress is set")
+	} else {
+		t.Logf("NATAddress hostname did not resolve, got raw: %s", ip)
+	}
+}
+
+func TestResolveClientAddr_LoopbackNoNAT(t *testing.T) {
+	h := NewHandler(Config{})
+
+	sdp := &proto.SDP{
+		Connection: &proto.ConnectionInfo{Address: "127.0.0.1"},
+		MediaDescs: []proto.MediaDescription{
+			{Type: "audio", Port: 7078},
+		},
+	}
+
+	ip, port := h.resolveClientAddr(sdp)
+	assert.Equal(t, "127.0.0.1", ip)
+	assert.Equal(t, 7078, port)
+}
+
+func TestResolveClientAddr_NonLoopback(t *testing.T) {
+	h := NewHandler(Config{NATAddress: "host.docker.internal"})
+
+	sdp := &proto.SDP{
+		Connection: &proto.ConnectionInfo{Address: "192.168.1.100"},
+		MediaDescs: []proto.MediaDescription{
+			{Type: "audio", Port: 7078},
+		},
+	}
+
+	ip, port := h.resolveClientAddr(sdp)
+	assert.Equal(t, "192.168.1.100", ip)
+	assert.Equal(t, 7078, port)
 }
 
 func TestHandleCancel_Sends487WhenNoEarlyCall(t *testing.T) {

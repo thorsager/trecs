@@ -1,0 +1,6 @@
+{
+  "extensions": {
+    "local": { "action": "play", "file": "/srv/audio/EDIS-SCD-02_8k_lpcm16.wav" },
+    "mentor": { "action": "play", "file": "/srv/audio/the_mentor_8k_lpcm16.wav" }
+  }
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -28,9 +29,9 @@ var (
 	flagLogFormat     string
 	flagNoPRACK       bool
 	flagTrunks        string
+	flagExternalIP    string
+	flagNATAddress    string
 )
-
-var serverIP = "127.0.0.1"
 
 func init() {
 	flag.StringVar(&flagAddr, "addr", ":5060", "SIP listen address")
@@ -43,6 +44,8 @@ func init() {
 	flag.StringVar(&flagLogFormat, "log-format", "text", "Log format (text, json, or compact)")
 	flag.BoolVar(&flagNoPRACK, "no-prack", false, "Disable PRACK (RFC 3262) support for reliable provisional responses")
 	flag.StringVar(&flagTrunks, "trunks", "", "Path to trunk configuration JSON file")
+	flag.StringVar(&flagExternalIP, "external-ip", "", "External IP for SDP c= lines and Contact headers")
+	flag.StringVar(&flagNATAddress, "nat-address", "", "NAT address to replace loopback in client SDP (e.g., host.docker.internal)")
 	flag.Parse()
 }
 
@@ -77,6 +80,16 @@ func main() {
 		slogHandler = slog.NewTextHandler(os.Stderr, opts)
 	}
 	slog.SetDefault(slog.New(slogHandler))
+
+	serverIP := flagExternalIP
+	if serverIP == "" {
+		host, _, err := net.SplitHostPort(flagAddr)
+		if err != nil || host == "" || host == "0.0.0.0" || host == "::" {
+			serverIP = "127.0.0.1"
+		} else {
+			serverIP = host
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -147,6 +160,7 @@ func main() {
 		RTPPortMax:     flagRTPMax,
 		PRACKEnabled:   !flagNoPRACK,
 		TrunkMgr:       trunkMgr,
+		NATAddress:     flagNATAddress,
 	})
 
 	if flagAuthMaxFailed < 1 || flagAuthMaxFailed > 10 {

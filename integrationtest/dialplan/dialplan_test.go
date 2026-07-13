@@ -51,6 +51,22 @@ func TestIntegration_DialplanEcho(t *testing.T) {
 
 		runEchoTest(t, ts, "tcp", false)
 	})
+
+	t.Run("UDP_EarlyOffer_NATAddress", func(t *testing.T) {
+		ts := integrationtest.StartTestServerWithDialplan(t, "127.0.0.1", dp,
+			integrationtest.WithNATAddress("host.docker.internal"))
+		defer ts.Stop()
+
+		runEchoTest(t, ts, "udp", true)
+	})
+
+	t.Run("TCP_EarlyOffer_NATAddress", func(t *testing.T) {
+		ts := integrationtest.StartTestServerWithDialplan(t, "127.0.0.1", dp,
+			integrationtest.WithNATAddress("host.docker.internal"))
+		defer ts.Stop()
+
+		runEchoTest(t, ts, "tcp", true)
+	})
 }
 
 func TestIntegration_DialplanPlayback(t *testing.T) {

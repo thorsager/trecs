@@ -137,6 +137,49 @@ func TestLoadConfig_StripHeadersDefaultEmpty(t *testing.T) {
 	assert.Nil(t, cfg.Trunks[0].StripHeaders)
 }
 
+func TestLoadConfig_LocalIP(t *testing.T) {
+	json := `{
+		"trunks": [
+			{
+				"name": "t1",
+				"type": "static",
+				"host": "example.com",
+				"port": 5060,
+				"local_ip": "10.0.1.10"
+			}
+		],
+		"outbound_routes": []
+	}`
+	cfg, err := LoadConfig(writeTempConfig(t, json))
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.1.10", cfg.Trunks[0].LocalIP)
+}
+
+func TestLoadConfig_LocalIPDefaultEmpty(t *testing.T) {
+	json := `{
+		"trunks": [
+			{
+				"name": "t1",
+				"type": "static",
+				"host": "example.com",
+				"port": 5060
+			}
+		],
+		"outbound_routes": []
+	}`
+	cfg, err := LoadConfig(writeTempConfig(t, json))
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Trunks[0].LocalIP)
+}
+
+func TestTrunk_LocalIPWithDefault(t *testing.T) {
+	trk := &Trunk{LocalIP: "10.0.1.10"}
+	assert.Equal(t, "10.0.1.10", trk.LocalIPWithDefault("127.0.0.1"))
+
+	trk2 := &Trunk{LocalIP: ""}
+	assert.Equal(t, "192.168.1.1", trk2.LocalIPWithDefault("192.168.1.1"))
+}
+
 func TestLoadConfig_DefaultTransport(t *testing.T) {
 	json := `{
 		"trunks": [
