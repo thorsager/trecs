@@ -16,33 +16,65 @@ const (
 	frameInterval    = 20 * time.Millisecond
 )
 
-// muLawEncode converts a 16-bit linear PCM sample to 8-bit μ-law.
-func muLawEncode(sample int16) byte {
-	const bias = 0x84
-	var sign byte
-	if sample < 0 {
-		sample = -sample
-		sign = 0x80
-	}
-	x := int(sample) + bias
-	if x > 0x7FFF {
-		x = 0x7FFF
-	}
+// μ-law clip and bias constants (ITU-T G.711).
+const (
+	uLawClip = 0x7F7B // 32635 — max PCM magnitude before bias
+	uLawBias = 0x84   // 132 — bias added before segment encoding
+)
 
-	var exponent byte
-	for x >= 0x100 {
-		x >>= 1
-		exponent++
-	}
-	mantissa := byte(x>>2) & 0x0F
-	return ^(sign | (exponent << 4) | mantissa)
+// ulawSegment maps the top 8 bits of a biased sample to its μ-law segment.
+var ulawSegment = [256]uint8{
+	0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3,
+	4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+	6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+	6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+	6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+	6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+	7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+	7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+	7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+	7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+	7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+	7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+	7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+	7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
 }
 
-// convertToMuLaw16 takes 16-bit signed mono PCM samples and returns μ-law bytes.
+// muLawTable is a pre-computed lookup table mapping 16-bit PCM to μ-law (ITU-T G.711).
+// Index with uint16(sample) for O(1) encoding.
+var muLawTable [1 << 16]byte
+
+func init() {
+	for i := range muLawTable {
+		frame := int16(i)
+		sign := byte((frame >> 8) & 0x80)
+		if sign != 0 {
+			if frame == math.MinInt16 {
+				frame = math.MaxInt16
+			} else {
+				frame = -frame
+			}
+		}
+		if frame > uLawClip {
+			frame = uLawClip
+		}
+		frame += uLawBias
+		segment := ulawSegment[(frame>>7)&0xFF]
+		bottom := (frame >> (segment + 3)) & 0x0F
+		muLawTable[i] = ^(sign | segment<<4 | byte(bottom))
+	}
+}
+
+func muLawEncode(sample int16) byte {
+	return muLawTable[uint16(sample)]
+}
+
 func convertToMuLaw16(samples []int16) []byte {
 	out := make([]byte, len(samples))
 	for i, s := range samples {
-		out[i] = muLawEncode(s)
+		out[i] = muLawTable[uint16(s)]
 	}
 	return out
 }
