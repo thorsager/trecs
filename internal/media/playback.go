@@ -126,46 +126,73 @@ func RunFilePlayback(ctx context.Context, conn *RTPConn, remoteAddr *net.UDPAddr
 		muLaw := convertToMuLaw16(resampled)
 
 		serverSSRC := rand.Uint32() //nolint:gosec // SSRC doesn't need cryptographic randomness
-		var seq uint16
-		var timestamp uint32
 
-		out := &proto.RTPPacket{
-			Header: proto.RTPHeader{
-				Version: 2, PayloadType: payloadType, SSRC: serverSSRC,
-			},
+		frameCount := (len(muLaw) + samplesPerFrame - 1) / samplesPerFrame
+		if frameCount == 0 {
+			return
 		}
 
-		for offset := 0; offset < len(muLaw); offset += samplesPerFrame {
+		frameCh := make(chan []byte, 64)
+
+		// Producer: marshal frames ahead of the sender.
+		producerCtx, producerCancel := context.WithCancel(ctx)
+		defer producerCancel()
+		go func() {
+			defer close(frameCh)
+			pkt := &proto.RTPPacket{
+				Header: proto.RTPHeader{
+					Version: 2, PayloadType: payloadType, SSRC: serverSSRC,
+				},
+			}
+			for frameIdx := range frameCount {
+				offset := frameIdx * samplesPerFrame
+				end := offset + samplesPerFrame
+				if end > len(muLaw) {
+					end = len(muLaw)
+				}
+				frame := muLaw[offset:end]
+				if len(frame) < samplesPerFrame {
+					padded := make([]byte, samplesPerFrame)
+					copy(padded, frame)
+					frame = padded
+				}
+
+				pkt.Header.SequenceNumber = uint16(frameIdx)
+				pkt.Header.Timestamp = uint32(frameIdx * samplesPerFrame)
+				pkt.Payload = frame
+
+				sz := pkt.MarshalSize()
+				buf := make([]byte, sz)
+				n, _ := pkt.MarshalTo(buf)
+
+				select {
+				case <-producerCtx.Done():
+					return
+				case frameCh <- buf[:n]:
+				}
+			}
+		}()
+
+		// Consumer: send first packet immediately, rest on a ticker.
+		buf, ok := <-frameCh
+		if !ok {
+			return
+		}
+		if _, err := conn.conn.WriteTo(buf, remoteAddr); err != nil {
+			return
+		}
+
+		ticker := time.NewTicker(frameInterval)
+		defer ticker.Stop()
+		for buf := range frameCh {
 			select {
 			case <-ctx.Done():
 				return
-			default:
+			case <-ticker.C:
 			}
-
-			end := offset + samplesPerFrame
-			if end > len(muLaw) {
-				end = len(muLaw)
-			}
-			frame := muLaw[offset:end]
-
-			if len(frame) < samplesPerFrame {
-				padded := make([]byte, samplesPerFrame)
-				copy(padded, frame)
-				frame = padded
-			}
-
-			out.Header.SequenceNumber = seq
-			out.Header.Timestamp = timestamp
-			out.Payload = frame
-
-			if err := conn.WriteRTP(out, remoteAddr); err != nil {
+			if _, err := conn.conn.WriteTo(buf, remoteAddr); err != nil {
 				return
 			}
-
-			seq++
-			timestamp += samplesPerFrame
-
-			time.Sleep(frameInterval)
 		}
 	}()
 

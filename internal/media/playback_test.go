@@ -1,8 +1,13 @@
 package media
 
 import (
+	"context"
 	"math"
+	"net"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestMuLawEncode_ReferenceValues(t *testing.T) {
@@ -187,4 +192,103 @@ func BenchmarkMixToMonoStereo(b *testing.B) {
 	for range b.N {
 		mixToMono(samples, 2)
 	}
+}
+
+func TestRunFilePlayback_Timing(t *testing.T) {
+	frameCount := 20
+	samplesPerTestFrame := 160
+	totalSamples := frameCount * samplesPerTestFrame
+
+	wav := &WavData{
+		SampleRate:    8000,
+		BitsPerSample: 16,
+		NumChannels:   1,
+		Data:          make([]byte, totalSamples*2),
+	}
+	for i := range totalSamples {
+		val := int16(8000)
+		wav.Data[i*2] = byte(val)
+		wav.Data[i*2+1] = byte(val >> 8)
+	}
+
+	serverConn, err := NewRTPConn()
+	require.NoError(t, err)
+	defer serverConn.Close()
+
+	clientConn, err := NewRTPConn()
+	require.NoError(t, err)
+	defer clientConn.Close()
+
+	cliUDP := clientConn.LocalAddr().(*net.UDPAddr)
+	clientAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: cliUDP.Port}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	done := RunFilePlayback(ctx, serverConn, clientAddr, 0, wav)
+
+	type received struct {
+		seq     uint16
+		ts      uint32
+		arrived time.Time
+	}
+	var packets []received
+
+loop:
+	for {
+		select {
+		case <-ctx.Done():
+			break loop
+		default:
+		}
+
+		if len(packets) >= frameCount {
+			break
+		}
+
+		clientConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		pkt, _, err := clientConn.ReadRTP()
+		if err != nil {
+			continue
+		}
+		packets = append(packets, received{
+			seq:     pkt.Header.SequenceNumber,
+			ts:      pkt.Header.Timestamp,
+			arrived: time.Now(),
+		})
+		clientConn.Release(pkt)
+	}
+
+	<-done
+
+	require.Equal(t, frameCount, len(packets), "should receive all packets")
+
+	for i, p := range packets {
+		require.Equal(t, uint16(i), p.seq, "seq mismatch at packet %d", i)
+		require.Equal(t, uint32(i*samplesPerTestFrame), p.ts, "timestamp mismatch at packet %d", i)
+	}
+
+	maxJitter := time.Duration(0)
+	for i := 1; i < len(packets); i++ {
+		interval := packets[i].arrived.Sub(packets[i-1].arrived)
+		jitter := interval - frameInterval
+		if jitter < 0 {
+			jitter = -jitter
+		}
+		if jitter > maxJitter {
+			maxJitter = jitter
+		}
+	}
+	t.Logf("max per-packet jitter: %v", maxJitter)
+
+	lastDelta := packets[frameCount-1].arrived.Sub(packets[0].arrived)
+	expectedLast := time.Duration(frameCount-1) * frameInterval
+	drift := lastDelta - expectedLast
+	if drift < 0 {
+		drift = -drift
+	}
+	t.Logf("total drift over %d packets: %v", frameCount, drift)
+
+	require.Less(t, maxJitter, 2*time.Millisecond, "per-packet jitter too large")
+	require.Less(t, drift, 10*time.Millisecond, "total drift too large")
 }
