@@ -53,6 +53,9 @@ func TestIntegration_DialplanEcho(t *testing.T) {
 	})
 
 	t.Run("UDP_EarlyOffer_NATAddress", func(t *testing.T) {
+		if _, err := net.LookupHost("host.docker.internal"); err != nil {
+			t.Skip("host.docker.internal not resolvable (not in Docker)")
+		}
 		ts := integrationtest.StartTestServerWithDialplan(t, "127.0.0.1", dp,
 			integrationtest.WithNATAddress("host.docker.internal"))
 		defer ts.Stop()
@@ -61,6 +64,9 @@ func TestIntegration_DialplanEcho(t *testing.T) {
 	})
 
 	t.Run("TCP_EarlyOffer_NATAddress", func(t *testing.T) {
+		if _, err := net.LookupHost("host.docker.internal"); err != nil {
+			t.Skip("host.docker.internal not resolvable (not in Docker)")
+		}
 		ts := integrationtest.StartTestServerWithDialplan(t, "127.0.0.1", dp,
 			integrationtest.WithNATAddress("host.docker.internal"))
 		defer ts.Stop()

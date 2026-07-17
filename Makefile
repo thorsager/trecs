@@ -30,4 +30,24 @@ race:
 lint:
 	golangci-lint run
 
-.PHONY: build install clean test integrationtest bench race lint
+DOCKER_COMPOSE := docker compose -f docker/compose.yml
+
+docker-build:
+	$(DOCKER_COMPOSE) build
+
+docker-up:
+	$(DOCKER_COMPOSE) up
+
+docker-up-d:
+	$(DOCKER_COMPOSE) up -d
+
+docker-stop:
+	$(DOCKER_COMPOSE) stop
+
+docker-down:
+	$(DOCKER_COMPOSE) down
+
+docker-logs:
+	$(DOCKER_COMPOSE) logs -f
+
+.PHONY: build install clean test integrationtest bench race lint docker-build docker-up docker-up-d docker-stop docker-down docker-logs
