@@ -53,6 +53,7 @@ type Handler struct {
 	prackMgr          *sip.ReliableProvisionalManager
 	trunkMgr          *trunk.TrunkManager
 	natAddress        string
+	serverPort        string
 }
 
 // NewHandler creates a new B2BUA handler with the given configuration.
@@ -77,7 +78,37 @@ func NewHandler(cfg Config) *Handler {
 		h.trunkMgr = cfg.TrunkMgr
 	}
 	h.natAddress = cfg.NATAddress
+	if _, port, err := net.SplitHostPort(cfg.ServerAddr); err == nil && port != "" {
+		h.serverPort = port
+	} else {
+		h.serverPort = "5060"
+	}
 	return h
+}
+
+// callCtx holds the shared state for a single B2BUA call leg.
+// It is passed through the response loops and 200 OK handlers instead of
+// threading the same ~20 parameters through every function.
+type callCtx struct {
+	req           *proto.SIPMessage
+	tx            sip.Transaction
+	target        *sip.Target
+	transportImpl sip.Transport
+	uac           *sip.UACTransaction
+	rtpConnA      *media.RTPConn
+	rtpConnB      *media.RTPConn
+	from          *proto.SIPAddress
+	aliceFromTag  string
+	serverTag     string
+	callID        string
+	calleeTag     string
+	bobCallID     string
+	to            *proto.SIPAddress
+	selectedPT    uint8
+	hasEarlyOffer bool
+	aliceSDPOffer *proto.SDP
+	aliceSDPBytes []byte
+	recordRoute   string
 }
 
 // SetProxyPasswordStore enables proxy authentication for INVITE and BYE
@@ -433,10 +464,7 @@ func (h *Handler) sendByeToSession(ctx context.Context, session *media.Session, 
 
 	log.Debug("file: sending BYE for playback complete")
 
-	_, serverPort, _ := net.SplitHostPort(h.serverAddr)
-	if serverPort == "" {
-		serverPort = "5060"
-	}
+	serverPort := h.serverPort
 
 	session.Cancel()
 
@@ -576,10 +604,7 @@ func (h *Handler) handleB2BUAInvite(ctx context.Context, req *proto.SIPMessage, 
 
 	calleeFrom := fmt.Sprintf("<%s>;tag=%s", from.URI, calleeTag)
 
-	_, serverPort, _ := net.SplitHostPort(h.serverAddr)
-	if serverPort == "" {
-		serverPort = "5060"
-	}
+	serverPort := h.serverPort
 	recordRoute := fmt.Sprintf("<sip:trec@%s:%s;lr>", h.serverIP, serverPort)
 	contactHeader := fmt.Sprintf("<sip:trec@%s:%s;transport=%s>", h.serverIP, serverPort, transport)
 
@@ -621,11 +646,17 @@ func (h *Handler) handleB2BUAInvite(ctx context.Context, req *proto.SIPMessage, 
 	}
 	h.store.StoreEarly(early)
 
-	go h.b2buaResponseLoop(responseCtx, req, tx, target, transportImpl, uac,
-		rtpConnA, rtpConnB, from, aliceFromTag, serverTag, callID,
-		calleeTag, bobCallID, to, selectedPT, hasEarlyOffer,
-		aliceSDPOffer, aliceSDPBytes, recordRoute,
-		bobInvite, serverPort, binding, aliceSupports100rel)
+	cc := &callCtx{
+		req: req, tx: tx, target: target, transportImpl: transportImpl, uac: uac,
+		rtpConnA: rtpConnA, rtpConnB: rtpConnB,
+		from: from, aliceFromTag: aliceFromTag, serverTag: serverTag, callID: callID,
+		calleeTag: calleeTag, bobCallID: bobCallID, to: to,
+		selectedPT: selectedPT, hasEarlyOffer: hasEarlyOffer,
+		aliceSDPOffer: aliceSDPOffer, aliceSDPBytes: aliceSDPBytes,
+		recordRoute: recordRoute,
+	}
+
+	go h.b2buaResponseLoop(responseCtx, cc, bobInvite, binding, aliceSupports100rel)
 
 	log.Debug("B2BUA: INVITE sent to Bob",
 		"bobContact", binding.ContactURI,
@@ -739,10 +770,7 @@ func (h *Handler) handleTrunkInvite(ctx context.Context, req *proto.SIPMessage, 
 	calleeTag := sip.GenerateTag()
 	bobCallID := sip.GenerateCallID()
 
-	_, serverPort, _ := net.SplitHostPort(h.serverAddr)
-	if serverPort == "" {
-		serverPort = "5060"
-	}
+	serverPort := h.serverPort
 
 	bobHostPort := net.JoinHostPort(trk.Host, strconv.Itoa(trk.Port))
 	bobTarget, bobTransport, err := sip.TargetFromContact(fmt.Sprintf("sip:%s@%s", dest, bobHostPort))
@@ -826,11 +854,17 @@ func (h *Handler) handleTrunkInvite(ctx context.Context, req *proto.SIPMessage, 
 	}
 	h.store.StoreEarly(early)
 
-	go h.trunkResponseLoop(responseCtx, req, tx, bobTarget, transportImpl, uac,
-		rtpConnA, rtpConnB, from, from.Tag, serverTag, callID,
-		calleeTag, bobCallID, to, selectedPT, hasEarlyOffer,
-		aliceSDPOffer, aliceSDPBytes, recordRoute,
-		bobInvite, serverPort, trk.Name, bobReqURI, sessionExpires)
+	cc := &callCtx{
+		req: req, tx: tx, target: bobTarget, transportImpl: transportImpl, uac: uac,
+		rtpConnA: rtpConnA, rtpConnB: rtpConnB,
+		from: from, aliceFromTag: from.Tag, serverTag: serverTag, callID: callID,
+		calleeTag: calleeTag, bobCallID: bobCallID, to: to,
+		selectedPT: selectedPT, hasEarlyOffer: hasEarlyOffer,
+		aliceSDPOffer: aliceSDPOffer, aliceSDPBytes: aliceSDPBytes,
+		recordRoute: recordRoute,
+	}
+
+	go h.trunkResponseLoop(responseCtx, cc, bobInvite, trk.Name, bobReqURI, sessionExpires)
 
 	log.Info("B2BUA: trunk INVITE sent",
 		"trunk", trk.Name,
@@ -858,35 +892,26 @@ func detect100relSupport(req *proto.SIPMessage, prackMgr *sip.ReliableProvisiona
 	return false
 }
 
-func (h *Handler) trunkResponseLoop(ctx context.Context,
-	req *proto.SIPMessage, tx sip.Transaction,
-	target *sip.Target, transportImpl sip.Transport, uac *sip.UACTransaction,
-	rtpConnA, rtpConnB *media.RTPConn,
-	from *proto.SIPAddress, aliceFromTag, serverTag, callID string,
-	calleeTag, bobCallID string, to *proto.SIPAddress,
-	selectedPT uint8, hasEarlyOffer bool,
-	aliceSDPOffer *proto.SDP, aliceSDPBytes []byte,
-	recordRoute string,
-	bobInvite *proto.SIPMessage, serverPort string,
-	trunkName string, bobReqURI string,
+func (h *Handler) trunkResponseLoop(ctx context.Context, cc *callCtx,
+	bobInvite *proto.SIPMessage, trunkName, bobReqURI string,
 	sessionExpires time.Duration,
 ) {
 	ctx = logutil.WithValues(ctx,
-		"bobCallID", bobCallID,
-		"bobBranch", uac.Branch,
+		"bobCallID", cc.bobCallID,
+		"bobBranch", cc.uac.Branch,
 		"trunk", trunkName)
 	log := logutil.FromContext(ctx)
 
 	log.Debug("B2BUA: trunk response loop started")
 
-	defer h.store.RemoveEarly(callID)
+	defer h.store.RemoveEarly(cc.callID)
 
-	if err := uac.Send(bobInvite); err != nil {
-		rtpConnA.Close()
-		rtpConnB.Close()
+	if err := cc.uac.Send(bobInvite); err != nil {
+		cc.rtpConnA.Close()
+		cc.rtpConnB.Close()
 		h.trunkMgr.ReleaseChannel(trunkName)
 		log.Error("B2BUA: trunk INVITE send failed", "error", err)
-		tx.Respond(proto.NewResponse(req, 502, "Bad Gateway"))
+		cc.tx.Respond(proto.NewResponse(cc.req, 502, "Bad Gateway"))
 		return
 	}
 	log.Info("B2BUA: trunk INVITE sent", "dest", bobReqURI)
@@ -895,12 +920,12 @@ func (h *Handler) trunkResponseLoop(ctx context.Context,
 		select {
 		case <-ctx.Done():
 			log.Info("B2BUA: trunk response loop canceled")
-			rtpConnA.Close()
-			rtpConnB.Close()
+			cc.rtpConnA.Close()
+			cc.rtpConnB.Close()
 			h.trunkMgr.ReleaseChannel(trunkName)
 			return
 
-		case resp := <-uac.Responses:
+		case resp := <-cc.uac.Responses:
 			sc := resp.StatusCode()
 
 			if sc >= 100 && sc < 200 {
@@ -908,8 +933,8 @@ func (h *Handler) trunkResponseLoop(ctx context.Context,
 				if idx := strings.Index(reason, " "); idx != -1 {
 					reason = reason[idx+1:]
 				}
-				prov := proto.NewResponse(req, sc, reason)
-				prov.Headers.Set("To", []string{fmt.Sprintf("<%s>;tag=%s", to.URI, serverTag)})
+				prov := proto.NewResponse(cc.req, sc, reason)
+				prov.Headers.Set("To", []string{fmt.Sprintf("<%s>;tag=%s", cc.to.URI, cc.serverTag)})
 				if len(resp.Body) > 0 {
 					prov.Body = resp.Body
 					if ct := resp.Headers["Content-Type"]; len(ct) > 0 {
@@ -917,59 +942,46 @@ func (h *Handler) trunkResponseLoop(ctx context.Context,
 					}
 					prov.Headers.Set("Content-Length", []string{strconv.Itoa(len(resp.Body))})
 				}
-				tx.Respond(prov)
+				cc.tx.Respond(prov)
 				continue
 			}
 
 			if sc == 200 {
-				h.handleTrunk200OK(ctx, resp, req, tx, target, transportImpl,
-					rtpConnA, rtpConnB, from, aliceFromTag, serverTag, callID,
-					calleeTag, bobCallID, to, selectedPT, hasEarlyOffer,
-					aliceSDPOffer, aliceSDPBytes, recordRoute, serverPort,
-					trunkName, bobReqURI, sessionExpires)
+				h.handleTrunk200OK(ctx, cc, resp, trunkName, bobReqURI, sessionExpires)
 				return
 			}
 
 			if sc >= 300 {
-				rtpConnA.Close()
-				rtpConnB.Close()
+				cc.rtpConnA.Close()
+				cc.rtpConnB.Close()
 				h.trunkMgr.ReleaseChannel(trunkName)
 				log.Info("B2BUA: trunk error response", "statusCode", sc, "reason", resp.Status())
 				errReason := resp.Status()
 				if idx := strings.Index(errReason, " "); idx != -1 {
 					errReason = errReason[idx+1:]
 				}
-				errResp := proto.NewResponse(req, sc, errReason)
-				tx.Respond(errResp)
+				errResp := proto.NewResponse(cc.req, sc, errReason)
+				cc.tx.Respond(errResp)
 				return
 			}
 
-		case err := <-uac.Errors:
-			rtpConnA.Close()
-			rtpConnB.Close()
+		case err := <-cc.uac.Errors:
+			cc.rtpConnA.Close()
+			cc.rtpConnB.Close()
 			h.trunkMgr.ReleaseChannel(trunkName)
 			log.Error("B2BUA: trunk INVITE timed out", "error", err)
-			tx.Respond(proto.NewResponse(req, 408, "Request Timeout"))
+			cc.tx.Respond(proto.NewResponse(cc.req, 408, "Request Timeout"))
 			return
 		}
 	}
 }
 
-func (h *Handler) handleTrunk200OK(
-	ctx context.Context,
-	resp *proto.SIPMessage, req *proto.SIPMessage, tx sip.Transaction,
-	target *sip.Target, transportImpl sip.Transport,
-	rtpConnA, rtpConnB *media.RTPConn,
-	from *proto.SIPAddress, aliceFromTag, serverTag, callID string,
-	calleeTag, bobCallID string, to *proto.SIPAddress,
-	selectedPT uint8, hasEarlyOffer bool,
-	aliceSDPOffer *proto.SDP, aliceSDPBytes []byte,
-	recordRoute string, serverPort string,
-	trunkName string, bobReqURI string,
+func (h *Handler) handleTrunk200OK(ctx context.Context, cc *callCtx,
+	resp *proto.SIPMessage, trunkName, bobReqURI string,
 	sessionExpires time.Duration,
 ) {
 	ctx = logutil.WithValues(ctx,
-		"bobCallID", bobCallID,
+		"bobCallID", cc.bobCallID,
 		"bobTo", resp.Headers.GetFirst("To"))
 	log := logutil.FromContext(ctx)
 
@@ -977,16 +989,16 @@ func (h *Handler) handleTrunk200OK(
 
 	if ctx.Err() != nil {
 		log.Info("B2BUA: call was canceled, discarding trunk 200 OK")
-		rtpConnA.Close()
-		rtpConnB.Close()
+		cc.rtpConnA.Close()
+		cc.rtpConnB.Close()
 		h.trunkMgr.ReleaseChannel(trunkName)
 		return
 	}
 
 	bobTo, err := resp.To()
 	if err != nil {
-		rtpConnA.Close()
-		rtpConnB.Close()
+		cc.rtpConnA.Close()
+		cc.rtpConnB.Close()
 		h.trunkMgr.ReleaseChannel(trunkName)
 		log.Error("B2BUA: missing To in trunk 200 OK")
 		return
@@ -994,8 +1006,8 @@ func (h *Handler) handleTrunk200OK(
 
 	bobSDP, err := proto.UnmarshalSDPBytes(resp.Body)
 	if err != nil {
-		rtpConnA.Close()
-		rtpConnB.Close()
+		cc.rtpConnA.Close()
+		cc.rtpConnB.Close()
 		h.trunkMgr.ReleaseChannel(trunkName)
 		log.Error("B2BUA: failed to parse trunk SDP", "error", err)
 		return
@@ -1007,47 +1019,47 @@ func (h *Handler) handleTrunk200OK(
 	ackToTrunk := proto.NewRequest(proto.SIPMethodACK, bobReqURI)
 	ackToTrunk.Headers.Add("Via",
 		fmt.Sprintf("SIP/2.0/%s %s:%s;branch=%s;rport",
-			sip.TransportName(transportImpl), h.serverIP, serverPort, sip.GenerateBranch()))
-	ackToTrunk.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s", from.URI, calleeTag))
-	ackToTrunk.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s", to.URI, bobTo.Tag))
-	ackToTrunk.Headers.Add("Call-ID", bobCallID)
+			sip.TransportName(cc.transportImpl), h.serverIP, h.serverPort, sip.GenerateBranch()))
+	ackToTrunk.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s", cc.from.URI, cc.calleeTag))
+	ackToTrunk.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s", cc.to.URI, bobTo.Tag))
+	ackToTrunk.Headers.Add("Call-ID", cc.bobCallID)
 	ackToTrunk.CSeq = proto.CSeq{Method: proto.SIPMethodACK, Seq: 1}
 	ackToTrunk.Headers.Add("Max-Forwards", "70")
 	ackToTrunk.Headers.Add("Content-Length", "0")
-	if err := transportImpl.Send(ackToTrunk, target); err != nil {
+	if err := cc.transportImpl.Send(ackToTrunk, cc.target); err != nil {
 		log.Error("B2BUA: failed to send ACK to trunk", "error", err)
 	} else {
 		log.Info("B2BUA: sent ACK to trunk", "dest", bobReqURI)
 	}
 
 	var alice200SDP []byte
-	if hasEarlyOffer {
-		alice200SDP = aliceSDPBytes
+	if cc.hasEarlyOffer {
+		alice200SDP = cc.aliceSDPBytes
 	} else {
-		aliceOffer := media.BuildOffer(rtpConnA.LocalAddr().(*net.UDPAddr).Port, selectedPT, h.serverIP)
+		aliceOffer := media.BuildOffer(cc.rtpConnA.LocalAddr().(*net.UDPAddr).Port, cc.selectedPT, h.serverIP)
 		alice200SDP, _ = aliceOffer.Marshal()
 	}
 
-	alice200 := proto.NewResponse(req, 200, "OK")
-	toHeader := req.Headers.GetFirst("To")
-	alice200.Headers.Set("To", []string{toHeader + ";tag=" + serverTag})
+	alice200 := proto.NewResponse(cc.req, 200, "OK")
+	toHeader := cc.req.Headers.GetFirst("To")
+	alice200.Headers.Set("To", []string{toHeader + ";tag=" + cc.serverTag})
 	alice200.Body = alice200SDP
 	alice200.Headers.Set("Content-Type", []string{"application/sdp"})
 	alice200.Headers["Allow"] = []string{"INVITE, ACK, BYE, CANCEL, OPTIONS, REGISTER"}
-	alice200.Headers.Add("Record-Route", recordRoute)
-	aliceContactHeader := fmt.Sprintf("<sip:trec@%s:%s;transport=%s>", h.serverIP, serverPort, sip.TransportName(tx.Transport()))
+	alice200.Headers.Add("Record-Route", cc.recordRoute)
+	aliceContactHeader := fmt.Sprintf("<sip:trec@%s:%s;transport=%s>", h.serverIP, h.serverPort, sip.TransportName(cc.tx.Transport()))
 	alice200.Headers.Add("Contact", aliceContactHeader)
-	tx.Respond(alice200)
+	cc.tx.Respond(alice200)
 	log.Info("B2BUA: sent 200 OK to Alice for trunk call")
 
 	aliceKey := media.SessionKey{
-		CallID:    callID,
-		RemoteTag: aliceFromTag,
-		LocalTag:  serverTag,
+		CallID:    cc.callID,
+		RemoteTag: cc.aliceFromTag,
+		LocalTag:  cc.serverTag,
 	}
-	aliceSess := media.NewSession(ctx, aliceKey, rtpConnA, selectedPT, rtpConnA.LocalAddr())
-	if hasEarlyOffer {
-		aIP, aPort := h.resolveClientAddr(aliceSDPOffer)
+	aliceSess := media.NewSession(ctx, aliceKey, cc.rtpConnA, cc.selectedPT, cc.rtpConnA.LocalAddr())
+	if cc.hasEarlyOffer {
+		aIP, aPort := h.resolveClientAddr(cc.aliceSDPOffer)
 		aRTPAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", aIP, aPort))
 		if err != nil {
 			log.Error("failed to resolve Alice RTP address", "clientIP", aIP, "error", err)
@@ -1058,60 +1070,60 @@ func (h *Handler) handleTrunk200OK(
 	h.sm.Add(aliceSess)
 
 	bobKey := media.SessionKey{
-		CallID:    bobCallID,
-		RemoteTag: calleeTag,
+		CallID:    cc.bobCallID,
+		RemoteTag: cc.calleeTag,
 		LocalTag:  bobTo.Tag,
 	}
-	bobSess := media.NewSession(ctx, bobKey, rtpConnB, selectedPT, rtpConnB.LocalAddr())
+	bobSess := media.NewSession(ctx, bobKey, cc.rtpConnB, cc.selectedPT, cc.rtpConnB.LocalAddr())
 	bobSess.SetRemoteAddr(bobRTPAddr)
 	h.sm.Add(bobSess)
 
-	bridge := media.NewBridge(ctx, rtpConnA, rtpConnB)
+	bridge := media.NewBridge(ctx, cc.rtpConnA, cc.rtpConnB)
 
-	aliceContact := req.Headers.GetFirst("Contact")
-	serverContact := fmt.Sprintf("<sip:trec@%s:%s>", h.serverIP, serverPort)
+	aliceContact := cc.req.Headers.GetFirst("Contact")
+	serverContact := fmt.Sprintf("<sip:trec@%s:%s>", h.serverIP, h.serverPort)
 
 	aliceDialogID := sip.DialogID{
-		CallID:    callID,
-		LocalTag:  serverTag,
-		RemoteTag: aliceFromTag,
+		CallID:    cc.callID,
+		LocalTag:  cc.serverTag,
+		RemoteTag: cc.aliceFromTag,
 	}
-	aliceDialog := sip.NewDialog(aliceDialogID, serverContact, from.URI, aliceContact)
+	aliceDialog := sip.NewDialog(aliceDialogID, serverContact, cc.from.URI, aliceContact)
 	aliceDialog.SetState(sip.DialogStateConfirmed)
 
 	bobDialogID := sip.DialogID{
-		CallID:    bobCallID,
-		LocalTag:  calleeTag,
+		CallID:    cc.bobCallID,
+		LocalTag:  cc.calleeTag,
 		RemoteTag: bobTo.Tag,
 	}
-	bobDialog := sip.NewDialog(bobDialogID, serverContact, to.URI, bobReqURI)
+	bobDialog := sip.NewDialog(bobDialogID, serverContact, cc.to.URI, bobReqURI)
 	bobDialog.SetState(sip.DialogStateConfirmed)
 
-	aliceTarget := tx.Target()
+	aliceTarget := cc.tx.Target()
 	call := &Call{
-		AliceCallID:     callID,
-		BobCallID:       bobCallID,
+		AliceCallID:     cc.callID,
+		BobCallID:       cc.bobCallID,
 		Bridge:          bridge,
 		AliceSess:       aliceSess,
 		BobSess:         bobSess,
 		BobRTPAddr:      bobRTPAddr,
 		BobContactURI:   bobReqURI,
-		BobTransport:    transportImpl,
-		BobTarget:       target,
-		BobCalleeTag:    calleeTag,
+		BobTransport:    cc.transportImpl,
+		BobTarget:       cc.target,
+		BobCalleeTag:    cc.calleeTag,
 		BobRemoteTag:    bobTo.Tag,
-		AliceFromTag:    aliceFromTag,
-		AliceServerTag:  serverTag,
+		AliceFromTag:    cc.aliceFromTag,
+		AliceServerTag:  cc.serverTag,
 		AliceContactURI: aliceContact,
 		AliceTarget:     &aliceTarget,
 		AliceDialog:     aliceDialog,
 		BobDialog:       bobDialog,
-		AliceTransport:  tx.Transport(),
+		AliceTransport:  cc.tx.Transport(),
 		TrunkName:       trunkName,
 	}
 
-	if hasEarlyOffer {
-		aIP, aPort := h.resolveClientAddr(aliceSDPOffer)
+	if cc.hasEarlyOffer {
+		aIP, aPort := h.resolveClientAddr(cc.aliceSDPOffer)
 		aRTPAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", aIP, aPort))
 		if err != nil {
 			log.Error("failed to resolve Alice RTP address", "clientIP", aIP, "error", err)
@@ -1131,7 +1143,7 @@ func (h *Handler) handleTrunk200OK(
 	h.store.Store(call)
 
 	if sessionExpires > 0 {
-		go h.trunkSessionTimer(ctx, callID, trunkName, sessionExpires)
+		go h.trunkSessionTimer(ctx, cc.callID, trunkName, sessionExpires)
 	}
 }
 
@@ -1152,10 +1164,7 @@ func (h *Handler) trunkSessionTimer(ctx context.Context, callID, trunkName strin
 		return
 	}
 
-	_, serverPort, _ := net.SplitHostPort(h.serverAddr)
-	if serverPort == "" {
-		serverPort = "5060"
-	}
+	serverPort := h.serverPort
 
 	// Send BYE to Alice
 	fwdBye := proto.NewRequest(proto.SIPMethodBYE, sip.StripBrackets(call.AliceContactURI))
@@ -1199,22 +1208,12 @@ func (h *Handler) trunkSessionTimer(ctx context.Context, callID, trunkName strin
 	}
 }
 
-func (h *Handler) b2buaResponseLoop(ctx context.Context,
-	req *proto.SIPMessage, tx sip.Transaction,
-	target *sip.Target, transportImpl sip.Transport, uac *sip.UACTransaction,
-	rtpConnA, rtpConnB *media.RTPConn,
-	from *proto.SIPAddress, aliceFromTag, serverTag, callID string,
-	calleeTag, bobCallID string, to *proto.SIPAddress,
-	selectedPT uint8, hasEarlyOffer bool,
-	aliceSDPOffer *proto.SDP, aliceSDPBytes []byte,
-	recordRoute string,
-	bobInvite *proto.SIPMessage, serverPort string,
-	binding *sip.Binding,
-	aliceSupports100rel bool,
+func (h *Handler) b2buaResponseLoop(ctx context.Context, cc *callCtx,
+	bobInvite *proto.SIPMessage, binding *sip.Binding, aliceSupports100rel bool,
 ) {
 	ctx = logutil.WithValues(ctx,
-		"bobCallID", bobCallID,
-		"bobBranch", uac.Branch,
+		"bobCallID", cc.bobCallID,
+		"bobBranch", cc.uac.Branch,
 		"bobContact", binding.ContactURI)
 	log := logutil.FromContext(ctx)
 
@@ -1222,19 +1221,19 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context,
 
 	// Clean up the early call tracking when the response loop exits
 	// (whether by answer, error, or cancellation).
-	defer h.store.RemoveEarly(callID)
+	defer h.store.RemoveEarly(cc.callID)
 
-	if err := uac.Send(bobInvite); err != nil {
-		rtpConnA.Close()
-		rtpConnB.Close()
+	if err := cc.uac.Send(bobInvite); err != nil {
+		cc.rtpConnA.Close()
+		cc.rtpConnB.Close()
 		log.Error("B2BUA: failed to send INVITE to Bob", "error", err)
-		tx.Respond(proto.NewResponse(req, 502, "Bad Gateway"))
+		cc.tx.Respond(proto.NewResponse(cc.req, 502, "Bad Gateway"))
 		return
 	}
-	log.Info("B2BUA: sent INVITE to Bob", "contact", binding.ContactURI, "branch", uac.Branch)
+	log.Info("B2BUA: sent INVITE to Bob", "contact", binding.ContactURI, "branch", cc.uac.Branch)
 
 	defer func() {
-		h.cancelPRACK(callID)
+		h.cancelPRACK(cc.callID)
 	}()
 
 	prackDone := make(chan struct{})
@@ -1246,11 +1245,11 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context,
 			return
 		case <-ctx.Done():
 			log.Info("B2BUA: response loop canceled")
-			rtpConnA.Close()
-			rtpConnB.Close()
-			h.cancelPRACK(callID)
+			cc.rtpConnA.Close()
+			cc.rtpConnB.Close()
+			h.cancelPRACK(cc.callID)
 			return
-		case resp := <-uac.Responses:
+		case resp := <-cc.uac.Responses:
 			sc := resp.StatusCode()
 
 			if sc >= 100 && sc < 200 {
@@ -1260,8 +1259,8 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context,
 					if idx := strings.Index(reason, " "); idx != -1 {
 						reason = reason[idx+1:]
 					}
-					prov := proto.NewResponse(req, sc, reason)
-					prov.Headers.Set("To", []string{fmt.Sprintf("<%s>;tag=%s", to.URI, serverTag)})
+					prov := proto.NewResponse(cc.req, sc, reason)
+					prov.Headers.Set("To", []string{fmt.Sprintf("<%s>;tag=%s", cc.to.URI, cc.serverTag)})
 					if len(resp.Body) > 0 {
 						prov.Body = resp.Body
 						if ct := resp.Headers["Content-Type"]; len(ct) > 0 {
@@ -1285,16 +1284,16 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context,
 						}
 						prack := proto.NewRequest(proto.SIPMethodPRACK, binding.ContactURI)
 						prack.Headers.Add("Via", fmt.Sprintf("SIP/2.0/%s %s:%s;branch=%s",
-							sip.TransportName(transportImpl), h.serverIP, serverPort, sip.GenerateBranch()))
-						prack.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s", from.URI, calleeTag))
-						prack.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s", to.URI, bobRespTag))
-						prack.Headers.Add("Call-ID", bobCallID)
+							sip.TransportName(cc.transportImpl), h.serverIP, h.serverPort, sip.GenerateBranch()))
+						prack.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s", cc.from.URI, cc.calleeTag))
+						prack.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s", cc.to.URI, bobRespTag))
+						prack.Headers.Add("Call-ID", cc.bobCallID)
 						prack.CSeq = proto.CSeq{Method: proto.SIPMethodPRACK, Seq: resp.CSeq.Seq + 1}
 						prack.Headers.Add("RAck", rseqVal+" "+cseqVal+" INVITE")
 						prack.Headers.Add("Max-Forwards", "70")
 						prack.Headers.Add("Content-Length", "0")
 
-						prackTx := h.uacMgr.NewTransaction(ctx, proto.SIPMethodPRACK, transportImpl, target)
+						prackTx := h.uacMgr.NewTransaction(ctx, proto.SIPMethodPRACK, cc.transportImpl, cc.target)
 						if err := prackTx.Send(prack); err != nil {
 							log.Error("B2BUA: failed to send PRACK", "error", err)
 						} else {
@@ -1307,68 +1306,55 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context,
 						prackTimeout := func() {
 							log.Warn("B2BUA: PRACK timeout, tearing down call", "rseq",
 								prov.Headers.GetFirst("RSeq"))
-							rtpConnA.Close()
-							rtpConnB.Close()
-							tx.Respond(proto.NewResponse(req, 504, "PRACK Timeout"))
+							cc.rtpConnA.Close()
+							cc.rtpConnB.Close()
+							cc.tx.Respond(proto.NewResponse(cc.req, 504, "PRACK Timeout"))
 							close(prackDone)
 						}
-						h.prackMgr.SendReliable(ctx, tx, prov, callID, prackTimeout)
+						h.prackMgr.SendReliable(ctx, cc.tx, prov, cc.callID, prackTimeout)
 					} else {
-						tx.Respond(prov)
+						cc.tx.Respond(prov)
 					}
 				}
 				continue
 			}
 
 			if sc == 200 {
-				h.cancelPRACK(callID)
-				h.handleBob200OK(ctx, resp, req, tx, target, transportImpl,
-					rtpConnA, rtpConnB, from, aliceFromTag, serverTag, callID,
-					calleeTag, bobCallID, to, selectedPT, hasEarlyOffer,
-					aliceSDPOffer, aliceSDPBytes, recordRoute, serverPort,
-					binding)
+				h.cancelPRACK(cc.callID)
+				h.handleBob200OK(ctx, cc, resp, binding)
 				return
 			}
 
 			if sc >= 300 {
-				h.cancelPRACK(callID)
-				rtpConnA.Close()
-				rtpConnB.Close()
+				h.cancelPRACK(cc.callID)
+				cc.rtpConnA.Close()
+				cc.rtpConnB.Close()
 				log.Info("B2BUA: Bob error response, forwarding to Alice", "statusCode", sc, "reason", resp.Status())
 				errReason := resp.Status()
 				if idx := strings.Index(errReason, " "); idx != -1 {
 					errReason = errReason[idx+1:]
 				}
-				errResp := proto.NewResponse(req, sc, errReason)
-				tx.Respond(errResp)
+				errResp := proto.NewResponse(cc.req, sc, errReason)
+				cc.tx.Respond(errResp)
 				return
 			}
 
-		case err := <-uac.Errors:
-			h.cancelPRACK(callID)
-			rtpConnA.Close()
-			rtpConnB.Close()
+		case err := <-cc.uac.Errors:
+			h.cancelPRACK(cc.callID)
+			cc.rtpConnA.Close()
+			cc.rtpConnB.Close()
 			log.Error("B2BUA: Bob INVITE timed out", "error", err)
-			tx.Respond(proto.NewResponse(req, 408, "Request Timeout"))
+			cc.tx.Respond(proto.NewResponse(cc.req, 408, "Request Timeout"))
 			return
 		}
 	}
 }
 
-func (h *Handler) handleBob200OK(
-	ctx context.Context,
-	resp *proto.SIPMessage, req *proto.SIPMessage, tx sip.Transaction,
-	target *sip.Target, transportImpl sip.Transport,
-	rtpConnA, rtpConnB *media.RTPConn,
-	from *proto.SIPAddress, aliceFromTag, serverTag, callID string,
-	calleeTag, bobCallID string, to *proto.SIPAddress,
-	selectedPT uint8, hasEarlyOffer bool,
-	aliceSDPOffer *proto.SDP, aliceSDPBytes []byte,
-	recordRoute string, serverPort string,
-	binding *sip.Binding,
+func (h *Handler) handleBob200OK(ctx context.Context, cc *callCtx,
+	resp *proto.SIPMessage, binding *sip.Binding,
 ) {
 	ctx = logutil.WithValues(ctx,
-		"bobCallID", bobCallID,
+		"bobCallID", cc.bobCallID,
 		"bobTo", resp.Headers.GetFirst("To"),
 		"bobHasSDP", len(resp.Body) > 0)
 	log := logutil.FromContext(ctx)
@@ -1380,23 +1366,23 @@ func (h *Handler) handleBob200OK(
 	// from Alice), discard Bob's answer per RFC 3261 §12.1.1.
 	if ctx.Err() != nil {
 		log.Info("B2BUA: call was canceled, discarding Bob's 200 OK")
-		rtpConnA.Close()
-		rtpConnB.Close()
+		cc.rtpConnA.Close()
+		cc.rtpConnB.Close()
 		return
 	}
 
 	bobTo, err := resp.To()
 	if err != nil {
-		rtpConnA.Close()
-		rtpConnB.Close()
+		cc.rtpConnA.Close()
+		cc.rtpConnB.Close()
 		log.Error("B2BUA: missing To in Bob's 200 OK")
 		return
 	}
 
 	bobSDP, err := proto.UnmarshalSDPBytes(resp.Body)
 	if err != nil {
-		rtpConnA.Close()
-		rtpConnB.Close()
+		cc.rtpConnA.Close()
+		cc.rtpConnB.Close()
 		log.Error("B2BUA: failed to parse Bob's SDP", "error", err)
 		return
 	}
@@ -1407,47 +1393,47 @@ func (h *Handler) handleBob200OK(
 	ackToBob := proto.NewRequest(proto.SIPMethodACK, binding.ContactURI)
 	ackToBob.Headers.Add("Via",
 		fmt.Sprintf("SIP/2.0/%s %s:%s;branch=%s;rport",
-			sip.TransportName(transportImpl), h.serverIP, serverPort, sip.GenerateBranch()))
-	ackToBob.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s", from.URI, calleeTag))
-	ackToBob.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s", to.URI, bobTo.Tag))
-	ackToBob.Headers.Add("Call-ID", bobCallID)
+			sip.TransportName(cc.transportImpl), h.serverIP, h.serverPort, sip.GenerateBranch()))
+	ackToBob.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s", cc.from.URI, cc.calleeTag))
+	ackToBob.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s", cc.to.URI, bobTo.Tag))
+	ackToBob.Headers.Add("Call-ID", cc.bobCallID)
 	ackToBob.CSeq = proto.CSeq{Method: proto.SIPMethodACK, Seq: 1}
 	ackToBob.Headers.Add("Max-Forwards", "70")
 	ackToBob.Headers.Add("Content-Length", "0")
-	if err := transportImpl.Send(ackToBob, target); err != nil {
+	if err := cc.transportImpl.Send(ackToBob, cc.target); err != nil {
 		log.Error("B2BUA: failed to send ACK to Bob", "error", err)
 	} else {
 		log.Info("B2BUA: sent ACK to Bob", "contact", binding.ContactURI)
 	}
 
 	var alice200SDP []byte
-	if hasEarlyOffer {
-		alice200SDP = aliceSDPBytes
+	if cc.hasEarlyOffer {
+		alice200SDP = cc.aliceSDPBytes
 	} else {
-		aliceOffer := media.BuildOffer(rtpConnA.LocalAddr().(*net.UDPAddr).Port, selectedPT, h.serverIP)
+		aliceOffer := media.BuildOffer(cc.rtpConnA.LocalAddr().(*net.UDPAddr).Port, cc.selectedPT, h.serverIP)
 		alice200SDP, _ = aliceOffer.Marshal()
 	}
 
-	alice200 := proto.NewResponse(req, 200, "OK")
-	toHeader := req.Headers.GetFirst("To")
-	alice200.Headers.Set("To", []string{toHeader + ";tag=" + serverTag})
+	alice200 := proto.NewResponse(cc.req, 200, "OK")
+	toHeader := cc.req.Headers.GetFirst("To")
+	alice200.Headers.Set("To", []string{toHeader + ";tag=" + cc.serverTag})
 	alice200.Body = alice200SDP
 	alice200.Headers.Set("Content-Type", []string{"application/sdp"})
 	alice200.Headers["Allow"] = []string{"INVITE, ACK, BYE, CANCEL, OPTIONS, REGISTER"}
-	alice200.Headers.Add("Record-Route", recordRoute)
-	aliceContactHeader := fmt.Sprintf("<sip:trec@%s:%s;transport=%s>", h.serverIP, serverPort, sip.TransportName(tx.Transport()))
+	alice200.Headers.Add("Record-Route", cc.recordRoute)
+	aliceContactHeader := fmt.Sprintf("<sip:trec@%s:%s;transport=%s>", h.serverIP, h.serverPort, sip.TransportName(cc.tx.Transport()))
 	alice200.Headers.Add("Contact", aliceContactHeader)
-	tx.Respond(alice200)
+	cc.tx.Respond(alice200)
 	log.Info("B2BUA: sent 200 OK to Alice")
 
 	aliceKey := media.SessionKey{
-		CallID:    callID,
-		RemoteTag: aliceFromTag,
-		LocalTag:  serverTag,
+		CallID:    cc.callID,
+		RemoteTag: cc.aliceFromTag,
+		LocalTag:  cc.serverTag,
 	}
-	aliceSess := media.NewSession(ctx, aliceKey, rtpConnA, selectedPT, rtpConnA.LocalAddr())
-	if hasEarlyOffer {
-		aIP, aPort := h.resolveClientAddr(aliceSDPOffer)
+	aliceSess := media.NewSession(ctx, aliceKey, cc.rtpConnA, cc.selectedPT, cc.rtpConnA.LocalAddr())
+	if cc.hasEarlyOffer {
+		aIP, aPort := h.resolveClientAddr(cc.aliceSDPOffer)
 		aRTPAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", aIP, aPort))
 		if err != nil {
 			log.Error("failed to resolve Alice RTP address", "clientIP", aIP, "error", err)
@@ -1458,60 +1444,60 @@ func (h *Handler) handleBob200OK(
 	h.sm.Add(aliceSess)
 
 	bobKey := media.SessionKey{
-		CallID:    bobCallID,
-		RemoteTag: calleeTag,
+		CallID:    cc.bobCallID,
+		RemoteTag: cc.calleeTag,
 		LocalTag:  bobTo.Tag,
 	}
-	bobSess := media.NewSession(ctx, bobKey, rtpConnB, selectedPT, rtpConnB.LocalAddr())
+	bobSess := media.NewSession(ctx, bobKey, cc.rtpConnB, cc.selectedPT, cc.rtpConnB.LocalAddr())
 	bobSess.SetRemoteAddr(bobRTPAddr)
 	h.sm.Add(bobSess)
 
-	bridge := media.NewBridge(ctx, rtpConnA, rtpConnB)
+	bridge := media.NewBridge(ctx, cc.rtpConnA, cc.rtpConnB)
 
-	aliceContact := req.Headers.GetFirst("Contact")
+	aliceContact := cc.req.Headers.GetFirst("Contact")
 
-	serverContact := fmt.Sprintf("<sip:trec@%s:%s>", h.serverIP, serverPort)
+	serverContact := fmt.Sprintf("<sip:trec@%s:%s>", h.serverIP, h.serverPort)
 
 	aliceDialogID := sip.DialogID{
-		CallID:    callID,
-		LocalTag:  serverTag,
-		RemoteTag: aliceFromTag,
+		CallID:    cc.callID,
+		LocalTag:  cc.serverTag,
+		RemoteTag: cc.aliceFromTag,
 	}
-	aliceDialog := sip.NewDialog(aliceDialogID, serverContact, from.URI, aliceContact)
+	aliceDialog := sip.NewDialog(aliceDialogID, serverContact, cc.from.URI, aliceContact)
 	aliceDialog.SetState(sip.DialogStateConfirmed)
 
 	bobDialogID := sip.DialogID{
-		CallID:    bobCallID,
-		LocalTag:  calleeTag,
+		CallID:    cc.bobCallID,
+		LocalTag:  cc.calleeTag,
 		RemoteTag: bobTo.Tag,
 	}
-	bobDialog := sip.NewDialog(bobDialogID, serverContact, to.URI, binding.ContactURI)
+	bobDialog := sip.NewDialog(bobDialogID, serverContact, cc.to.URI, binding.ContactURI)
 	bobDialog.SetState(sip.DialogStateConfirmed)
 
-	aliceTarget := tx.Target()
+	aliceTarget := cc.tx.Target()
 	call := &Call{
-		AliceCallID:     callID,
-		BobCallID:       bobCallID,
+		AliceCallID:     cc.callID,
+		BobCallID:       cc.bobCallID,
 		Bridge:          bridge,
 		AliceSess:       aliceSess,
 		BobSess:         bobSess,
 		BobRTPAddr:      bobRTPAddr,
 		BobContactURI:   binding.ContactURI,
-		BobTransport:    transportImpl,
-		BobTarget:       target,
-		BobCalleeTag:    calleeTag,
+		BobTransport:    cc.transportImpl,
+		BobTarget:       cc.target,
+		BobCalleeTag:    cc.calleeTag,
 		BobRemoteTag:    bobTo.Tag,
-		AliceFromTag:    aliceFromTag,
-		AliceServerTag:  serverTag,
+		AliceFromTag:    cc.aliceFromTag,
+		AliceServerTag:  cc.serverTag,
 		AliceContactURI: aliceContact,
 		AliceTarget:     &aliceTarget,
 		AliceDialog:     aliceDialog,
 		BobDialog:       bobDialog,
-		AliceTransport:  tx.Transport(),
+		AliceTransport:  cc.tx.Transport(),
 	}
 
-	if hasEarlyOffer {
-		aIP, aPort := h.resolveClientAddr(aliceSDPOffer)
+	if cc.hasEarlyOffer {
+		aIP, aPort := h.resolveClientAddr(cc.aliceSDPOffer)
 		aRTPAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", aIP, aPort))
 		if err != nil {
 			log.Error("failed to resolve Alice RTP address", "clientIP", aIP, "error", err)
@@ -1651,10 +1637,7 @@ func (h *Handler) HandleBye(ctx context.Context, req *proto.SIPMessage, tx sip.T
 		return
 	}
 
-	_, serverPort, _ := net.SplitHostPort(h.serverAddr)
-	if serverPort == "" {
-		serverPort = "5060"
-	}
+	serverPort := h.serverPort
 
 	call := h.store.Get(req.Headers.GetFirst("Call-ID"))
 	if call != nil {
