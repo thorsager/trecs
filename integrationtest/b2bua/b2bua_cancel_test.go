@@ -559,6 +559,7 @@ func TestIntegration_B2BUACancel_WithPRACK(t *testing.T) {
 	defer ts.Stop()
 
 	pb := newPrackBob(t, ts)
+	pb.inviteOKSignal = make(chan struct{}, 1)
 	defer pb.close()
 	pb.register(t)
 	time.Sleep(100 * time.Millisecond)
@@ -592,6 +593,7 @@ func TestIntegration_B2BUACancel_WithPRACK(t *testing.T) {
 	// Read responses after CANCEL: expect 200 OK for CANCEL + 487 for INVITE.
 	gotCancel200 := false
 	gotInvite487 := false
+	bobAnsweredLate := false
 	for i := 0; i < 10; i++ {
 		msg = alice.readResponse(2 * time.Second)
 		if msg == "" {
@@ -603,9 +605,18 @@ func TestIntegration_B2BUACancel_WithPRACK(t *testing.T) {
 			if strings.Contains(msg, "CANCEL") {
 				gotCancel200 = true
 			}
+			if strings.Contains(msg, "CSeq: 1 INVITE") {
+				require.Fail(t, "Server forwarded a late 200 OK for INVITE after CANCEL")
+			}
 		}
 		if strings.Contains(msg, "487 Request Terminated") {
 			gotInvite487 = true
+		}
+		// Once the INVITE is terminated, allow Bob to send a late 200 OK
+		// and verify the server discards it (no bridge is created).
+		if gotInvite487 && !bobAnsweredLate {
+			pb.inviteOKSignal <- struct{}{}
+			bobAnsweredLate = true
 		}
 	}
 

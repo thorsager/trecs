@@ -47,6 +47,10 @@ type prackBob struct {
 	// readLoop dispatches PRACK messages here
 	prackCh chan string
 
+	// prackHandled is signaled after handlePRACK completes so tests can
+	// verify that Bob received and processed the server's PRACK.
+	prackHandled chan struct{}
+
 	expectedClientSSRC uint32
 	expectedBobSSRC    uint32
 
@@ -87,6 +91,7 @@ func newPrackBob(t *testing.T, ts *integrationtest.TestServer) *prackBob {
 		byeReceived:      make(chan struct{}),
 		rtpCount:         make(chan int, 1),
 		prackCh:          make(chan string, 1),
+		prackHandled:     make(chan struct{}, 1),
 	}
 
 	go b.readLoop()
@@ -326,6 +331,11 @@ func (b *prackBob) handlePRACK(prackMsg string, writeFunc func([]byte) error) {
 	b.t.Logf("prackBob sending 200 OK for PRACK")
 	if err := writeFunc([]byte(prack200)); err != nil {
 		b.t.Logf("prackBob failed to send 200 OK for PRACK: %v", err)
+	}
+
+	select {
+	case b.prackHandled <- struct{}{}:
+	default:
 	}
 }
 
@@ -871,7 +881,7 @@ func TestIntegration_B2BUAPRACK_UAC(t *testing.T) {
 
 	// Verify PRACK was handled by Bob (prackBob got it via prackCh and sent 200 OK)
 	select {
-	case <-pb.prackCh:
+	case <-pb.prackHandled:
 		t.Log("PRACK was received and handled by Bob")
 	case <-time.After(5 * time.Second):
 		t.Fatal("Bob did not receive PRACK from server")
@@ -954,7 +964,7 @@ func TestIntegration_B2BUAPRACK_WithAuth(t *testing.T) {
 	require.NotZero(t, serverRTPPort)
 
 	select {
-	case <-pb.prackCh:
+	case <-pb.prackHandled:
 		t.Log("PRACK was received and handled by Bob")
 	case <-time.After(5 * time.Second):
 		t.Fatal("Bob did not receive PRACK from server")
