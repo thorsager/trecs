@@ -1282,9 +1282,10 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context, cc *callCtx,
 						if bobRespTo != nil {
 							bobRespTag = bobRespTo.Tag
 						}
+						prackTx := h.uacMgr.NewTransaction(ctx, proto.SIPMethodPRACK, cc.transportImpl, cc.target)
 						prack := proto.NewRequest(proto.SIPMethodPRACK, binding.ContactURI)
 						prack.Headers.Add("Via", fmt.Sprintf("SIP/2.0/%s %s:%s;branch=%s",
-							sip.TransportName(cc.transportImpl), h.serverIP, h.serverPort, sip.GenerateBranch()))
+							sip.TransportName(cc.transportImpl), h.serverIP, h.serverPort, prackTx.Branch))
 						prack.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s", cc.from.URI, cc.calleeTag))
 						prack.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s", cc.to.URI, bobRespTag))
 						prack.Headers.Add("Call-ID", cc.bobCallID)
@@ -1293,7 +1294,6 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context, cc *callCtx,
 						prack.Headers.Add("Max-Forwards", "70")
 						prack.Headers.Add("Content-Length", "0")
 
-						prackTx := h.uacMgr.NewTransaction(ctx, proto.SIPMethodPRACK, cc.transportImpl, cc.target)
 						if err := prackTx.Send(prack); err != nil {
 							log.Error("B2BUA: failed to send PRACK", "error", err)
 						} else {
