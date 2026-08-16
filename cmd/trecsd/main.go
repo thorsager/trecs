@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/thorsager/trecs/internal/b2bua"
 	"github.com/thorsager/trecs/internal/dialplan"
@@ -19,18 +20,20 @@ import (
 )
 
 var (
-	flagAddr          string
-	flagRTPMin        int
-	flagRTPMax        int
-	flagDialplan      string
-	flagAuthUsers     string
-	flagAuthMaxFailed int
-	flagLogLevel      string
-	flagLogFormat     string
-	flagNoPRACK       bool
-	flagTrunks        string
-	flagExternalIP    string
-	flagNATAddress    string
+	flagAddr           string
+	flagRTPMin         int
+	flagRTPMax         int
+	flagDialplan       string
+	flagAuthUsers      string
+	flagAuthMaxFailed  int
+	flagLogLevel       string
+	flagLogFormat      string
+	flagNoPRACK        bool
+	flagTrunks         string
+	flagExternalIP     string
+	flagNATAddress     string
+	flagSessionExpires int
+	flagMinSE          int
 )
 
 func init() {
@@ -46,6 +49,8 @@ func init() {
 	flag.StringVar(&flagTrunks, "trunks", "", "Path to trunk configuration JSON file")
 	flag.StringVar(&flagExternalIP, "external-ip", "", "External IP for SDP c= lines and Contact headers")
 	flag.StringVar(&flagNATAddress, "nat-address", "", "NAT address to replace loopback in client SDP (e.g., host.docker.internal)")
+	flag.IntVar(&flagSessionExpires, "session-timer", 1800, "Default session timer interval in seconds (RFC 4028, 0 = disabled)")
+	flag.IntVar(&flagMinSE, "min-se", 90, "Minimum acceptable session timer interval in seconds (RFC 4028, min 90)")
 	flag.Parse()
 }
 
@@ -161,6 +166,8 @@ func main() {
 		PRACKEnabled:   !flagNoPRACK,
 		TrunkMgr:       trunkMgr,
 		NATAddress:     flagNATAddress,
+		SessionExpires: time.Duration(flagSessionExpires) * time.Second,
+		MinSE:          time.Duration(flagMinSE) * time.Second,
 	})
 
 	if flagAuthMaxFailed < 1 || flagAuthMaxFailed > 10 {

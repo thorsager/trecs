@@ -32,6 +32,10 @@ type Call struct {
 	BobCallID       string
 	BridgeReady     bool
 	TrunkName       string // name of trunk if this is a trunk call, empty for internal
+
+	// Session timer state (RFC 4028) — one timer per leg, managed independently.
+	AliceSessionTimer *SessionTimer // timer for the inbound (Alice) leg
+	BobSessionTimer   *SessionTimer // timer for the outbound (Bob) leg
 }
 
 // EarlyCall tracks a pending B2BUA call while Bob is ringing (before answer).
