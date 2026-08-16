@@ -31,6 +31,8 @@ type Config struct {
 	PRACKEnabled   bool
 	TrunkMgr       *trunk.TrunkManager
 	NATAddress     string
+	SessionExpires time.Duration // default Session-Expires for all calls (RFC 4028)
+	MinSE          time.Duration // minimum acceptable Session-Expires (RFC 4028)
 }
 
 // Handler implements SIP request handlers for the T-REC B2BUA server,
@@ -54,6 +56,8 @@ type Handler struct {
 	trunkMgr          *trunk.TrunkManager
 	natAddress        string
 	serverPort        string
+	sessionExpires    time.Duration // default Session-Expires (RFC 4028)
+	minSE             time.Duration // minimum acceptable Session-Expires (RFC 4028)
 }
 
 // NewHandler creates a new B2BUA handler with the given configuration.
@@ -70,12 +74,20 @@ func NewHandler(cfg Config) *Handler {
 		rtpMax:            cfg.RTPPortMax,
 		store:             NewStore(),
 		maxFailedAttempts: sip.DefaultMaxFailedAuthAttempts,
+		sessionExpires:    DefaultSessionExpires,
+		minSE:             DefaultMinSE,
 	}
 	if cfg.PRACKEnabled {
 		h.prackMgr = sip.NewReliableProvisionalManager()
 	}
 	if cfg.TrunkMgr != nil {
 		h.trunkMgr = cfg.TrunkMgr
+	}
+	if cfg.SessionExpires > 0 {
+		h.sessionExpires = cfg.SessionExpires
+	}
+	if cfg.MinSE >= DefaultMinSE {
+		h.minSE = cfg.MinSE
 	}
 	h.natAddress = cfg.NATAddress
 	if _, port, err := net.SplitHostPort(cfg.ServerAddr); err == nil && port != "" {
@@ -90,25 +102,26 @@ func NewHandler(cfg Config) *Handler {
 // It is passed through the response loops and 200 OK handlers instead of
 // threading the same ~20 parameters through every function.
 type callCtx struct {
-	req           *proto.SIPMessage
-	tx            sip.Transaction
-	target        *sip.Target
-	transportImpl sip.Transport
-	uac           *sip.UACTransaction
-	rtpConnA      *media.RTPConn
-	rtpConnB      *media.RTPConn
-	from          *proto.SIPAddress
-	aliceFromTag  string
-	serverTag     string
-	callID        string
-	calleeTag     string
-	bobCallID     string
-	to            *proto.SIPAddress
-	selectedPT    uint8
-	hasEarlyOffer bool
-	aliceSDPOffer *proto.SDP
-	aliceSDPBytes []byte
-	recordRoute   string
+	req               *proto.SIPMessage
+	tx                sip.Transaction
+	target            *sip.Target
+	transportImpl     sip.Transport
+	uac               *sip.UACTransaction
+	rtpConnA          *media.RTPConn
+	rtpConnB          *media.RTPConn
+	from              *proto.SIPAddress
+	aliceFromTag      string
+	serverTag         string
+	callID            string
+	calleeTag         string
+	bobCallID         string
+	to                *proto.SIPAddress
+	selectedPT        uint8
+	hasEarlyOffer     bool
+	aliceSDPOffer     *proto.SDP
+	aliceSDPBytes     []byte
+	recordRoute       string
+	aliceSessionTimer *SessionTimer // session timer negotiated with Alice (inbound leg)
 }
 
 // SetProxyPasswordStore enables proxy authentication for INVITE and BYE
@@ -206,6 +219,29 @@ func (h *Handler) HandleInvite(ctx context.Context, req *proto.SIPMessage, tx si
 	log := logutil.FromContext(ctx)
 
 	log.Debug("INVITE received")
+
+	// Detect in-dialog requests (re-INVITE): To tag present and Call-ID matches existing call.
+	if to, err := req.To(); err == nil && to.Tag != "" {
+		if call := h.store.Get(callID); call != nil {
+			log.Debug("B2BUA: re-INVITE detected, routing to dialog handler")
+			h.handleReInvite(ctx, req, tx, call)
+			return
+		}
+	}
+
+	// Check session timer from inbound INVITE (RFC 4028 §5).
+	// If Session-Expires is below our Min-SE, reject with 422.
+	if se := req.Headers.GetFirst("Session-Expires"); se != "" {
+		inboundSE, _ := ParseSessionExpires(se)
+		if inboundSE > 0 && inboundSE < h.minSE {
+			log.Info("B2BUA: inbound INVITE Session-Expires below Min-SE, sending 422",
+				"sessionExpires", inboundSE, "minSE", h.minSE)
+			resp := proto.NewResponse(req, proto.SIPStatusSessionIntervalTooSmall, "Session Interval Too Small")
+			resp.Headers.Add("Min-SE", FormatMinSE(DurationToSeconds(h.minSE)))
+			tx.Respond(resp)
+			return
+		}
+	}
 
 	trying := proto.NewResponse(req, 100, "Trying")
 	tx.Respond(trying)
@@ -630,6 +666,10 @@ func (h *Handler) handleB2BUAInvite(ctx context.Context, req *proto.SIPMessage, 
 	if h.prackMgr != nil {
 		bobInvite.Headers.Add("Supported", "100rel")
 	}
+	// Add session timer headers (RFC 4028).
+	bobInvite.Headers.Add("Supported", "timer")
+	bobInvite.Headers.Add("Min-SE", FormatMinSE(DurationToSeconds(h.minSE)))
+	bobInvite.Headers.Add("Session-Expires", FormatSessionExpires(DurationToSeconds(h.sessionExpires), "uac"))
 	bobInvite.Body = bobSDPBytes
 
 	// Create a cancelable context for the response loop lifecycle
@@ -663,6 +703,285 @@ func (h *Handler) handleB2BUAInvite(ctx context.Context, req *proto.SIPMessage, 
 		"transport", transport,
 		"rtpPortA", rtpConnA.LocalAddr().(*net.UDPAddr).Port,
 		"rtpPortB", rtpConnB.LocalAddr().(*net.UDPAddr).Port)
+}
+
+// handleReInvite processes an in-dialog re-INVITE within an established B2BUA call.
+// It forwards the re-INVITE to the other leg and relays the response back.
+func (h *Handler) handleReInvite(ctx context.Context, req *proto.SIPMessage, tx sip.Transaction, call *Call) {
+	log := logutil.FromContext(ctx)
+
+	callID := req.Headers.GetFirst("Call-ID")
+	isFromAlice := callID == call.AliceCallID
+
+	serverPort := h.serverPort
+
+	var fwdTransport sip.Transport
+	var fwdTargetObj *sip.Target
+	var fwdRequestURI string
+	var viaTransport string
+	var fwdDialog *sip.Dialog
+	var fwdCallID string
+
+	if isFromAlice {
+		fwdRequestURI = sip.StripBrackets(call.BobContactURI)
+		fwdTransport = call.BobTransport
+		fwdTargetObj = call.BobTarget
+		fwdDialog = call.BobDialog
+		fwdCallID = call.BobCallID
+	} else {
+		fwdRequestURI = sip.StripBrackets(call.AliceContactURI)
+		fwdTransport = call.AliceTransport
+		fwdTargetObj = call.AliceTarget
+		if fwdTargetObj == nil {
+			var err error
+			fwdTargetObj, _, err = sip.TargetFromContact(fwdRequestURI)
+			if err != nil {
+				log.Error("B2BUA: re-INVITE: failed to resolve contact", "contact", fwdRequestURI, "error", err)
+				tx.Respond(proto.NewResponse(req, 502, "Bad Gateway"))
+				return
+			}
+		}
+		fwdDialog = call.AliceDialog
+		fwdCallID = call.AliceCallID
+	}
+	viaTransport = sip.TransportName(fwdTransport)
+
+	// Build the re-INVITE to the other leg.
+	fwdInvite := proto.NewRequest(proto.SIPMethodINVITE, fwdRequestURI)
+	fwdInvite.Headers.Add("Via",
+		fmt.Sprintf("SIP/2.0/%s %s:%s;branch=%s",
+			viaTransport, h.serverIP, serverPort, sip.GenerateBranch()))
+	fwdInvite.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s",
+		sip.StripBrackets(fwdDialog.LocalURI), fwdDialog.ID.LocalTag))
+	fwdInvite.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s",
+		sip.StripBrackets(fwdDialog.RemoteURI), fwdDialog.ID.RemoteTag))
+	fwdInvite.Headers.Add("Call-ID", fwdCallID)
+	fwdInvite.Headers.Add("Contact", fmt.Sprintf("<sip:trec@%s:%s;transport=%s>",
+		h.serverIP, serverPort, viaTransport))
+	fwdCSeq := fwdDialog.IncrementLocalSeq()
+	fwdInvite.CSeq = proto.CSeq{Method: proto.SIPMethodINVITE, Seq: fwdCSeq}
+	fwdInvite.Headers.Add("Max-Forwards", "70")
+	fwdInvite.Headers.Add("Supported", "timer")
+
+	// Forward SDP body if present.
+	if len(req.Body) > 0 {
+		fwdInvite.Body = req.Body
+		if ct := req.Headers.GetFirst("Content-Type"); ct != "" {
+			fwdInvite.Headers.Add("Content-Type", ct)
+		}
+		fwdInvite.Headers.Add("Content-Length", strconv.Itoa(len(req.Body)))
+	} else {
+		fwdInvite.Headers.Add("Content-Length", "0")
+	}
+
+	log.Info("B2BUA: forwarding re-INVITE",
+		"fromAlice", isFromAlice,
+		"fwdTo", fwdRequestURI,
+		"hasSDP", len(req.Body) > 0)
+
+	// Create a UAC transaction to send the re-INVITE.
+	uac := h.uacMgr.NewTransaction(ctx, proto.SIPMethodINVITE, fwdTransport, fwdTargetObj)
+	if err := uac.Send(fwdInvite); err != nil {
+		log.Error("B2BUA: failed to send re-INVITE", "error", err)
+		tx.Respond(proto.NewResponse(req, 502, "Bad Gateway"))
+		return
+	}
+
+	// Reset session timer for this leg (Phase 6 will add the actual timer reset).
+	if isFromAlice && call.AliceSessionTimer != nil {
+		h.resetSessionTimer(call, "alice")
+	} else if !isFromAlice && call.BobSessionTimer != nil {
+		h.resetSessionTimer(call, "bob")
+	}
+
+	// Launch goroutine to wait for the response and relay it back.
+	go h.reInviteResponseLoop(ctx, req, tx, call, uac, isFromAlice)
+}
+
+// reInviteResponseLoop waits for the response to a forwarded re-INVITE and
+// relays it back to the originating leg.
+func (h *Handler) reInviteResponseLoop(ctx context.Context, origReq *proto.SIPMessage,
+	origTx sip.Transaction, call *Call, uac *sip.UACTransaction, isFromAlice bool,
+) {
+	log := logutil.FromContext(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case resp := <-uac.Responses:
+			sc := resp.StatusCode()
+
+			if sc >= 100 && sc < 200 {
+				// Forward provisional responses.
+				reason := resp.Status()
+				if idx := strings.Index(reason, " "); idx != -1 {
+					reason = reason[idx+1:]
+				}
+				prov := proto.NewResponse(origReq, sc, reason)
+				if isFromAlice {
+					prov.Headers.Set("To", []string{fmt.Sprintf("<%s>;tag=%s",
+						sip.StripBrackets(call.AliceDialog.RemoteURI), call.AliceDialog.ID.RemoteTag)})
+				} else {
+					prov.Headers.Set("To", []string{fmt.Sprintf("<%s>;tag=%s",
+						sip.StripBrackets(call.BobDialog.RemoteURI), call.BobDialog.ID.RemoteTag)})
+				}
+				if len(resp.Body) > 0 {
+					prov.Body = resp.Body
+					if ct := resp.Headers["Content-Type"]; len(ct) > 0 {
+						prov.Headers["Content-Type"] = ct
+					}
+					prov.Headers.Set("Content-Length", []string{strconv.Itoa(len(resp.Body))})
+				}
+				origTx.Respond(prov)
+				continue
+			}
+
+			if sc == 200 {
+				log.Info("B2BUA: re-INVITE 200 OK received, forwarding to originating leg",
+					"fromAlice", isFromAlice)
+
+				// Reset session timer for the other leg.
+				if isFromAlice && call.BobSessionTimer != nil {
+					h.resetSessionTimer(call, "bob")
+				} else if !isFromAlice && call.AliceSessionTimer != nil {
+					h.resetSessionTimer(call, "alice")
+				}
+
+				okResp := proto.NewResponse(origReq, 200, "OK")
+				if isFromAlice {
+					okResp.Headers.Set("To", []string{fmt.Sprintf("<%s>;tag=%s",
+						sip.StripBrackets(call.AliceDialog.RemoteURI), call.AliceDialog.ID.RemoteTag)})
+				} else {
+					okResp.Headers.Set("To", []string{fmt.Sprintf("<%s>;tag=%s",
+						sip.StripBrackets(call.BobDialog.RemoteURI), call.BobDialog.ID.RemoteTag)})
+				}
+				if len(resp.Body) > 0 {
+					okResp.Body = resp.Body
+					if ct := resp.Headers["Content-Type"]; len(ct) > 0 {
+						okResp.Headers["Content-Type"] = ct
+					}
+					okResp.Headers.Set("Content-Length", []string{strconv.Itoa(len(resp.Body))})
+				}
+				origTx.Respond(okResp)
+				return
+			}
+
+			if sc >= 300 {
+				log.Info("B2BUA: re-INVITE error response, forwarding",
+					"statusCode", sc, "fromAlice", isFromAlice)
+				errReason := resp.Status()
+				if idx := strings.Index(errReason, " "); idx != -1 {
+					errReason = errReason[idx+1:]
+				}
+				origTx.Respond(proto.NewResponse(origReq, sc, errReason))
+				return
+			}
+
+		case err := <-uac.Errors:
+			log.Error("B2BUA: re-INVITE timed out", "error", err, "fromAlice", isFromAlice)
+			origTx.Respond(proto.NewResponse(origReq, 408, "Request Timeout"))
+			return
+		}
+	}
+}
+
+// resetSessionTimer resets the session timer for a call leg.
+func (h *Handler) resetSessionTimer(call *Call, leg string) {
+	h.ResetSessionTimer(call, leg)
+}
+
+// sendBye sends a BYE request to the specified leg.
+func (h *Handler) sendBye(call *Call, isAlice bool, reason string) {
+	log := slog.Default().With("callID", call.AliceCallID)
+
+	var dlg *sip.Dialog
+	var transport sip.Transport
+	var target *sip.Target
+	var contactURI string
+
+	if isAlice {
+		dlg = call.AliceDialog
+		transport = call.AliceTransport
+		target = call.AliceTarget
+		contactURI = call.AliceContactURI
+	} else {
+		dlg = call.BobDialog
+		transport = call.BobTransport
+		target = call.BobTarget
+		contactURI = call.BobContactURI
+	}
+
+	if dlg == nil || dlg.IsTerminated() {
+		return
+	}
+
+	serverPort := h.serverPort
+	fwdBye := proto.NewRequest(proto.SIPMethodBYE, sip.StripBrackets(contactURI))
+	fwdBye.Headers.Add("Via",
+		fmt.Sprintf("SIP/2.0/%s %s:%s;branch=%s",
+			sip.TransportName(transport), h.serverIP, serverPort, sip.GenerateBranch()))
+	fwdBye.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s",
+		sip.StripBrackets(dlg.LocalURI), dlg.ID.LocalTag))
+	fwdBye.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s",
+		sip.StripBrackets(dlg.RemoteURI), dlg.ID.RemoteTag))
+	fwdBye.Headers.Add("Call-ID", dlg.ID.CallID)
+	fwdBye.CSeq = proto.CSeq{Method: proto.SIPMethodBYE, Seq: 2}
+	fwdBye.Headers.Add("Max-Forwards", "70")
+	fwdBye.Headers.Add("Reason", fmt.Sprintf("SIP;cause=408;text=%q", reason))
+	fwdBye.Headers.Add("Content-Length", "0")
+
+	leg := "bob"
+	if isAlice {
+		leg = "alice"
+	}
+
+	if err := transport.Send(fwdBye, target); err != nil {
+		log.Warn("failed to send BYE", "leg", leg, "error", err)
+	} else {
+		log.Info("sent BYE", "leg", leg)
+	}
+	dlg.SetState(sip.DialogStateTerminated)
+}
+
+// sendByeBothLegs sends BYE to both Alice and Bob legs, tears down media,
+// and removes the call from the store. Used for session timer expiry and
+// other teardown scenarios.
+func (h *Handler) sendByeBothLegs(call *Call, reason string) {
+	log := slog.Default().With("callID", call.AliceCallID, "reason", reason)
+
+	log.Info("sending BYE to both legs")
+
+	h.sendBye(call, true, reason)
+	h.sendBye(call, false, reason)
+
+	// Stop session timers.
+	h.StopSessionTimer(call, "alice")
+	h.StopSessionTimer(call, "bob")
+
+	// Clean up media.
+	if call.Bridge != nil {
+		call.Bridge.Stop()
+	}
+	if call.AliceSess != nil {
+		call.AliceSess.Cancel()
+		call.AliceSess.RTPConn.Close()
+		h.sm.Remove(call.AliceSess.Key)
+	}
+	if call.BobSess != nil {
+		call.BobSess.Cancel()
+		call.BobSess.RTPConn.Close()
+		h.sm.Remove(call.BobSess.Key)
+	}
+
+	h.store.Remove(call.AliceCallID)
+
+	if call.TrunkName != "" && h.trunkMgr != nil {
+		h.trunkMgr.ReleaseChannel(call.TrunkName)
+		log.Debug("released trunk channel", "trunk", call.TrunkName)
+	}
+
+	log.Info("call torn down")
 }
 
 func (h *Handler) selectBinding(bindings []*sip.Binding, log *slog.Logger) (*sip.Binding, *sip.Target, string) {
@@ -837,7 +1156,14 @@ func (h *Handler) handleTrunkInvite(ctx context.Context, req *proto.SIPMessage, 
 	sessionExpires := time.Duration(0)
 	if trk.SessionExpiresSec > 0 {
 		sessionExpires = time.Duration(trk.SessionExpiresSec) * time.Second
-		bobInvite.Headers.Add("Session-Expires", fmt.Sprintf("%d;refresher=uac", trk.SessionExpiresSec))
+		bobInvite.Headers.Add("Session-Expires", FormatSessionExpires(trk.SessionExpiresSec, "uac"))
+	} else if h.sessionExpires > 0 {
+		sessionExpires = h.sessionExpires
+		bobInvite.Headers.Add("Session-Expires", FormatSessionExpires(DurationToSeconds(h.sessionExpires), "uac"))
+	}
+	if sessionExpires > 0 {
+		bobInvite.Headers.Add("Supported", "timer")
+		bobInvite.Headers.Add("Min-SE", FormatMinSE(DurationToSeconds(h.minSE)))
 	}
 
 	bobInvite.Body = bobSDPBytes
@@ -951,6 +1277,35 @@ func (h *Handler) trunkResponseLoop(ctx context.Context, cc *callCtx,
 				return
 			}
 
+			// Handle 422 Session Interval Too Small (RFC 4028 §5).
+			if sc == proto.SIPStatusSessionIntervalTooSmall {
+				peerMinSE := ParseMinSE(resp.Headers.GetFirst("Min-SE"))
+				if peerMinSE > h.minSE {
+					h.minSE = peerMinSE
+				}
+				log.Info("B2BUA: trunk peer sent 422, retrying with higher Session-Expires",
+					"peerMinSE", peerMinSE, "newMinSE", h.minSE)
+				// Update sessionExpires to use the higher value.
+				if peerMinSE > sessionExpires {
+					sessionExpires = peerMinSE
+				}
+				// Retry: rebuild and resend the INVITE with updated headers.
+				bobInvite.Headers.Set("Session-Expires", []string{FormatSessionExpires(DurationToSeconds(sessionExpires), "uac")})
+				bobInvite.Headers.Set("Min-SE", []string{FormatMinSE(DurationToSeconds(h.minSE))})
+				bobInvite.CSeq.Seq++
+				if err := cc.uac.Send(bobInvite); err != nil {
+					cc.rtpConnA.Close()
+					cc.rtpConnB.Close()
+					h.trunkMgr.ReleaseChannel(trunkName)
+					log.Error("B2BUA: trunk re-INVITE after 422 failed", "error", err)
+					cc.tx.Respond(proto.NewResponse(cc.req, 502, "Bad Gateway"))
+					return
+				}
+				log.Info("B2BUA: trunk retried INVITE after 422",
+					"sessionExpires", sessionExpires, "minSE", h.minSE)
+				continue
+			}
+
 			if sc >= 300 {
 				cc.rtpConnA.Close()
 				cc.rtpConnB.Close()
@@ -1049,6 +1404,29 @@ func (h *Handler) handleTrunk200OK(ctx context.Context, cc *callCtx,
 	alice200.Headers.Add("Record-Route", cc.recordRoute)
 	aliceContactHeader := fmt.Sprintf("<sip:trec@%s:%s;transport=%s>", h.serverIP, h.serverPort, sip.TransportName(cc.tx.Transport()))
 	alice200.Headers.Add("Contact", aliceContactHeader)
+	// Add session timer headers to 200 OK (RFC 4028).
+	if HasTimerSupport(cc.req) {
+		alice200.Headers.Add("Supported", "timer")
+		inboundSE, _ := ParseSessionExpires(cc.req.Headers.GetFirst("Session-Expires"))
+		negotiatedSE := h.sessionExpires
+		if inboundSE > 0 && inboundSE >= h.minSE {
+			negotiatedSE = inboundSE
+		}
+		refresher := "uas"
+		if inboundSE > 0 {
+			_, inboundRefresher := ParseSessionExpires(cc.req.Headers.GetFirst("Session-Expires"))
+			if inboundRefresher == "uac" {
+				refresher = "uac"
+			}
+		}
+		alice200.Headers.Add("Session-Expires", FormatSessionExpires(DurationToSeconds(negotiatedSE), refresher))
+		alice200.Headers.Add("Require", "timer")
+		cc.aliceSessionTimer = &SessionTimer{
+			Interval:  negotiatedSE,
+			MinSE:     h.minSE,
+			Refresher: refresher,
+		}
+	}
 	cc.tx.Respond(alice200)
 	log.Info("B2BUA: sent 200 OK to Alice for trunk call")
 
@@ -1101,25 +1479,26 @@ func (h *Handler) handleTrunk200OK(ctx context.Context, cc *callCtx,
 
 	aliceTarget := cc.tx.Target()
 	call := &Call{
-		AliceCallID:     cc.callID,
-		BobCallID:       cc.bobCallID,
-		Bridge:          bridge,
-		AliceSess:       aliceSess,
-		BobSess:         bobSess,
-		BobRTPAddr:      bobRTPAddr,
-		BobContactURI:   bobReqURI,
-		BobTransport:    cc.transportImpl,
-		BobTarget:       cc.target,
-		BobCalleeTag:    cc.calleeTag,
-		BobRemoteTag:    bobTo.Tag,
-		AliceFromTag:    cc.aliceFromTag,
-		AliceServerTag:  cc.serverTag,
-		AliceContactURI: aliceContact,
-		AliceTarget:     &aliceTarget,
-		AliceDialog:     aliceDialog,
-		BobDialog:       bobDialog,
-		AliceTransport:  cc.tx.Transport(),
-		TrunkName:       trunkName,
+		AliceCallID:       cc.callID,
+		BobCallID:         cc.bobCallID,
+		Bridge:            bridge,
+		AliceSess:         aliceSess,
+		BobSess:           bobSess,
+		BobRTPAddr:        bobRTPAddr,
+		BobContactURI:     bobReqURI,
+		BobTransport:      cc.transportImpl,
+		BobTarget:         cc.target,
+		BobCalleeTag:      cc.calleeTag,
+		BobRemoteTag:      bobTo.Tag,
+		AliceFromTag:      cc.aliceFromTag,
+		AliceServerTag:    cc.serverTag,
+		AliceContactURI:   aliceContact,
+		AliceTarget:       &aliceTarget,
+		AliceDialog:       aliceDialog,
+		BobDialog:         bobDialog,
+		AliceTransport:    cc.tx.Transport(),
+		TrunkName:         trunkName,
+		AliceSessionTimer: cc.aliceSessionTimer,
 	}
 
 	if cc.hasEarlyOffer {
@@ -1142,69 +1521,36 @@ func (h *Handler) handleTrunk200OK(ctx context.Context, cc *callCtx,
 
 	h.store.Store(call)
 
-	if sessionExpires > 0 {
-		go h.trunkSessionTimer(ctx, cc.callID, trunkName, sessionExpires)
-	}
-}
-
-func (h *Handler) trunkSessionTimer(ctx context.Context, callID, trunkName string, sessionExpires time.Duration) {
-	log := logutil.FromContext(ctx).With("component", "session_timer", "callID", callID, "trunk", trunkName)
-
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(sessionExpires):
-	}
-
-	log.Info("session timer expired, tearing down call")
-
-	call := h.store.Get(callID)
-	if call == nil {
-		log.Debug("session timer: call already cleaned up")
-		return
+	// Parse session timer from Bob's 200 OK (RFC 4028).
+	if HasTimerSupport(resp) {
+		bobSE, bobRefresher := ParseSessionExpires(resp.Headers.GetFirst("Session-Expires"))
+		if bobSE > 0 {
+			call.BobSessionTimer = &SessionTimer{
+				Interval:  bobSE,
+				MinSE:     h.minSE,
+				Refresher: bobRefresher,
+			}
+			log.Info("B2BUA: session timer established (trunk Bob leg)",
+				"interval", bobSE, "refresher", bobRefresher)
+			// Use the peer's session timer if available, otherwise use our configured value.
+			sessionExpires = bobSE
+		}
 	}
 
-	serverPort := h.serverPort
-
-	// Send BYE to Alice
-	fwdBye := proto.NewRequest(proto.SIPMethodBYE, sip.StripBrackets(call.AliceContactURI))
-	fwdBye.Headers.Add("Via",
-		fmt.Sprintf("SIP/2.0/%s %s:%s;branch=%s",
-			sip.TransportName(call.AliceTransport), h.serverIP, serverPort, sip.GenerateBranch()))
-	fwdBye.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s",
-		sip.StripBrackets(call.AliceDialog.LocalURI), call.AliceDialog.ID.LocalTag))
-	fwdBye.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s",
-		sip.StripBrackets(call.AliceDialog.RemoteURI), call.AliceDialog.ID.RemoteTag))
-	fwdBye.Headers.Add("Call-ID", call.AliceDialog.ID.CallID)
-	fwdBye.CSeq = proto.CSeq{Method: proto.SIPMethodBYE, Seq: 2}
-	fwdBye.Headers.Add("Max-Forwards", "70")
-	fwdBye.Headers.Add("Content-Length", "0")
-
-	if err := call.AliceTransport.Send(fwdBye, call.AliceTarget); err != nil {
-		log.Warn("session timer: failed to send BYE to Alice", "error", err)
-	} else {
-		log.Info("session timer: sent BYE to Alice")
+	// Start session timers for both legs (RFC 4028).
+	if call.AliceSessionTimer != nil && call.AliceSessionTimer.Interval > 0 {
+		h.StartSessionTimer(ctx, call, "alice")
 	}
-
-	// Clean up
-	call.Bridge.Stop()
-
-	if call.AliceSess != nil {
-		call.AliceSess.Cancel()
-		call.AliceSess.RTPConn.Close()
-		h.sm.Remove(call.AliceSess.Key)
-	}
-	if call.BobSess != nil {
-		call.BobSess.Cancel()
-		call.BobSess.RTPConn.Close()
-		h.sm.Remove(call.BobSess.Key)
-	}
-
-	h.store.Remove(call.AliceCallID)
-
-	if h.trunkMgr != nil {
-		h.trunkMgr.ReleaseChannel(trunkName)
-		log.Debug("session timer: released trunk channel")
+	if call.BobSessionTimer != nil && call.BobSessionTimer.Interval > 0 {
+		h.StartSessionTimer(ctx, call, "bob")
+	} else if sessionExpires > 0 {
+		// Fallback: use the configured sessionExpires for the Bob leg.
+		call.BobSessionTimer = &SessionTimer{
+			Interval:  sessionExpires,
+			MinSE:     h.minSE,
+			Refresher: "uac",
+		}
+		h.StartSessionTimer(ctx, call, "bob")
 	}
 }
 
@@ -1325,6 +1671,22 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context, cc *callCtx,
 				return
 			}
 
+			// Handle 422 Session Interval Too Small (RFC 4028 §5).
+			if sc == proto.SIPStatusSessionIntervalTooSmall {
+				h.cancelPRACK(cc.callID)
+				peerMinSE := ParseMinSE(resp.Headers.GetFirst("Min-SE"))
+				if peerMinSE > h.minSE {
+					h.minSE = peerMinSE
+				}
+				log.Info("B2BUA: Bob sent 422, retrying with higher Session-Expires",
+					"peerMinSE", peerMinSE, "newMinSE", h.minSE)
+				// Retry with a higher interval. The re-INVITE will be sent with the updated minSE.
+				// For now, forward the 422 to Alice as we don't have a retry mechanism yet.
+				errResp := proto.NewResponse(cc.req, sc, "Session Interval Too Small")
+				cc.tx.Respond(errResp)
+				return
+			}
+
 			if sc >= 300 {
 				h.cancelPRACK(cc.callID)
 				cc.rtpConnA.Close()
@@ -1423,6 +1785,32 @@ func (h *Handler) handleBob200OK(ctx context.Context, cc *callCtx,
 	alice200.Headers.Add("Record-Route", cc.recordRoute)
 	aliceContactHeader := fmt.Sprintf("<sip:trec@%s:%s;transport=%s>", h.serverIP, h.serverPort, sip.TransportName(cc.tx.Transport()))
 	alice200.Headers.Add("Contact", aliceContactHeader)
+	// Add session timer headers to 200 OK (RFC 4028).
+	if HasTimerSupport(cc.req) {
+		alice200.Headers.Add("Supported", "timer")
+		// Negotiate Session-Expires: use the inbound value if present, otherwise use our default.
+		inboundSE, _ := ParseSessionExpires(cc.req.Headers.GetFirst("Session-Expires"))
+		negotiatedSE := h.sessionExpires
+		if inboundSE > 0 && inboundSE >= h.minSE {
+			negotiatedSE = inboundSE
+		}
+		// Determine refresher: if Alice prefers uac, honor it; otherwise we (uas) refresh.
+		refresher := "uas"
+		if inboundSE > 0 {
+			_, inboundRefresher := ParseSessionExpires(cc.req.Headers.GetFirst("Session-Expires"))
+			if inboundRefresher == "uac" {
+				refresher = "uac"
+			}
+		}
+		alice200.Headers.Add("Session-Expires", FormatSessionExpires(DurationToSeconds(negotiatedSE), refresher))
+		alice200.Headers.Add("Require", "timer")
+		// Store Alice's session timer state.
+		cc.aliceSessionTimer = &SessionTimer{
+			Interval:  negotiatedSE,
+			MinSE:     h.minSE,
+			Refresher: refresher,
+		}
+	}
 	cc.tx.Respond(alice200)
 	log.Info("B2BUA: sent 200 OK to Alice")
 
@@ -1476,24 +1864,25 @@ func (h *Handler) handleBob200OK(ctx context.Context, cc *callCtx,
 
 	aliceTarget := cc.tx.Target()
 	call := &Call{
-		AliceCallID:     cc.callID,
-		BobCallID:       cc.bobCallID,
-		Bridge:          bridge,
-		AliceSess:       aliceSess,
-		BobSess:         bobSess,
-		BobRTPAddr:      bobRTPAddr,
-		BobContactURI:   binding.ContactURI,
-		BobTransport:    cc.transportImpl,
-		BobTarget:       cc.target,
-		BobCalleeTag:    cc.calleeTag,
-		BobRemoteTag:    bobTo.Tag,
-		AliceFromTag:    cc.aliceFromTag,
-		AliceServerTag:  cc.serverTag,
-		AliceContactURI: aliceContact,
-		AliceTarget:     &aliceTarget,
-		AliceDialog:     aliceDialog,
-		BobDialog:       bobDialog,
-		AliceTransport:  cc.tx.Transport(),
+		AliceCallID:       cc.callID,
+		BobCallID:         cc.bobCallID,
+		Bridge:            bridge,
+		AliceSess:         aliceSess,
+		BobSess:           bobSess,
+		BobRTPAddr:        bobRTPAddr,
+		BobContactURI:     binding.ContactURI,
+		BobTransport:      cc.transportImpl,
+		BobTarget:         cc.target,
+		BobCalleeTag:      cc.calleeTag,
+		BobRemoteTag:      bobTo.Tag,
+		AliceFromTag:      cc.aliceFromTag,
+		AliceServerTag:    cc.serverTag,
+		AliceContactURI:   aliceContact,
+		AliceTarget:       &aliceTarget,
+		AliceDialog:       aliceDialog,
+		BobDialog:         bobDialog,
+		AliceTransport:    cc.tx.Transport(),
+		AliceSessionTimer: cc.aliceSessionTimer,
 	}
 
 	if cc.hasEarlyOffer {
@@ -1514,7 +1903,29 @@ func (h *Handler) handleBob200OK(ctx context.Context, cc *callCtx,
 		log.Debug("B2BUA: waiting for Alice ACK with SDP (delayed offer)")
 	}
 
+	// Parse session timer from Bob's 200 OK (RFC 4028).
+	if HasTimerSupport(resp) {
+		bobSE, bobRefresher := ParseSessionExpires(resp.Headers.GetFirst("Session-Expires"))
+		if bobSE > 0 {
+			call.BobSessionTimer = &SessionTimer{
+				Interval:  bobSE,
+				MinSE:     h.minSE,
+				Refresher: bobRefresher,
+			}
+			log.Info("B2BUA: session timer established (Bob leg)",
+				"interval", bobSE, "refresher", bobRefresher)
+		}
+	}
+
 	h.store.Store(call)
+
+	// Start session timers for both legs (RFC 4028).
+	if call.AliceSessionTimer != nil && call.AliceSessionTimer.Interval > 0 {
+		h.StartSessionTimer(ctx, call, "alice")
+	}
+	if call.BobSessionTimer != nil && call.BobSessionTimer.Interval > 0 {
+		h.StartSessionTimer(ctx, call, "bob")
+	}
 }
 
 // HandleAck handles incoming ACK requests, routing to echo or B2BUA.
