@@ -1,11 +1,56 @@
 package b2bua
 
 import (
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/thorsager/trecs/internal/sip"
 	"github.com/thorsager/trecs/proto"
 )
+
+// captureTransport records sent messages for verification.
+type captureTransport struct {
+	sent []*proto.SIPMessage
+	mu   sync.Mutex
+}
+
+func (c *captureTransport) Send(msg *proto.SIPMessage, target *sip.Target) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sent = append(c.sent, msg)
+	return nil
+}
+
+func (c *captureTransport) Receive() <-chan sip.MessageEvent { return nil }
+func (c *captureTransport) Close() error                     { return nil }
+
+func (c *captureTransport) lastSent() *proto.SIPMessage {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.sent) == 0 {
+		return nil
+	}
+	return c.sent[len(c.sent)-1]
+}
+
+func (c *captureTransport) sentCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.sent)
+}
+
+// newTestHandler returns a handler with a UAC manager, suitable for
+// exercising outbound request construction.
+func newTestHandler(t *testing.T) *Handler {
+	t.Helper()
+	return NewHandler(Config{
+		ServerIP:   "127.0.0.1",
+		ServerAddr: "127.0.0.1:5060",
+		UACManager: sip.NewUACManager(),
+	})
+}
 
 func TestParseSessionExpires(t *testing.T) {
 	tests := []struct {
@@ -163,5 +208,58 @@ func TestDurationToSeconds(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("DurationToSeconds(%v) = %d, want %d", tt.d, got, tt.want)
 		}
+	}
+}
+
+func TestSendSessionRefresh_HeadersAndBranch(t *testing.T) {
+	tport := &captureTransport{}
+	h := newTestHandler(t)
+
+	dlg := sip.NewDialog(
+		sip.DialogID{CallID: "alice-call", LocalTag: "local", RemoteTag: "remote"},
+		"sip:trec@127.0.0.1:5060", "sip:alice@localhost", "sip:alice@localhost:9999",
+	)
+
+	call := &Call{
+		AliceCallID:     "alice-call",
+		AliceDialog:     dlg,
+		AliceTransport:  tport,
+		AliceContactURI: "sip:alice@localhost:9999",
+		AliceTarget:     &sip.Target{},
+		AliceSessionTimer: &SessionTimer{
+			Interval:  900 * time.Second,
+			MinSE:     120 * time.Second,
+			Refresher: "uas",
+		},
+	}
+
+	if err := h.sendSessionRefresh(t.Context(), call, "alice", call.AliceSessionTimer); err != nil {
+		t.Fatalf("sendSessionRefresh: %v", err)
+	}
+
+	req := tport.lastSent()
+	if req == nil {
+		t.Fatal("expected a refresh re-INVITE to be sent")
+	}
+
+	// The Via branch must match the UAC transaction's registered branch so the
+	// response can be routed back (RFC 3261 §17.1.3).
+	via := req.Headers.GetFirst("Via")
+	if !strings.Contains(via, ";branch=") {
+		t.Fatalf("Via header missing branch: %q", via)
+	}
+	// A re-INVITE should carry Session-Expires = max(Min-SE, interval) and Min-SE
+	// (RFC 4028 §7.4).
+	if se := req.Headers.GetFirst("Session-Expires"); se == "" {
+		t.Error("refresh re-INVITE missing Session-Expires header (RFC 4028 §7.4)")
+	}
+	if ms := req.Headers.GetFirst("Min-SE"); ms == "" {
+		t.Error("refresh re-INVITE missing Min-SE header (RFC 4028 §7.4)")
+	} else if ms != "120" {
+		t.Errorf("Min-SE = %q, want 120", ms)
+	}
+	// CSeq must be 2 after the initial INVITE used 1 (RFC 3261 §12.2.1.1).
+	if req.CSeq.Seq != 2 {
+		t.Errorf("refresh re-INVITE CSeq = %d, want 2 (contiguous after initial INVITE)", req.CSeq.Seq)
 	}
 }

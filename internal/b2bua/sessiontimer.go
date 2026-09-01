@@ -115,7 +115,7 @@ func (h *Handler) StartSessionTimer(ctx context.Context, call *Call, leg string)
 	timer.StartTime = time.Now()
 	timer.ExpiresAt = timer.StartTime.Add(timer.Interval)
 
-	if timer.Refresher == "uas" || (leg == "alice" && timer.Refresher == "uas") ||
+	if (leg == "alice" && timer.Refresher == "uas") ||
 		(leg == "bob" && timer.Refresher == "uac") {
 		// We are the refresher: send re-INVITE at half the interval.
 		go h.refresherTimerLoop(timerCtx, call, leg, timer)
@@ -187,7 +187,7 @@ func (h *Handler) refresherTimerLoop(ctx context.Context, call *Call, leg string
 			// Timer fired — send re-INVITE to refresh the session.
 			log.Info("session timer: sending refresh re-INVITE", "leg", leg)
 
-			if err := h.sendSessionRefresh(ctx, call, leg); err != nil {
+			if err := h.sendSessionRefresh(ctx, call, leg, timer); err != nil {
 				log.Error("session timer: failed to send refresh", "error", err, "leg", leg)
 				// On failure, tear down the call.
 				h.sendByeBothLegs(call, "Session refresh failed")
@@ -232,7 +232,7 @@ func (h *Handler) nonRefresherTimerLoop(ctx context.Context, call *Call, leg str
 }
 
 // sendSessionRefresh sends a re-INVITE to refresh the session for the given leg.
-func (h *Handler) sendSessionRefresh(ctx context.Context, call *Call, leg string) error {
+func (h *Handler) sendSessionRefresh(ctx context.Context, call *Call, leg string, timer *SessionTimer) error {
 	serverPort := h.serverPort
 
 	var dlg *sip.Dialog
@@ -266,10 +266,16 @@ func (h *Handler) sendSessionRefresh(ctx context.Context, call *Call, leg string
 
 	viaTransport := sip.TransportName(fwdTransport)
 
+	// Create the UAC transaction first so we can use its registered branch in
+	// the Via header. Responses are matched to client transactions by the Via
+	// branch (RFC 3261 §17.1.3); using a fresh branch here would prevent the
+	// refresh response from ever reaching the UAC's Responses channel.
+	uac := h.uacMgr.NewTransaction(ctx, proto.SIPMethodINVITE, fwdTransport, fwdTargetObj)
+
 	fwdInvite := proto.NewRequest(proto.SIPMethodINVITE, fwdRequestURI)
 	fwdInvite.Headers.Add("Via",
 		fmt.Sprintf("SIP/2.0/%s %s:%s;branch=%s",
-			viaTransport, h.serverIP, serverPort, sip.GenerateBranch()))
+			viaTransport, h.serverIP, serverPort, uac.Branch))
 	fwdInvite.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s",
 		sip.StripBrackets(dlg.LocalURI), dlg.ID.LocalTag))
 	fwdInvite.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s",
@@ -281,10 +287,23 @@ func (h *Handler) sendSessionRefresh(ctx context.Context, call *Call, leg string
 	fwdInvite.CSeq = proto.CSeq{Method: proto.SIPMethodINVITE, Seq: fwdCSeq}
 	fwdInvite.Headers.Add("Max-Forwards", "70")
 	fwdInvite.Headers.Add("Supported", "timer")
+	// A session refresh request MUST carry Session-Expires equal to the maximum
+	// of Min-SE and the current session interval, plus the negotiated refresher
+	// (RFC 4028 §7.4). Min-SE is the negotiated minimum for this leg.
+	if timer.Interval > 0 {
+		se := timer.Interval
+		if timer.MinSE > se {
+			se = timer.MinSE
+		}
+		fwdInvite.Headers.Add("Session-Expires", FormatSessionExpires(DurationToSeconds(se), timer.Refresher))
+	}
+	if timer.MinSE > 0 {
+		fwdInvite.Headers.Add("Min-SE", FormatMinSE(DurationToSeconds(timer.MinSE)))
+	}
 	fwdInvite.Headers.Add("Content-Length", "0")
 
-	uac := h.uacMgr.NewTransaction(ctx, proto.SIPMethodINVITE, fwdTransport, fwdTargetObj)
 	if err := uac.Send(fwdInvite); err != nil {
+		uac.Cancel()
 		return fmt.Errorf("failed to send re-INVITE: %w", err)
 	}
 

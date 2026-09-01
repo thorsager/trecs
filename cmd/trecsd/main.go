@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -54,7 +55,26 @@ func init() {
 	flag.Parse()
 }
 
-func main() {
+// validateSessionTimerFlags checks the RFC 4028 session-timer flags. Min-SE
+// must be at least 90 seconds (§5); Session-Expires must not be negative
+// (0 disables the timer and falls back to the default).
+func validateSessionTimerFlags() error {
+	if flagMinSE < 90 {
+		return fmt.Errorf("invalid --min-se %d: must be at least 90 seconds (RFC 4028 §5)", flagMinSE)
+	}
+	if flagSessionExpires < 0 {
+		return fmt.Errorf("invalid --session-timer %d: must be >= 0 (0 disables the timer)", flagSessionExpires)
+	}
+	return nil
+}
+
+func main() { //nolint:gocyclo
+	if err := validateSessionTimerFlags(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		flag.Usage()
+		os.Exit(1)
+	}
+
 	var lvl slog.Level
 	switch flagLogLevel {
 	case "trace":

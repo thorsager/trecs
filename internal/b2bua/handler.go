@@ -746,11 +746,17 @@ func (h *Handler) handleReInvite(ctx context.Context, req *proto.SIPMessage, tx 
 	}
 	viaTransport = sip.TransportName(fwdTransport)
 
+	// Create the UAC transaction before building the request so we can use its
+	// registered branch in the Via header. Responses are matched to client
+	// transactions by Via branch (RFC 3261 §17.1.3); a fresh branch here would
+	// prevent the forwarded re-INVITE response from reaching the UAC.
+	uac := h.uacMgr.NewTransaction(ctx, proto.SIPMethodINVITE, fwdTransport, fwdTargetObj)
+
 	// Build the re-INVITE to the other leg.
 	fwdInvite := proto.NewRequest(proto.SIPMethodINVITE, fwdRequestURI)
 	fwdInvite.Headers.Add("Via",
 		fmt.Sprintf("SIP/2.0/%s %s:%s;branch=%s",
-			viaTransport, h.serverIP, serverPort, sip.GenerateBranch()))
+			viaTransport, h.serverIP, serverPort, uac.Branch))
 	fwdInvite.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s",
 		sip.StripBrackets(fwdDialog.LocalURI), fwdDialog.ID.LocalTag))
 	fwdInvite.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s",
@@ -762,6 +768,15 @@ func (h *Handler) handleReInvite(ctx context.Context, req *proto.SIPMessage, tx 
 	fwdInvite.CSeq = proto.CSeq{Method: proto.SIPMethodINVITE, Seq: fwdCSeq}
 	fwdInvite.Headers.Add("Max-Forwards", "70")
 	fwdInvite.Headers.Add("Supported", "timer")
+
+	// Propagate session-timer negotiation headers to preserve consistent timer
+	// behavior across both legs (RFC 4028 §8.1/§9).
+	if se := req.Headers.GetFirst("Session-Expires"); se != "" {
+		fwdInvite.Headers.Add("Session-Expires", se)
+	}
+	if ms := req.Headers.GetFirst("Min-SE"); ms != "" {
+		fwdInvite.Headers.Add("Min-SE", ms)
+	}
 
 	// Forward SDP body if present.
 	if len(req.Body) > 0 {
@@ -779,10 +794,9 @@ func (h *Handler) handleReInvite(ctx context.Context, req *proto.SIPMessage, tx 
 		"fwdTo", fwdRequestURI,
 		"hasSDP", len(req.Body) > 0)
 
-	// Create a UAC transaction to send the re-INVITE.
-	uac := h.uacMgr.NewTransaction(ctx, proto.SIPMethodINVITE, fwdTransport, fwdTargetObj)
 	if err := uac.Send(fwdInvite); err != nil {
 		log.Error("B2BUA: failed to send re-INVITE", "error", err)
+		uac.Cancel()
 		tx.Respond(proto.NewResponse(req, 502, "Bad Gateway"))
 		return
 	}
@@ -926,7 +940,9 @@ func (h *Handler) sendBye(call *Call, isAlice bool, reason string) {
 	fwdBye.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s",
 		sip.StripBrackets(dlg.RemoteURI), dlg.ID.RemoteTag))
 	fwdBye.Headers.Add("Call-ID", dlg.ID.CallID)
-	fwdBye.CSeq = proto.CSeq{Method: proto.SIPMethodBYE, Seq: 2}
+	// BYE must carry a CSeq strictly higher than any previous in-dialog request,
+	// incrementing the dialog's local sequence (RFC 3261 §15.1.1, §12.2.1.1).
+	fwdBye.CSeq = proto.CSeq{Method: proto.SIPMethodBYE, Seq: dlg.IncrementLocalSeq()}
 	fwdBye.Headers.Add("Max-Forwards", "70")
 	fwdBye.Headers.Add("Reason", fmt.Sprintf("SIP;cause=408;text=%q", reason))
 	fwdBye.Headers.Add("Content-Length", "0")
@@ -1190,7 +1206,7 @@ func (h *Handler) handleTrunkInvite(ctx context.Context, req *proto.SIPMessage, 
 		recordRoute: recordRoute,
 	}
 
-	go h.trunkResponseLoop(responseCtx, cc, bobInvite, trk.Name, bobReqURI, sessionExpires)
+	go h.trunkResponseLoop(responseCtx, cc, bobInvite, trk.Name, bobReqURI, sessionExpires, h.minSE, trunkIP)
 
 	log.Info("B2BUA: trunk INVITE sent",
 		"trunk", trk.Name,
@@ -1220,7 +1236,7 @@ func detect100relSupport(req *proto.SIPMessage, prackMgr *sip.ReliableProvisiona
 
 func (h *Handler) trunkResponseLoop(ctx context.Context, cc *callCtx,
 	bobInvite *proto.SIPMessage, trunkName, bobReqURI string,
-	sessionExpires time.Duration,
+	sessionExpires, minSE time.Duration, trunkIP string,
 ) {
 	ctx = logutil.WithValues(ctx,
 		"bobCallID", cc.bobCallID,
@@ -1273,27 +1289,43 @@ func (h *Handler) trunkResponseLoop(ctx context.Context, cc *callCtx,
 			}
 
 			if sc == 200 {
-				h.handleTrunk200OK(ctx, cc, resp, trunkName, bobReqURI, sessionExpires)
+				h.handleTrunk200OK(ctx, cc, resp, trunkName, bobReqURI, sessionExpires, minSE)
 				return
 			}
 
 			// Handle 422 Session Interval Too Small (RFC 4028 §5).
 			if sc == proto.SIPStatusSessionIntervalTooSmall {
 				peerMinSE := ParseMinSE(resp.Headers.GetFirst("Min-SE"))
-				if peerMinSE > h.minSE {
-					h.minSE = peerMinSE
+				// Track the minimum per-call (per Call-ID) rather than mutating
+				// the handler-wide default. RFC 4028 §7.4 scopes Min-SE negotiation
+				// to a single Call-ID and it is effectively cleared once the
+				// dialog is established.
+				if peerMinSE > minSE {
+					minSE = peerMinSE
 				}
 				log.Info("B2BUA: trunk peer sent 422, retrying with higher Session-Expires",
-					"peerMinSE", peerMinSE, "newMinSE", h.minSE)
+					"peerMinSE", peerMinSE, "newMinSE", minSE)
 				// Update sessionExpires to use the higher value.
 				if peerMinSE > sessionExpires {
 					sessionExpires = peerMinSE
 				}
 				// Retry: rebuild and resend the INVITE with updated headers.
 				bobInvite.Headers.Set("Session-Expires", []string{FormatSessionExpires(DurationToSeconds(sessionExpires), "uac")})
-				bobInvite.Headers.Set("Min-SE", []string{FormatMinSE(DurationToSeconds(h.minSE))})
+				bobInvite.Headers.Set("Min-SE", []string{FormatMinSE(DurationToSeconds(minSE))})
 				bobInvite.CSeq.Seq++
+				// The retry is a new transaction per RFC 4028 §7.3. Create a fresh
+				// UAC transaction and point the Via branch at it so responses are
+				// routed back to this transaction (RFC 3261 §17.1.3). The previous
+				// transaction may already be terminated after the final 422.
+				newUAC := h.uacMgr.NewTransaction(ctx, proto.SIPMethodINVITE, cc.transportImpl, cc.target)
+				bobInvite.Headers.Set("Via", []string{fmt.Sprintf("SIP/2.0/%s %s:%s;branch=%s",
+					sip.TransportName(cc.transportImpl), trunkIP, h.serverPort, newUAC.Branch)})
+				cc.uac = newUAC
+				// Keep the stored early call in sync so a CANCEL targets the live
+				// retry transaction instead of the Completed one (RFC 3261 §9.1).
+				h.store.UpdateEarlyBobTx(cc.callID, newUAC)
 				if err := cc.uac.Send(bobInvite); err != nil {
+					cc.uac.Cancel()
 					cc.rtpConnA.Close()
 					cc.rtpConnB.Close()
 					h.trunkMgr.ReleaseChannel(trunkName)
@@ -1302,7 +1334,7 @@ func (h *Handler) trunkResponseLoop(ctx context.Context, cc *callCtx,
 					return
 				}
 				log.Info("B2BUA: trunk retried INVITE after 422",
-					"sessionExpires", sessionExpires, "minSE", h.minSE)
+					"sessionExpires", sessionExpires, "minSE", minSE)
 				continue
 			}
 
@@ -1333,7 +1365,7 @@ func (h *Handler) trunkResponseLoop(ctx context.Context, cc *callCtx,
 
 func (h *Handler) handleTrunk200OK(ctx context.Context, cc *callCtx,
 	resp *proto.SIPMessage, trunkName, bobReqURI string,
-	sessionExpires time.Duration,
+	sessionExpires, minSE time.Duration,
 ) {
 	ctx = logutil.WithValues(ctx,
 		"bobCallID", cc.bobCallID,
@@ -1521,20 +1553,13 @@ func (h *Handler) handleTrunk200OK(ctx context.Context, cc *callCtx,
 
 	h.store.Store(call)
 
-	// Parse session timer from Bob's 200 OK (RFC 4028).
-	if HasTimerSupport(resp) {
-		bobSE, bobRefresher := ParseSessionExpires(resp.Headers.GetFirst("Session-Expires"))
-		if bobSE > 0 {
-			call.BobSessionTimer = &SessionTimer{
-				Interval:  bobSE,
-				MinSE:     h.minSE,
-				Refresher: bobRefresher,
-			}
-			log.Info("B2BUA: session timer established (trunk Bob leg)",
-				"interval", bobSE, "refresher", bobRefresher)
-			// Use the peer's session timer if available, otherwise use our configured value.
-			sessionExpires = bobSE
-		}
+	// Negotiate the Bob-leg session timer from the 200 OK (RFC 4028).
+	call.BobSessionTimer = h.negotiateBobSessionTimer(resp, sessionExpires, minSE)
+	if call.BobSessionTimer != nil {
+		log.Info("B2BUA: session timer established (trunk Bob leg)",
+			"interval", call.BobSessionTimer.Interval,
+			"minSE", call.BobSessionTimer.MinSE,
+			"refresher", call.BobSessionTimer.Refresher)
 	}
 
 	// Start session timers for both legs (RFC 4028).
@@ -1543,14 +1568,36 @@ func (h *Handler) handleTrunk200OK(ctx context.Context, cc *callCtx,
 	}
 	if call.BobSessionTimer != nil && call.BobSessionTimer.Interval > 0 {
 		h.StartSessionTimer(ctx, call, "bob")
-	} else if sessionExpires > 0 {
-		// Fallback: use the configured sessionExpires for the Bob leg.
-		call.BobSessionTimer = &SessionTimer{
-			Interval:  sessionExpires,
-			MinSE:     h.minSE,
-			Refresher: "uac",
+	}
+}
+
+// negotiateBobSessionTimer decides the session timer for the outbound (Bob)
+// leg of a trunk call from the peer's 200 OK (RFC 4028).
+//
+// If the peer negotiated a session timer (Supported: timer plus a resolved
+// Session-Expires), its interval and refresher are honored. Otherwise the
+// peer did not support the timer and, per RFC 4028 §8 Table 2 (UAS does not
+// support the timer), the UAC — the server — is the refresher. Min-SE is
+// tracked per Call-ID (RFC 4028 §7.4), so the negotiated minimum is used
+// rather than the handler-wide default. Returns nil when no interval applies.
+func (h *Handler) negotiateBobSessionTimer(resp *proto.SIPMessage, sessionExpires, minSE time.Duration) *SessionTimer {
+	if HasTimerSupport(resp) {
+		bobSE, bobRefresher := ParseSessionExpires(resp.Headers.GetFirst("Session-Expires"))
+		if bobSE > 0 {
+			return &SessionTimer{
+				Interval:  bobSE,
+				MinSE:     minSE,
+				Refresher: bobRefresher,
+			}
 		}
-		h.StartSessionTimer(ctx, call, "bob")
+	}
+	if sessionExpires <= 0 {
+		return nil
+	}
+	return &SessionTimer{
+		Interval:  sessionExpires,
+		MinSE:     minSE,
+		Refresher: "uac",
 	}
 }
 
@@ -1675,14 +1722,18 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context, cc *callCtx,
 			if sc == proto.SIPStatusSessionIntervalTooSmall {
 				h.cancelPRACK(cc.callID)
 				peerMinSE := ParseMinSE(resp.Headers.GetFirst("Min-SE"))
-				if peerMinSE > h.minSE {
-					h.minSE = peerMinSE
-				}
-				log.Info("B2BUA: Bob sent 422, retrying with higher Session-Expires",
-					"peerMinSE", peerMinSE, "newMinSE", h.minSE)
-				// Retry with a higher interval. The re-INVITE will be sent with the updated minSE.
+				// Do not mutate the handler-wide default: RFC 4028 §7.4 scopes Min-SE
+				// negotiation to a single Call-ID. A retry (not yet implemented here)
+				// would track the peer's minimum per-call rather than globally.
+				log.Info("B2BUA: Bob sent 422",
+					"peerMinSE", peerMinSE, "handlerMinSE", h.minSE)
 				// For now, forward the 422 to Alice as we don't have a retry mechanism yet.
 				errResp := proto.NewResponse(cc.req, sc, "Session Interval Too Small")
+				// RFC 4028 §5: a 422 MUST carry a Min-SE header so the UAC can
+				// retry with an acceptable interval.
+				if ms := resp.Headers.GetFirst("Min-SE"); ms != "" {
+					errResp.Headers.Add("Min-SE", ms)
+				}
 				cc.tx.Respond(errResp)
 				return
 			}
@@ -2094,7 +2145,7 @@ func (h *Handler) HandleBye(ctx context.Context, req *proto.SIPMessage, tx sip.T
 		fwdBye.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s",
 			sip.StripBrackets(dlg.RemoteURI), dlg.ID.RemoteTag))
 		fwdBye.Headers.Add("Call-ID", dlg.ID.CallID)
-		fwdBye.CSeq = proto.CSeq{Method: proto.SIPMethodBYE, Seq: 2}
+		fwdBye.CSeq = proto.CSeq{Method: proto.SIPMethodBYE, Seq: dlg.IncrementLocalSeq()}
 		fwdBye.Headers.Add("Max-Forwards", "70")
 		fwdBye.Headers.Add("Content-Length", "0")
 
@@ -2207,10 +2258,14 @@ func (h *Handler) HandleCancel(ctx context.Context, req *proto.SIPMessage, tx si
 	early.Cancel()
 
 	// Send CANCEL to Bob if the UAC transaction is still pending.
-	if err := early.BobTx.SendCancel(); err != nil {
-		log.Error("CANCEL: failed to send CANCEL to Bob", "error", err)
+	if bobTx := h.store.EarlyBobTx(callID); bobTx != nil {
+		if err := bobTx.SendCancel(); err != nil {
+			log.Error("CANCEL: failed to send CANCEL to Bob", "error", err)
+		} else {
+			log.Info("CANCEL: sent CANCEL to Bob")
+		}
 	} else {
-		log.Info("CANCEL: sent CANCEL to Bob")
+		log.Debug("CANCEL: no pending UAC transaction for call", "callID", callID)
 	}
 
 	// Close RTP connections (Close is idempotent; response loop may also close them).

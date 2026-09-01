@@ -116,6 +116,28 @@ func (s *Store) GetEarly(callID string) *EarlyCall {
 	return s.early[callID]
 }
 
+// UpdateEarlyBobTx points a pending call's UAC transaction at a new
+// transaction (e.g., after a 422 retry) so a concurrent CANCEL targets the
+// live INVITE. Serialized under the store lock to avoid racing the reader.
+func (s *Store) UpdateEarlyBobTx(callID string, tx *sip.UACTransaction) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ec := s.early[callID]; ec != nil {
+		ec.BobTx = tx
+	}
+}
+
+// EarlyBobTx returns the current UAC transaction for a pending call, or nil
+// if the call is no longer pending.
+func (s *Store) EarlyBobTx(callID string) *sip.UACTransaction {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ec := s.early[callID]; ec != nil {
+		return ec.BobTx
+	}
+	return nil
+}
+
 // RemoveEarly removes a pending call by Alice Call-ID.
 func (s *Store) RemoveEarly(aliceCID string) {
 	s.mu.Lock()
