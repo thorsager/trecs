@@ -309,18 +309,29 @@ func (h *Handler) sendSessionRefresh(ctx context.Context, call *Call, leg string
 
 	// Wait for the response in a goroutine (fire-and-forget for now;
 	// the response handler will reset the timer on 200 OK).
-	go h.waitForRefreshResponse(ctx, uac, call, leg)
+	go h.waitForRefreshResponse(ctx, uac, call, leg, timer)
 
 	return nil
 }
 
 // waitForRefreshResponse waits for the response to a session refresh re-INVITE.
-func (h *Handler) waitForRefreshResponse(ctx context.Context, uac *sip.UACTransaction, call *Call, leg string) {
+// A refresh must be accepted within the session interval; if the peer neither
+// answers nor rejects it in that time, the session cannot be sustained and the
+// call is torn down (this releases the trunk channel for ghost sessions where
+// the peer stopped responding but the dialog stayed open).
+func (h *Handler) waitForRefreshResponse(ctx context.Context, uac *sip.UACTransaction, call *Call, leg string, timer *SessionTimer) {
 	log := slog.Default().With("callID", call.AliceCallID, "leg", leg)
+
+	deadline := time.After(timer.Interval)
 
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-deadline:
+			log.Error("session timer: refresh not accepted within interval, tearing down call",
+				"interval", timer.Interval, "leg", leg)
+			h.sendByeBothLegs(call, "Session refresh not accepted within interval")
 			return
 		case resp := <-uac.Responses:
 			sc := resp.StatusCode()
