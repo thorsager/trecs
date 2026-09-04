@@ -779,7 +779,15 @@ func (h *Handler) handleReInvite(ctx context.Context, req *proto.SIPMessage, tx 
 	fwdCSeq := fwdDialog.IncrementLocalSeq()
 	fwdInvite.CSeq = proto.CSeq{Method: proto.SIPMethodINVITE, Seq: fwdCSeq}
 	fwdInvite.Headers.Add("Max-Forwards", "70")
-	fwdInvite.Headers.Add("Supported", "timer")
+	// Advertise timer support on the forwarded re-INVITE only when RFC 4028
+	// timers are actually in play for this dialog: either the incoming
+	// request engages them, or a session timer was negotiated on one of the
+	// legs (mid-dialog refreshes may legitimately omit the headers).
+	// Advertising on unrelated re-INVITEs can flip negotiation behavior on
+	// the other leg (RFC 4028 §4).
+	if timersInPlay(req, call) {
+		fwdInvite.Headers.Add("Supported", "timer")
+	}
 
 	// Propagate session-timer negotiation headers to preserve consistent timer
 	// behavior across both legs (RFC 4028 §8.1/§9).
@@ -890,6 +898,9 @@ func (h *Handler) reInviteResponseLoop(ctx context.Context, origReq *proto.SIPMe
 					}
 					okResp.Headers.Set("Content-Length", []string{strconv.Itoa(len(resp.Body))})
 				}
+				// Relay RFC 4028 negotiation headers so the originating leg
+				// sees the timer values resolved by the peer (RFC 4028 §5).
+				copyTimerNegotiationHeaders(resp, okResp)
 				origTx.Respond(okResp)
 				return
 			}
@@ -901,7 +912,11 @@ func (h *Handler) reInviteResponseLoop(ctx context.Context, origReq *proto.SIPMe
 				if idx := strings.Index(errReason, " "); idx != -1 {
 					errReason = errReason[idx+1:]
 				}
-				origTx.Respond(proto.NewResponse(origReq, sc, errReason))
+				errResp := proto.NewResponse(origReq, sc, errReason)
+				// A relayed 422 MUST carry the peer's Min-SE (RFC 4028 §5);
+				// any other timer headers present are relayed as well.
+				copyTimerNegotiationHeaders(resp, errResp)
+				origTx.Respond(errResp)
 				return
 			}
 

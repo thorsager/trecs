@@ -83,17 +83,56 @@ func ParseMinSE(header string) time.Duration {
 	return time.Duration(secs) * time.Second
 }
 
-// HasTimerSupport checks if a SIP message includes "timer" in the Supported header.
-func HasTimerSupport(msg *proto.SIPMessage) bool {
-	supported := msg.Headers.Get("Supported")
-	for _, val := range supported {
-		for _, tag := range strings.Split(val, ",") {
-			if strings.TrimSpace(strings.ToLower(tag)) == "timer" {
+// HasOptionTag reports whether the named header of msg contains the given
+// option tag. Option-tag lists are comma-separated and names/values are
+// case-insensitive (RFC 3261 §25.1, §20).
+func HasOptionTag(msg *proto.SIPMessage, header, tag string) bool {
+	for _, val := range msg.Headers.Get(header) {
+		for _, t := range strings.Split(val, ",") {
+			if strings.EqualFold(strings.TrimSpace(t), tag) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// HasTimerSupport checks if a SIP message includes "timer" in the Supported header.
+func HasTimerSupport(msg *proto.SIPMessage) bool {
+	return HasOptionTag(msg, "Supported", "timer")
+}
+
+// timersInPlay reports whether RFC 4028 session timers are relevant for a
+// forwarded in-dialog request: the request itself engages them (Supported:
+// timer or Session-Expires/Min-SE present), or a session timer has already
+// been negotiated on one of the call's legs.
+func timersInPlay(req *proto.SIPMessage, call *Call) bool {
+	if HasTimerSupport(req) || req.Headers.GetFirst("Session-Expires") != "" ||
+		req.Headers.GetFirst("Min-SE") != "" {
+		return true
+	}
+	return call.AliceSessionTimer != nil || call.BobSessionTimer != nil
+}
+
+// copyTimerNegotiationHeaders relays the RFC 4028 negotiation headers from a
+// peer response onto the response being sent back to the originating leg.
+// Session-Expires and Min-SE are copied verbatim; Require and Supported are
+// copied only for the "timer" option tag, so no unrelated option tags are
+// invented. Without this, the re-INVITE initiator never sees the negotiated
+// timer values, and a relayed 422 would be missing its mandatory Min-SE.
+func copyTimerNegotiationHeaders(src, dst *proto.SIPMessage) {
+	if se := src.Headers.GetFirst("Session-Expires"); se != "" {
+		dst.Headers.Add("Session-Expires", se)
+	}
+	if ms := src.Headers.GetFirst("Min-SE"); ms != "" {
+		dst.Headers.Add("Min-SE", ms)
+	}
+	if HasOptionTag(src, "Require", "timer") {
+		dst.Headers.Add("Require", "timer")
+	}
+	if HasOptionTag(src, "Supported", "timer") {
+		dst.Headers.Add("Supported", "timer")
+	}
 }
 
 // FormatSessionExpires formats a Session-Expires header value.
@@ -346,7 +385,10 @@ func (h *Handler) sendSessionRefresh(ctx context.Context, call *Call, leg string
 func (h *Handler) waitForRefreshResponse(ctx context.Context, uac *sip.UACTransaction, call *Call, leg string, timer *SessionTimer) {
 	log := slog.Default().With("callID", call.AliceCallID, "leg", leg)
 
-	deadline := time.After(timer.Interval)
+	// Stoppable timer: time.After would leave a full-interval timer armed
+	// (up to 30 min for the default) after every early return.
+	deadline := time.NewTimer(timer.Interval)
+	defer deadline.Stop()
 
 	for {
 		select {
@@ -355,7 +397,7 @@ func (h *Handler) waitForRefreshResponse(ctx context.Context, uac *sip.UACTransa
 			// it does not keep retransmitting the re-INVITE until Timer B.
 			uac.Cancel()
 			return
-		case <-deadline:
+		case <-deadline.C:
 			log.Error("session timer: refresh not accepted within interval, tearing down call",
 				"interval", timer.Interval, "leg", leg)
 			h.sendByeBothLegs(call, "Session refresh not accepted within interval")

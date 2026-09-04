@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,11 +18,24 @@ import (
 )
 
 type mockB2BUATx struct {
+	mu        sync.Mutex
 	responses []*proto.SIPMessage
 }
 
 func (m *mockB2BUATx) Respond(res *proto.SIPMessage) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.responses = append(m.responses, res)
+}
+
+// snapshot returns a copy of the responses recorded so far; safe for tests
+// where the handler responds from a goroutine.
+func (m *mockB2BUATx) snapshot() []*proto.SIPMessage {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*proto.SIPMessage, len(m.responses))
+	copy(out, m.responses)
+	return out
 }
 
 func (m *mockB2BUATx) Target() sip.Target       { return sip.Target{} }
@@ -136,8 +150,10 @@ func TestHandleCancel_PreservesExistingToTag(t *testing.T) {
 	}
 }
 
-// reInviteRequest builds a minimal in-dialog re-INVITE for testing.
-func reInviteRequest(t *testing.T, callID string, se, minSE string) *proto.SIPMessage {
+// reInviteRequest builds a minimal in-dialog re-INVITE for testing. The
+// supported argument sets the Supported header value ("" omits it entirely);
+// se and minSE add the corresponding session-timer headers when non-empty.
+func reInviteRequest(t *testing.T, callID, supported, se, minSE string) *proto.SIPMessage {
 	t.Helper()
 	raw := "INVITE sip:bob@localhost SIP/2.0\r\n" +
 		"Via: SIP/2.0/UDP 127.0.0.1:9999;branch=z9hG4bKreinvite-test\r\n" +
@@ -145,8 +161,10 @@ func reInviteRequest(t *testing.T, callID string, se, minSE string) *proto.SIPMe
 		"To: <sip:bob@localhost>;tag=bob-tag\r\n" +
 		"Call-ID: " + callID + "\r\n" +
 		"CSeq: 2 INVITE\r\n" +
-		"Max-Forwards: 70\r\n" +
-		"Supported: timer\r\n"
+		"Max-Forwards: 70\r\n"
+	if supported != "" {
+		raw += "Supported: " + supported + "\r\n"
+	}
 	if se != "" {
 		raw += "Session-Expires: " + se + "\r\n"
 	}
@@ -194,7 +212,7 @@ func TestHandleReInvite_ViaBranchMatchesUAC(t *testing.T) {
 	call := newReInviteCall(t, bobTP)
 
 	tx := &mockB2BUATx{}
-	req := reInviteRequest(t, call.AliceCallID, "900;refresher=uas", "90")
+	req := reInviteRequest(t, call.AliceCallID, "timer", "900;refresher=uas", "90")
 	h.handleReInvite(t.Context(), req, tx, call)
 
 	fwd := bobTP.lastSent()
@@ -227,7 +245,7 @@ func TestHandleReInvite_ForwardsSessionHeaders(t *testing.T) {
 	call := newReInviteCall(t, bobTP)
 
 	tx := &mockB2BUATx{}
-	req := reInviteRequest(t, call.AliceCallID, "600;refresher=uas", "120")
+	req := reInviteRequest(t, call.AliceCallID, "timer", "600;refresher=uas", "120")
 	h.handleReInvite(t.Context(), req, tx, call)
 
 	fwd := bobTP.lastSent()
@@ -242,6 +260,152 @@ func TestHandleReInvite_ForwardsSessionHeaders(t *testing.T) {
 	if ms := fwd.Headers.GetFirst("Min-SE"); ms != "120" {
 		t.Errorf("forwarded Min-SE = %q, want 120", ms)
 	}
+}
+
+// TestHandleReInvite_TimerAdvertisement verifies the forwarded re-INVITE only
+// advertises RFC 4028 timer support when timers are actually in play for the
+// dialog.
+func TestHandleReInvite_TimerAdvertisement(t *testing.T) {
+	tests := []struct {
+		name      string
+		supported string
+		se        string
+		minSE     string
+		setup     func(*Call)
+		wantAdved bool
+	}{
+		{
+			name:      "unrelated re-INVITE, no negotiated timers",
+			supported: "100rel",
+			wantAdved: false,
+		},
+		{
+			name:      "peer engages timer via Supported",
+			supported: "timer",
+			wantAdved: true,
+		},
+		{
+			name:      "peer engages timer via Session-Expires only",
+			se:        "600;refresher=uas",
+			wantAdved: true,
+		},
+		{
+			name:      "timers negotiated on a leg, headers omitted in refresh",
+			setup:     func(c *Call) { c.AliceSessionTimer = &SessionTimer{Interval: 600 * time.Second, Refresher: "uas"} },
+			wantAdved: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			bobTP := &captureTransport{}
+			h := newTestHandler(t)
+			h.uacMgr = sip.NewUACManager()
+			call := newReInviteCall(t, bobTP)
+			if tc.setup != nil {
+				tc.setup(call)
+			}
+
+			tx := &mockB2BUATx{}
+			req := reInviteRequest(t, call.AliceCallID, tc.supported, tc.se, tc.minSE)
+			h.handleReInvite(t.Context(), req, tx, call)
+
+			fwd := bobTP.lastSent()
+			if fwd == nil {
+				t.Fatal("expected forwarded re-INVITE to be sent to Bob")
+			}
+			if got := HasOptionTag(fwd, "Supported", "timer"); got != tc.wantAdved {
+				t.Errorf("forwarded Supported: timer present = %v, want %v (Supported=%q)",
+					got, tc.wantAdved, fwd.Headers.GetFirst("Supported"))
+			}
+		})
+	}
+}
+
+// TestReInviteResponseLoop_RelaysTimerHeadersOn200 verifies that the 200 OK
+// relayed back to the re-INVITE originator carries the peer's RFC 4028
+// negotiation headers.
+func TestReInviteResponseLoop_RelaysTimerHeadersOn200(t *testing.T) {
+	bobTP := &captureTransport{}
+	h := newTestHandler(t)
+	h.uacMgr = sip.NewUACManager()
+	call := newReInviteCall(t, bobTP)
+
+	tx := &mockB2BUATx{}
+	req := reInviteRequest(t, call.AliceCallID, "timer", "600;refresher=uas", "90")
+	h.handleReInvite(t.Context(), req, tx, call)
+
+	fwd := bobTP.lastSent()
+	if fwd == nil {
+		t.Fatal("expected forwarded re-INVITE to be sent to Bob")
+	}
+	uac := h.uacMgr.Get(viaBranch(fwd.Headers.GetFirst("Via")))
+	if uac == nil {
+		t.Fatal("forwarded re-INVITE transaction not registered in UAC manager")
+	}
+
+	uac.Responses <- trunk200OK(t, "Supported: timer\r\nSession-Expires: 600;refresher=uas\r\nRequire: timer\r\n")
+
+	relayed := waitForRelayedResponse(t, tx)
+	if relayed.StatusCode() != 200 {
+		t.Fatalf("relayed status = %d, want 200", relayed.StatusCode())
+	}
+	if se := relayed.Headers.GetFirst("Session-Expires"); se != "600;refresher=uas" {
+		t.Errorf("relayed Session-Expires = %q, want %q", se, "600;refresher=uas")
+	}
+	if !HasOptionTag(relayed, "Require", "timer") {
+		t.Error("relayed 200 OK missing Require: timer (RFC 4028 §5)")
+	}
+	if !HasOptionTag(relayed, "Supported", "timer") {
+		t.Error("relayed 200 OK missing Supported: timer")
+	}
+}
+
+// TestReInviteResponseLoop_Relays422WithMinSE verifies a peer 422 is relayed
+// with its mandatory Min-SE header so the originator can retry (RFC 4028 §5).
+func TestReInviteResponseLoop_Relays422WithMinSE(t *testing.T) {
+	bobTP := &captureTransport{}
+	h := newTestHandler(t)
+	h.uacMgr = sip.NewUACManager()
+	call := newReInviteCall(t, bobTP)
+
+	tx := &mockB2BUATx{}
+	req := reInviteRequest(t, call.AliceCallID, "timer", "30;refresher=uas", "90")
+	h.handleReInvite(t.Context(), req, tx, call)
+
+	fwd := bobTP.lastSent()
+	if fwd == nil {
+		t.Fatal("expected forwarded re-INVITE to be sent to Bob")
+	}
+	uac := h.uacMgr.Get(viaBranch(fwd.Headers.GetFirst("Via")))
+	if uac == nil {
+		t.Fatal("forwarded re-INVITE transaction not registered in UAC manager")
+	}
+
+	uac.Responses <- trunk422Response(t, "300")
+
+	relayed := waitForRelayedResponse(t, tx)
+	if relayed.StatusCode() != 422 {
+		t.Fatalf("relayed status = %d, want 422", relayed.StatusCode())
+	}
+	if ms := relayed.Headers.GetFirst("Min-SE"); ms != "300" {
+		t.Errorf("relayed 422 Min-SE = %q, want 300 (mandatory per RFC 4028 §5)", ms)
+	}
+}
+
+// waitForRelayedResponse waits for at least one response on the mock
+// transaction, which the relay loop sends from its own goroutine.
+func waitForRelayedResponse(t *testing.T, tx *mockB2BUATx) *proto.SIPMessage {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if rs := tx.snapshot(); len(rs) > 0 {
+			return rs[0]
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for relayed response")
+	return nil
 }
 
 func TestSendBye_CSeqContiguous(t *testing.T) {
@@ -618,11 +782,12 @@ func TestHandleReInvite_UACCancelledOnSendFailure(t *testing.T) {
 	call := newReInviteCall(t, bobTP)
 
 	tx := &mockB2BUATx{}
-	req := reInviteRequest(t, call.AliceCallID, "900;refresher=uas", "90")
+	req := reInviteRequest(t, call.AliceCallID, "timer", "900;refresher=uas", "90")
 	h.handleReInvite(t.Context(), req, tx, call)
 
-	if len(tx.responses) != 1 || tx.responses[0].StatusCode() != 502 {
-		t.Fatalf("expected a single 502 response, got %+v", tx.responses)
+	resp := tx.snapshot()
+	if len(resp) != 1 || resp[0].StatusCode() != 502 {
+		t.Fatalf("expected a single 502 response, got %+v", resp)
 	}
 
 	sent := bobTP.lastSent()
