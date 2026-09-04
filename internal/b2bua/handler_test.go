@@ -493,10 +493,10 @@ func TestNegotiateBobSessionTimer(t *testing.T) {
 			want:           &SessionTimer{Interval: 600 * time.Second, MinSE: minSE, Refresher: "uas"},
 		},
 		{
-			name:           "peer supports timer but no Session-Expires resolved",
+			name:           "peer supports timer but omitted Session-Expires",
 			respHeaders:    "Supported: timer\r\n",
-			sessionExpires: interval,
-			want:           &SessionTimer{Interval: interval, MinSE: minSE, Refresher: "uac"},
+			sessionExpires: 600 * time.Second,
+			want:           &SessionTimer{Interval: 600 * time.Second, MinSE: minSE, Refresher: "uac"},
 		},
 		{
 			name:           "peer did not negotiate timer",
@@ -507,6 +507,12 @@ func TestNegotiateBobSessionTimer(t *testing.T) {
 		{
 			name:           "no interval configured",
 			respHeaders:    "",
+			sessionExpires: 0,
+			want:           nil,
+		},
+		{
+			name:           "timers disabled with peer claiming timer support",
+			respHeaders:    "Supported: timer\r\n",
 			sessionExpires: 0,
 			want:           nil,
 		},
@@ -534,6 +540,74 @@ func TestNegotiateBobSessionTimer(t *testing.T) {
 				t.Errorf("Refresher = %q, want %q", got.Refresher, tc.want.Refresher)
 			}
 		})
+	}
+}
+
+func TestNegotiateAliceSessionTimer(t *testing.T) {
+	h := newTestHandler(t) // sessionExpires defaults to DefaultSessionExpires (1800s)
+
+	mkReq := func(headers proto.SIPHeaders) *proto.SIPMessage {
+		return &proto.SIPMessage{Headers: headers}
+	}
+
+	// Timer support without an explicit Session-Expires must keep the
+	// configured default interval and the UAS (server) as refresher —
+	// a stale 1800s fallback from the parser used to override both.
+	st := h.negotiateAliceSessionTimer(mkReq(proto.SIPHeaders{
+		"Supported": []string{"timer"},
+	}))
+	if st == nil {
+		t.Fatal("expected a session timer when Alice supports timer")
+	}
+	if st.Interval != DefaultSessionExpires || st.Refresher != "uas" {
+		t.Errorf("absent SE: got (%v, %q), want (%v, \"uas\")", st.Interval, st.Refresher, DefaultSessionExpires)
+	}
+
+	h2 := NewHandler(Config{
+		ServerIP:       "127.0.0.1",
+		ServerAddr:     "127.0.0.1:5060",
+		UACManager:     sip.NewUACManager(),
+		SessionExpires: 600 * time.Second,
+	})
+	st = h2.negotiateAliceSessionTimer(mkReq(proto.SIPHeaders{
+		"Supported": []string{"timer"},
+	}))
+	if st == nil {
+		t.Fatal("expected a session timer")
+	}
+	if st.Interval != 600*time.Second || st.Refresher != "uas" {
+		t.Errorf("configured default: got (%v, %q), want (600s, \"uas\")", st.Interval, st.Refresher)
+	}
+
+	// Alice's offered interval and uac preference are honored.
+	st = h2.negotiateAliceSessionTimer(mkReq(proto.SIPHeaders{
+		"Supported":       []string{"timer"},
+		"Session-Expires": []string{"300;refresher=uac"},
+	}))
+	if st == nil || st.Interval != 300*time.Second || st.Refresher != "uac" {
+		t.Errorf("offered 300/uac: got %+v, want interval 300s refresher uac", st)
+	}
+
+	// No timer support advertised → no timer.
+	if st := h2.negotiateAliceSessionTimer(mkReq(proto.SIPHeaders{})); st != nil {
+		t.Errorf("no timer support: got %+v, want nil", st)
+	}
+
+	// Globally disabled → nil even with a fully-featured offer.
+	hOff := NewHandler(Config{
+		ServerIP:             "127.0.0.1",
+		ServerAddr:           "127.0.0.1:5060",
+		UACManager:           sip.NewUACManager(),
+		SessionTimerDisabled: true,
+	})
+	if hOff.sessionExpires != 0 {
+		t.Errorf("disabled handler: sessionExpires = %v, want 0", hOff.sessionExpires)
+	}
+	if st := hOff.negotiateAliceSessionTimer(mkReq(proto.SIPHeaders{
+		"Supported":       []string{"timer"},
+		"Session-Expires": []string{"600;refresher=uac"},
+	})); st != nil {
+		t.Errorf("disabled: got %+v, want nil", st)
 	}
 }
 

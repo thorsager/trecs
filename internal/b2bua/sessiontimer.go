@@ -25,29 +25,42 @@ type SessionTimer struct {
 	ExpiresAt time.Time          // when the session expires (absolute)
 	StartTime time.Time          // when this timer was last started/reset
 	Cancel    context.CancelFunc // to cancel the timer goroutine
+
+	// baseCtx is the parent context captured at StartSessionTimer. Resets
+	// restart from this context rather than context.Background(), keeping the
+	// timer tied to the same lifecycle it was originally started under.
+	baseCtx context.Context
 }
 
 // ParseSessionExpires extracts the interval and refresher from a Session-Expires header value.
 // Format: "delta-seconds;refresher=uac|uas"
-// Returns DefaultSessionExpires and "uac" if the header is absent or unparseable.
+// Returns an interval of 0 when the header is absent or unparseable, letting
+// callers fall back to their offered/default value. The refresher defaults to
+// "uac" per RFC 4028 §8 Table 2 whenever a header carried no refresher param.
 func ParseSessionExpires(header string) (interval time.Duration, refresher string) {
 	if header == "" {
-		return DefaultSessionExpires, "uac"
+		return 0, "uac"
 	}
 	parts := strings.SplitN(header, ";", 2)
 	secs, err := strconv.ParseUint(strings.TrimSpace(parts[0]), 10, 32)
 	if err != nil {
-		return DefaultSessionExpires, "uac"
+		return 0, "uac"
 	}
 	interval = time.Duration(secs) * time.Second
 	refresher = "uac" // default per RFC 4028 §8 Table 2
 	if len(parts) > 1 {
 		for _, param := range strings.Split(parts[1], ";") {
-			param = strings.TrimSpace(param)
-			if strings.HasPrefix(strings.ToLower(param), "refresher=") {
-				refresher = strings.TrimPrefix(param, "refresher=")
-				refresher = strings.TrimPrefix(refresher, "Refresher=")
-				refresher = strings.ToLower(strings.TrimSpace(refresher))
+			sep := strings.Index(param, "=")
+			if sep < 0 {
+				continue
+			}
+			// The param name is case-insensitive (RFC 3261 §25.1).
+			if !strings.EqualFold(strings.TrimSpace(param[:sep]), "refresher") {
+				continue
+			}
+			value := strings.Trim(strings.TrimSpace(param[sep+1:]), `"`)
+			if v := strings.ToLower(value); v == "uac" || v == "uas" {
+				refresher = v
 			}
 		}
 	}
@@ -55,12 +68,15 @@ func ParseSessionExpires(header string) (interval time.Duration, refresher strin
 }
 
 // ParseMinSE extracts the Min-SE interval from a Min-SE header value.
+// RFC 4028 allows generic parameters after the numeric value
+// (e.g., "90;foo=bar"), so parsing stops at the first ';'.
 // Returns 0 if the header is absent or unparseable.
 func ParseMinSE(header string) time.Duration {
 	if header == "" {
 		return 0
 	}
-	secs, err := strconv.ParseUint(strings.TrimSpace(header), 10, 32)
+	parts := strings.SplitN(header, ";", 2)
+	secs, err := strconv.ParseUint(strings.TrimSpace(parts[0]), 10, 32)
 	if err != nil {
 		return 0
 	}
@@ -112,6 +128,7 @@ func (h *Handler) StartSessionTimer(ctx context.Context, call *Call, leg string)
 
 	timerCtx, cancel := context.WithCancel(ctx)
 	timer.Cancel = cancel
+	timer.baseCtx = ctx
 	timer.StartTime = time.Now()
 	timer.ExpiresAt = timer.StartTime.Add(timer.Interval)
 
@@ -155,9 +172,16 @@ func (h *Handler) ResetSessionTimer(call *Call, leg string) {
 		return
 	}
 
-	// Cancel existing timer and restart.
+	// Cancel existing timer and restart on the same parent context the timer
+	// was originally started with. context.Background() would disconnect the
+	// restarted timer from the call lifecycle; reusing the loop's own (soon to
+	// be canceled) context would kill it immediately.
 	h.StopSessionTimer(call, leg)
-	h.StartSessionTimer(context.Background(), call, leg)
+	parent := timer.baseCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	h.StartSessionTimer(parent, call, leg)
 
 	log := slog.Default()
 	log.Debug("session timer reset",
@@ -327,6 +351,9 @@ func (h *Handler) waitForRefreshResponse(ctx context.Context, uac *sip.UACTransa
 	for {
 		select {
 		case <-ctx.Done():
+			// The leg (or call) is going away: stop the refresh transaction so
+			// it does not keep retransmitting the re-INVITE until Timer B.
+			uac.Cancel()
 			return
 		case <-deadline:
 			log.Error("session timer: refresh not accepted within interval, tearing down call",

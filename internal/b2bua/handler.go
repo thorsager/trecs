@@ -33,6 +33,11 @@ type Config struct {
 	NATAddress     string
 	SessionExpires time.Duration // default Session-Expires for all calls (RFC 4028)
 	MinSE          time.Duration // minimum acceptable Session-Expires (RFC 4028)
+	// SessionTimerDisabled turns off RFC 4028 session timers entirely.
+	// Config{} zero values must keep defaulting SessionExpires to
+	// DefaultSessionExpires (library callers and tests), so an explicit flag
+	// distinguishes "unset" from the operator's deliberate "--session-timer=0".
+	SessionTimerDisabled bool
 }
 
 // Handler implements SIP request handlers for the T-REC B2BUA server,
@@ -83,7 +88,9 @@ func NewHandler(cfg Config) *Handler {
 	if cfg.TrunkMgr != nil {
 		h.trunkMgr = cfg.TrunkMgr
 	}
-	if cfg.SessionExpires > 0 {
+	if cfg.SessionTimerDisabled {
+		h.sessionExpires = 0
+	} else if cfg.SessionExpires > 0 {
 		h.sessionExpires = cfg.SessionExpires
 	}
 	if cfg.MinSE >= DefaultMinSE {
@@ -231,7 +238,9 @@ func (h *Handler) HandleInvite(ctx context.Context, req *proto.SIPMessage, tx si
 
 	// Check session timer from inbound INVITE (RFC 4028 §5).
 	// If Session-Expires is below our Min-SE, reject with 422.
-	if se := req.Headers.GetFirst("Session-Expires"); se != "" {
+	// When session timers are disabled we do not engage in timer negotiation
+	// at all, so an inbound Session-Expires is ignored rather than rejected.
+	if se := req.Headers.GetFirst("Session-Expires"); se != "" && h.sessionExpires > 0 {
 		inboundSE, _ := ParseSessionExpires(se)
 		if inboundSE > 0 && inboundSE < h.minSE {
 			log.Info("B2BUA: inbound INVITE Session-Expires below Min-SE, sending 422",
@@ -666,10 +675,13 @@ func (h *Handler) handleB2BUAInvite(ctx context.Context, req *proto.SIPMessage, 
 	if h.prackMgr != nil {
 		bobInvite.Headers.Add("Supported", "100rel")
 	}
-	// Add session timer headers (RFC 4028).
-	bobInvite.Headers.Add("Supported", "timer")
-	bobInvite.Headers.Add("Min-SE", FormatMinSE(DurationToSeconds(h.minSE)))
-	bobInvite.Headers.Add("Session-Expires", FormatSessionExpires(DurationToSeconds(h.sessionExpires), "uac"))
+	// Add session timer headers (RFC 4028). Skipped entirely when the
+	// session timer is disabled (--session-timer=0).
+	if h.sessionExpires > 0 {
+		bobInvite.Headers.Add("Supported", "timer")
+		bobInvite.Headers.Add("Min-SE", FormatMinSE(DurationToSeconds(h.minSE)))
+		bobInvite.Headers.Add("Session-Expires", FormatSessionExpires(DurationToSeconds(h.sessionExpires), "uac"))
+	}
 	bobInvite.Body = bobSDPBytes
 
 	// Create a cancelable context for the response loop lifecycle
@@ -801,7 +813,8 @@ func (h *Handler) handleReInvite(ctx context.Context, req *proto.SIPMessage, tx 
 		return
 	}
 
-	// Reset session timer for this leg (Phase 6 will add the actual timer reset).
+	// Reset the session timer for the originating leg: any re-INVITE counts
+	// as a refresh of that dialog (RFC 4028 §7.2).
 	if isFromAlice && call.AliceSessionTimer != nil {
 		h.resetSessionTimer(call, "alice")
 	} else if !isFromAlice && call.BobSessionTimer != nil {
@@ -965,6 +978,14 @@ func (h *Handler) sendBye(call *Call, isAlice bool, reason string) {
 // other teardown scenarios.
 func (h *Handler) sendByeBothLegs(call *Call, reason string) {
 	log := slog.Default().With("callID", call.AliceCallID, "reason", reason)
+
+	// If the call is no longer tracked (e.g. a BYE arrived concurrently or a
+	// timer fired just after teardown), do not send BYEs for dead dialogs or
+	// release trunk channels a later call already owns.
+	if h.store.Get(call.AliceCallID) == nil {
+		log.Debug("call already torn down, skipping BYE to both legs")
+		return
+	}
 
 	log.Info("sending BYE to both legs")
 
@@ -1437,27 +1458,11 @@ func (h *Handler) handleTrunk200OK(ctx context.Context, cc *callCtx,
 	aliceContactHeader := fmt.Sprintf("<sip:trec@%s:%s;transport=%s>", h.serverIP, h.serverPort, sip.TransportName(cc.tx.Transport()))
 	alice200.Headers.Add("Contact", aliceContactHeader)
 	// Add session timer headers to 200 OK (RFC 4028).
-	if HasTimerSupport(cc.req) {
+	if st := h.negotiateAliceSessionTimer(cc.req); st != nil {
 		alice200.Headers.Add("Supported", "timer")
-		inboundSE, _ := ParseSessionExpires(cc.req.Headers.GetFirst("Session-Expires"))
-		negotiatedSE := h.sessionExpires
-		if inboundSE > 0 && inboundSE >= h.minSE {
-			negotiatedSE = inboundSE
-		}
-		refresher := "uas"
-		if inboundSE > 0 {
-			_, inboundRefresher := ParseSessionExpires(cc.req.Headers.GetFirst("Session-Expires"))
-			if inboundRefresher == "uac" {
-				refresher = "uac"
-			}
-		}
-		alice200.Headers.Add("Session-Expires", FormatSessionExpires(DurationToSeconds(negotiatedSE), refresher))
+		alice200.Headers.Add("Session-Expires", FormatSessionExpires(DurationToSeconds(st.Interval), st.Refresher))
 		alice200.Headers.Add("Require", "timer")
-		cc.aliceSessionTimer = &SessionTimer{
-			Interval:  negotiatedSE,
-			MinSE:     h.minSE,
-			Refresher: refresher,
-		}
+		cc.aliceSessionTimer = st
 	}
 	cc.tx.Respond(alice200)
 	log.Info("B2BUA: sent 200 OK to Alice for trunk call")
@@ -1571,13 +1576,42 @@ func (h *Handler) handleTrunk200OK(ctx context.Context, cc *callCtx,
 	}
 }
 
+// negotiateAliceSessionTimer resolves the session timer for the inbound
+// (Alice) leg from her INVITE (RFC 4028). Returns nil when timers are
+// disabled globally or Alice did not indicate timer support, in which case
+// the 200 OK carries no Session-Expires and no timer state is kept.
+//
+// An absent (or unparseable) inbound Session-Expires keeps our configured
+// default interval with us (UAS) as refresher; Alice's uac preference is
+// honored only when she actually offered one.
+func (h *Handler) negotiateAliceSessionTimer(req *proto.SIPMessage) *SessionTimer {
+	if h.sessionExpires <= 0 || !HasTimerSupport(req) {
+		return nil
+	}
+	inboundSE, inboundRefresher := ParseSessionExpires(req.Headers.GetFirst("Session-Expires"))
+	negotiatedSE := h.sessionExpires
+	if inboundSE > 0 && inboundSE >= h.minSE {
+		negotiatedSE = inboundSE
+	}
+	refresher := "uas"
+	if inboundSE > 0 && inboundRefresher == "uac" {
+		refresher = "uac"
+	}
+	return &SessionTimer{
+		Interval:  negotiatedSE,
+		MinSE:     h.minSE,
+		Refresher: refresher,
+	}
+}
+
 // negotiateBobSessionTimer decides the session timer for the outbound (Bob)
-// leg of a trunk call from the peer's 200 OK (RFC 4028).
+// leg of a call from the peer's 200 OK (RFC 4028).
 //
 // If the peer negotiated a session timer (Supported: timer plus a resolved
-// Session-Expires), its interval and refresher are honored. Otherwise the
-// peer did not support the timer and, per RFC 4028 §8 Table 2 (UAS does not
-// support the timer), the UAC — the server — is the refresher. Min-SE is
+// Session-Expires), its interval and refresher are honored. If the peer
+// claims timer support but omits Session-Expires, or does not support the
+// timer at all, the interval we offered in the INVITE is kept and, per
+// RFC 4028 §8 Table 2, the UAC — the server — is the refresher. Min-SE is
 // tracked per Call-ID (RFC 4028 §7.4), so the negotiated minimum is used
 // rather than the handler-wide default. Returns nil when no interval applies.
 func (h *Handler) negotiateBobSessionTimer(resp *proto.SIPMessage, sessionExpires, minSE time.Duration) *SessionTimer {
@@ -1837,30 +1871,11 @@ func (h *Handler) handleBob200OK(ctx context.Context, cc *callCtx,
 	aliceContactHeader := fmt.Sprintf("<sip:trec@%s:%s;transport=%s>", h.serverIP, h.serverPort, sip.TransportName(cc.tx.Transport()))
 	alice200.Headers.Add("Contact", aliceContactHeader)
 	// Add session timer headers to 200 OK (RFC 4028).
-	if HasTimerSupport(cc.req) {
+	if st := h.negotiateAliceSessionTimer(cc.req); st != nil {
 		alice200.Headers.Add("Supported", "timer")
-		// Negotiate Session-Expires: use the inbound value if present, otherwise use our default.
-		inboundSE, _ := ParseSessionExpires(cc.req.Headers.GetFirst("Session-Expires"))
-		negotiatedSE := h.sessionExpires
-		if inboundSE > 0 && inboundSE >= h.minSE {
-			negotiatedSE = inboundSE
-		}
-		// Determine refresher: if Alice prefers uac, honor it; otherwise we (uas) refresh.
-		refresher := "uas"
-		if inboundSE > 0 {
-			_, inboundRefresher := ParseSessionExpires(cc.req.Headers.GetFirst("Session-Expires"))
-			if inboundRefresher == "uac" {
-				refresher = "uac"
-			}
-		}
-		alice200.Headers.Add("Session-Expires", FormatSessionExpires(DurationToSeconds(negotiatedSE), refresher))
+		alice200.Headers.Add("Session-Expires", FormatSessionExpires(DurationToSeconds(st.Interval), st.Refresher))
 		alice200.Headers.Add("Require", "timer")
-		// Store Alice's session timer state.
-		cc.aliceSessionTimer = &SessionTimer{
-			Interval:  negotiatedSE,
-			MinSE:     h.minSE,
-			Refresher: refresher,
-		}
+		cc.aliceSessionTimer = st
 	}
 	cc.tx.Respond(alice200)
 	log.Info("B2BUA: sent 200 OK to Alice")
@@ -1954,18 +1969,14 @@ func (h *Handler) handleBob200OK(ctx context.Context, cc *callCtx,
 		log.Debug("B2BUA: waiting for Alice ACK with SDP (delayed offer)")
 	}
 
-	// Parse session timer from Bob's 200 OK (RFC 4028).
-	if HasTimerSupport(resp) {
-		bobSE, bobRefresher := ParseSessionExpires(resp.Headers.GetFirst("Session-Expires"))
-		if bobSE > 0 {
-			call.BobSessionTimer = &SessionTimer{
-				Interval:  bobSE,
-				MinSE:     h.minSE,
-				Refresher: bobRefresher,
-			}
-			log.Info("B2BUA: session timer established (Bob leg)",
-				"interval", bobSE, "refresher", bobRefresher)
-		}
+	// Negotiate the Bob-leg session timer from the 200 OK (RFC 4028), using
+	// the interval we offered in the INVITE as the fallback.
+	call.BobSessionTimer = h.negotiateBobSessionTimer(resp, h.sessionExpires, h.minSE)
+	if call.BobSessionTimer != nil {
+		log.Info("B2BUA: session timer established (Bob leg)",
+			"interval", call.BobSessionTimer.Interval,
+			"minSE", call.BobSessionTimer.MinSE,
+			"refresher", call.BobSessionTimer.Refresher)
 	}
 
 	h.store.Store(call)
@@ -2105,6 +2116,11 @@ func (h *Handler) HandleBye(ctx context.Context, req *proto.SIPMessage, tx sip.T
 	if call != nil {
 		log.Debug("B2BUA: BYE forwarding to other leg")
 		call.Bridge.Stop()
+
+		// Stop session timers so no refresh re-INVITE or expiry teardown fires
+		// for a call that has just been terminated (RFC 4028 §9).
+		h.StopSessionTimer(call, "alice")
+		h.StopSessionTimer(call, "bob")
 
 		isFromAlice := callID == call.AliceCallID
 

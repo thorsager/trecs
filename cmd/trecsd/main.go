@@ -57,7 +57,7 @@ func init() {
 
 // validateSessionTimerFlags checks the RFC 4028 session-timer flags. Min-SE
 // must be at least 90 seconds (§5); Session-Expires must not be negative
-// (0 disables the timer and falls back to the default).
+// (0 disables session timers entirely).
 func validateSessionTimerFlags() error {
 	if flagMinSE < 90 {
 		return fmt.Errorf("invalid --min-se %d: must be at least 90 seconds (RFC 4028 §5)", flagMinSE)
@@ -188,6 +188,8 @@ func main() { //nolint:gocyclo
 		NATAddress:     flagNATAddress,
 		SessionExpires: time.Duration(flagSessionExpires) * time.Second,
 		MinSE:          time.Duration(flagMinSE) * time.Second,
+		// 0 = session timers fully disabled (RFC 4028 opt-out).
+		SessionTimerDisabled: flagSessionExpires == 0,
 	})
 
 	if flagAuthMaxFailed < 1 || flagAuthMaxFailed > 10 {

@@ -1,6 +1,7 @@
 package b2bua
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -62,7 +63,7 @@ func TestParseSessionExpires(t *testing.T) {
 		{
 			name:    "empty header",
 			header:  "",
-			wantSE:  DefaultSessionExpires,
+			wantSE:  0,
 			wantRef: "uac",
 		},
 		{
@@ -92,7 +93,19 @@ func TestParseSessionExpires(t *testing.T) {
 		{
 			name:    "invalid number",
 			header:  "invalid",
-			wantSE:  DefaultSessionExpires,
+			wantSE:  0,
+			wantRef: "uac",
+		},
+		{
+			name:    "uppercase refresher param",
+			header:  "1800;REFRESHER=uas",
+			wantSE:  1800 * time.Second,
+			wantRef: "uas",
+		},
+		{
+			name:    "mixed-case refresher with spaces",
+			header:  "900; Refresher = Uac ",
+			wantSE:  900 * time.Second,
 			wantRef: "uac",
 		},
 	}
@@ -119,7 +132,9 @@ func TestParseMinSE(t *testing.T) {
 		{"empty header", "", 0},
 		{"valid seconds", "90", 90 * time.Second},
 		{"large value", "3600", 3600 * time.Second},
+		{"with generic param", "90;foo=bar", 90 * time.Second},
 		{"invalid", "abc", 0},
+		{"invalid with param", "abc;foo=bar", 0},
 	}
 
 	for _, tt := range tests {
@@ -261,5 +276,57 @@ func TestSendSessionRefresh_HeadersAndBranch(t *testing.T) {
 	// CSeq must be 2 after the initial INVITE used 1 (RFC 3261 §12.2.1.1).
 	if req.CSeq.Seq != 2 {
 		t.Errorf("refresh re-INVITE CSeq = %d, want 2 (contiguous after initial INVITE)", req.CSeq.Seq)
+	}
+}
+
+// TestResetSessionTimer_KeepsParentContextLifecycle verifies that a timer
+// restarted via ResetSessionTimer stays attached to the context it was
+// originally started with: it keeps refreshing, and it stops when that
+// context is canceled (no orphaned refreshes on context.Background()).
+func TestResetSessionTimer_KeepsParentContextLifecycle(t *testing.T) {
+	tport := &captureTransport{}
+	h := newTestHandler(t)
+
+	dlg := sip.NewDialog(
+		sip.DialogID{CallID: "alice-call", LocalTag: "local", RemoteTag: "remote"},
+		"sip:trec@127.0.0.1:5060", "sip:alice@localhost", "sip:alice@localhost:9999",
+	)
+
+	call := &Call{
+		AliceCallID:     "alice-call",
+		AliceDialog:     dlg,
+		AliceTransport:  tport,
+		AliceContactURI: "sip:alice@localhost:9999",
+		AliceTarget:     &sip.Target{},
+		AliceSessionTimer: &SessionTimer{
+			Interval:  200 * time.Millisecond,
+			MinSE:     90 * time.Second,
+			Refresher: "uas",
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h.StartSessionTimer(ctx, call, "alice")
+	h.ResetSessionTimer(call, "alice")
+
+	// The refresher loop fires at half the interval — expect a refresh
+	// re-INVITE to be sent even after the reset.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && tport.sentCount() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if tport.sentCount() == 0 {
+		t.Fatal("no refresh re-INVITE sent after timer reset")
+	}
+
+	// Canceling the original parent context must stop the restarted timer.
+	cancel()
+	time.Sleep(50 * time.Millisecond) // let any in-flight loop iteration settle
+	baseline := tport.sentCount()
+	time.Sleep(600 * time.Millisecond) // several intervals' worth
+	if got := tport.sentCount(); got != baseline {
+		t.Errorf("timer kept refreshing after parent ctx cancel: %d sends (baseline %d)", got, baseline)
 	}
 }
