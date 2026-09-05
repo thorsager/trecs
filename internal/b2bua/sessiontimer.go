@@ -247,19 +247,35 @@ func (h *Handler) refresherTimerLoop(ctx context.Context, call *Call, leg string
 			log.Debug("session timer: refresher loop stopped", "leg", leg)
 			return
 		case <-refreshTimer.C:
-			// Timer fired — send re-INVITE to refresh the session.
+			// Timer fired — send re-INVITE to refresh the session and await
+			// its outcome inline. Starting the next refresh while a previous
+			// one is still in flight would place two concurrent INVITEs in
+			// the same dialog (RFC 3261 §12.2.1) and invite 491 glare.
 			log.Info("session timer: sending refresh re-INVITE", "leg", leg)
 
-			if err := h.sendSessionRefresh(ctx, call, leg, timer); err != nil {
+			uac, err := h.sendSessionRefresh(ctx, call, leg, timer)
+			if err != nil {
 				log.Error("session timer: failed to send refresh", "error", err, "leg", leg)
 				// On failure, tear down the call.
 				h.sendByeBothLegs(call, "Session refresh failed")
 				return
 			}
 
-			// Update expiry time and restart timer.
-			timer.ExpiresAt = time.Now().Add(timer.Interval)
-			refreshTimer.Reset(refreshTime)
+			switch h.waitForRefreshResponse(ctx, uac, call, leg, timer) {
+			case refreshAccepted:
+				// waitForRefreshResponse already restarted the timer for the
+				// next interval (a new loop generation owns the schedule).
+				return
+			case refreshTerminated:
+				// The call was torn down or this leg's context was canceled.
+				return
+			case refreshFailed:
+				// The peer rejected the refresh with a status that does not
+				// end the session (e.g. 491 Request Pending). Keep the
+				// session and retry at the next half-interval point.
+				timer.ExpiresAt = time.Now().Add(timer.Interval)
+				refreshTimer.Reset(refreshTime)
+			}
 		}
 	}
 }
@@ -294,8 +310,11 @@ func (h *Handler) nonRefresherTimerLoop(ctx context.Context, call *Call, leg str
 	}
 }
 
-// sendSessionRefresh sends a re-INVITE to refresh the session for the given leg.
-func (h *Handler) sendSessionRefresh(ctx context.Context, call *Call, leg string, timer *SessionTimer) error {
+// sendSessionRefresh sends a re-INVITE to refresh the session for the given
+// leg and returns its UAC transaction. The caller must pass it to
+// waitForRefreshResponse before sending the next refresh: only one refresh
+// transaction may be in flight per dialog (RFC 3261 §12.2.1).
+func (h *Handler) sendSessionRefresh(ctx context.Context, call *Call, leg string, timer *SessionTimer) (*sip.UACTransaction, error) {
 	serverPort := h.serverPort
 
 	var dlg *sip.Dialog
@@ -314,7 +333,7 @@ func (h *Handler) sendSessionRefresh(ctx context.Context, call *Call, leg string
 			var err error
 			fwdTargetObj, _, err = sip.TargetFromContact(fwdRequestURI)
 			if err != nil {
-				return fmt.Errorf("failed to resolve Alice contact: %w", err)
+				return nil, fmt.Errorf("failed to resolve Alice contact: %w", err)
 			}
 		}
 		fwdCallID = call.AliceCallID
@@ -367,22 +386,39 @@ func (h *Handler) sendSessionRefresh(ctx context.Context, call *Call, leg string
 
 	if err := uac.Send(fwdInvite); err != nil {
 		uac.Cancel()
-		return fmt.Errorf("failed to send re-INVITE: %w", err)
+		return nil, fmt.Errorf("failed to send re-INVITE: %w", err)
 	}
 
-	// Wait for the response in a goroutine (fire-and-forget for now;
-	// the response handler will reset the timer on 200 OK).
-	go h.waitForRefreshResponse(ctx, uac, call, leg, timer)
-
-	return nil
+	return uac, nil
 }
 
-// waitForRefreshResponse waits for the response to a session refresh re-INVITE.
-// A refresh must be accepted within the session interval; if the peer neither
-// answers nor rejects it in that time, the session cannot be sustained and the
-// call is torn down (this releases the trunk channel for ghost sessions where
-// the peer stopped responding but the dialog stayed open).
-func (h *Handler) waitForRefreshResponse(ctx context.Context, uac *sip.UACTransaction, call *Call, leg string, timer *SessionTimer) {
+// refreshOutcome describes how waitForRefreshResponse concluded, so the
+// refresher loop can decide whether to keep the session alive, wait, or stop.
+type refreshOutcome int
+
+const (
+	// refreshAccepted: the peer answered 200 OK. The session timer was reset
+	// and a fresh loop generation owns the next refresh, so the caller stops.
+	refreshAccepted refreshOutcome = iota
+	// refreshTerminated: a fatal response or error was handled (call torn
+	// down), or the context was canceled. The caller stops.
+	refreshTerminated
+	// refreshFailed: the peer rejected the refresh with a non-fatal final
+	// response (e.g. 491 Request Pending). The session is still valid; the
+	// caller should retry at the next half-interval point.
+	refreshFailed
+)
+
+// waitForRefreshResponse waits (on the caller's goroutine) for the response to
+// a session refresh re-INVITE and reports the outcome. A refresh must be
+// accepted within the session interval; if the peer neither answers nor rejects
+// it in that time, the session cannot be sustained and the call is torn down
+// (this releases the trunk channel for ghost sessions where the peer stopped
+// responding but the dialog stayed open).
+//
+// It is called synchronously from refresherTimerLoop so that only one refresh
+// transaction is ever outstanding on a dialog (RFC 3261 §12.2.1).
+func (h *Handler) waitForRefreshResponse(ctx context.Context, uac *sip.UACTransaction, call *Call, leg string, timer *SessionTimer) refreshOutcome {
 	log := slog.Default().With("callID", call.AliceCallID, "leg", leg)
 
 	// Stoppable timer: time.After would leave a full-interval timer armed
@@ -396,33 +432,38 @@ func (h *Handler) waitForRefreshResponse(ctx context.Context, uac *sip.UACTransa
 			// The leg (or call) is going away: stop the refresh transaction so
 			// it does not keep retransmitting the re-INVITE until Timer B.
 			uac.Cancel()
-			return
+			return refreshTerminated
 		case <-deadline.C:
 			log.Error("session timer: refresh not accepted within interval, tearing down call",
 				"interval", timer.Interval, "leg", leg)
 			h.sendByeBothLegs(call, "Session refresh not accepted within interval")
-			return
+			return refreshTerminated
 		case resp := <-uac.Responses:
 			sc := resp.StatusCode()
 			if sc == 200 {
 				log.Info("session timer: refresh accepted", "leg", leg)
 				// Reset the timer on successful refresh.
 				h.ResetSessionTimer(call, leg)
-				return
+				return refreshAccepted
 			}
 			if sc >= 300 {
-				log.Warn("session timer: refresh rejected", "statusCode", sc, "leg", leg)
-				// On 408/481, tear down the call.
+				// On 408/481, tear down the call (transaction timed out or the
+				// dialog is gone). Any other final response (e.g. 491 Request
+				// Pending during glare) leaves the session intact, so let the
+				// loop retry at the next refresh point.
 				if sc == 408 || sc == 481 {
+					log.Warn("session timer: refresh failed fatally, tearing down call", "statusCode", sc, "leg", leg)
 					h.sendByeBothLegs(call, fmt.Sprintf("Session refresh failed: %d", sc))
+					return refreshTerminated
 				}
-				return
+				log.Info("session timer: refresh rejected, will retry", "statusCode", sc, "leg", leg)
+				return refreshFailed
 			}
 			// Provisional responses — continue waiting.
 		case err := <-uac.Errors:
 			log.Error("session timer: refresh timed out", "error", err, "leg", leg)
 			h.sendByeBothLegs(call, "Session refresh timed out")
-			return
+			return refreshTerminated
 		}
 	}
 }

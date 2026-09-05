@@ -42,6 +42,18 @@ func (c *captureTransport) sentCount() int {
 	return len(c.sent)
 }
 
+// distinctBranches counts transactions (unique Via branches) seen, ignoring
+// retransmissions of the same request.
+func (c *captureTransport) distinctBranches() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	seen := map[string]struct{}{}
+	for _, m := range c.sent {
+		seen[viaBranch(m.Headers.GetFirst("Via"))] = struct{}{}
+	}
+	return len(seen)
+}
+
 // newTestHandler returns a handler with a UAC manager, suitable for
 // exercising outbound request construction.
 func newTestHandler(t *testing.T) *Handler {
@@ -248,9 +260,13 @@ func TestSendSessionRefresh_HeadersAndBranch(t *testing.T) {
 		},
 	}
 
-	if err := h.sendSessionRefresh(t.Context(), call, "alice", call.AliceSessionTimer); err != nil {
+	uac, err := h.sendSessionRefresh(t.Context(), call, "alice", call.AliceSessionTimer)
+	if err != nil {
 		t.Fatalf("sendSessionRefresh: %v", err)
 	}
+	// No response arrives in this test; tear the transaction down so its
+	// retransmit timers do not keep firing.
+	defer uac.Cancel()
 
 	req := tport.lastSent()
 	if req == nil {
@@ -276,6 +292,80 @@ func TestSendSessionRefresh_HeadersAndBranch(t *testing.T) {
 	// CSeq must be 2 after the initial INVITE used 1 (RFC 3261 §12.2.1.1).
 	if req.CSeq.Seq != 2 {
 		t.Errorf("refresh re-INVITE CSeq = %d, want 2 (contiguous after initial INVITE)", req.CSeq.Seq)
+	}
+}
+
+// TestRefresherTimerLoop_NoOverlappingRefreshes verifies the refresher keeps
+// exactly one refresh transaction in flight: no second re-INVITE is sent
+// while the first is unanswered (RFC 3261 §12.2.1 glare), and the refresh
+// cadence resumes after the peer accepts.
+func TestRefresherTimerLoop_NoOverlappingRefreshes(t *testing.T) {
+	tport := &captureTransport{}
+	h := newTestHandler(t)
+
+	dlg := sip.NewDialog(
+		sip.DialogID{CallID: "alice-call", LocalTag: "local", RemoteTag: "remote"},
+		"sip:trec@127.0.0.1:5060", "sip:alice@localhost", "sip:alice@localhost:9999",
+	)
+	call := &Call{
+		AliceCallID:     "alice-call",
+		AliceDialog:     dlg,
+		AliceTransport:  tport,
+		AliceContactURI: "sip:alice@localhost:9999",
+		AliceTarget:     &sip.Target{},
+		AliceSessionTimer: &SessionTimer{
+			Interval:  time.Second,
+			MinSE:     90 * time.Second,
+			Refresher: "uas",
+		},
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	h.StartSessionTimer(ctx, call, "alice")
+
+	waitForRefreshes := func(n int) *proto.SIPMessage {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if tport.distinctBranches() >= n {
+				return tport.lastSent()
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatalf("timed out waiting for %d refresh transactions, got %d (%d sends)",
+			n, tport.distinctBranches(), tport.sentCount())
+		return nil
+	}
+
+	first := waitForRefreshes(1)
+
+	// The peer stays silent. The next refresh must not fire while the first
+	// transaction is still in flight: at 1.2x the half-interval after the
+	// first refresh, the pre-fix loop would already have sent a second
+	// INVITE (the first transaction's own deadline is a full interval away).
+	// Count Via branches, not sends: Timer A retransmits the first request.
+	time.Sleep(600 * time.Millisecond)
+	if got := tport.distinctBranches(); got != 1 {
+		t.Fatalf("started %d refresh transactions while the first is in flight, want 1 (RFC 3261 §12.2.1)", got)
+	}
+
+	// Accept the refresh: waitForRefreshResponse resets the timer (new loop
+	// generation), so the next refresh resumes at half an interval later.
+	uac := h.uacMgr.Get(viaBranch(first.Headers.GetFirst("Via")))
+	if uac == nil {
+		t.Fatal("refresh transaction not registered in UAC manager")
+	}
+	uac.Responses <- trunk200OK(t, "")
+	uac.Cancel() // production stops retransmit timers on final delivery; test bypasses that path
+
+	waitForRefreshes(2)
+
+	// Canceling the leg context stops the loop and the in-flight refresh.
+	cancel()
+	time.Sleep(700 * time.Millisecond)
+	if got := tport.distinctBranches(); got != 2 {
+		t.Errorf("started %d refresh transactions after context cancel, want 2 (loop stopped)", got)
 	}
 }
 
