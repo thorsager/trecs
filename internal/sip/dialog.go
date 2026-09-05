@@ -53,7 +53,12 @@ func NewDialog(id DialogID, localURI, remoteURI, remoteTarget string) *Dialog {
 		RemoteURI:    remoteURI,
 		RemoteTarget: remoteTarget,
 		CreatedAt:    time.Now(),
-		state:        DialogStateEarly,
+		// The initial INVITE that established the dialog used CSeq 1 and is
+		// not tracked by this dialog object (the dialog is only created at
+		// 2xx time). Seed LocalSeq to 1 so the first IncrementLocalSeq returns
+		// 2, keeping in-dialog requests strictly contiguous per RFC 3261 §12.2.1.1.
+		LocalSeq: 1,
+		state:    DialogStateEarly,
 	}
 }
 

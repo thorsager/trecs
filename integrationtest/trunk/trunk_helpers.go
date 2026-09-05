@@ -26,17 +26,18 @@ type trunkPeer struct {
 	cancel context.CancelFunc
 	conn   *net.UDPConn
 
-	mu          sync.Mutex
-	callID      string
-	fromTag     string
-	toTag       string
-	cseq        int
-	contact     string
-	answered    bool
-	byeReceived chan struct{}
-	byeOnce     sync.Once
-	rtpCount    chan int
-	rtp         *net.UDPConn
+	mu              sync.Mutex
+	answeredCallIDs map[string]bool
+	callID          string
+	fromTag         string
+	toTag           string
+	cseq            int
+	contact         string
+	answered        bool
+	byeReceived     chan struct{}
+	byeOnce         sync.Once
+	rtpCount        chan int
+	rtp             *net.UDPConn
 
 	expectedServerSSRC uint32
 	serverRTPPort      int
@@ -57,13 +58,14 @@ func newTrunkPeer(t *testing.T) *trunkPeer {
 	require.NoError(t, err)
 
 	p := &trunkPeer{
-		t:           t,
-		ctx:         ctx,
-		cancel:      cancel,
-		conn:        conn,
-		byeReceived: make(chan struct{}),
-		rtpCount:    make(chan int, 1),
-		rtp:         rtp,
+		t:               t,
+		ctx:             ctx,
+		cancel:          cancel,
+		conn:            conn,
+		byeReceived:     make(chan struct{}),
+		rtpCount:        make(chan int, 1),
+		rtp:             rtp,
+		answeredCallIDs: make(map[string]bool),
 	}
 
 	go p.listen()
@@ -125,6 +127,19 @@ func (p *trunkPeer) handleIncomingInvite(msg string, writeFunc func([]byte) erro
 	callID := extractHeader(msg, "Call-ID")
 
 	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Answer an INVITE only once per Call-ID. In-dialog re-INVITEs (session
+	// timer refreshes) reuse the same Call-ID; ignoring them after the initial
+	// setup lets a peer appear as a ghost so the server's timer teardown path
+	// is exercised. Distinct Call-IDs (a second call on the same peer) are
+	// still answered.
+	if p.answeredCallIDs[callID] {
+		p.t.Logf("Trunk peer ignoring re-INVITE for already-answered Call-ID %s", callID)
+		return
+	}
+	p.answeredCallIDs[callID] = true
+
 	p.callID = callID
 	p.fromTag = extractTag(fromHeader)
 	p.toTag = fmt.Sprintf("trunk-peer-%d", time.Now().UnixNano())
@@ -147,7 +162,6 @@ func (p *trunkPeer) handleIncomingInvite(msg string, writeFunc func([]byte) erro
 			p.serverRTPPort = port
 		}
 	}
-	p.mu.Unlock()
 
 	// Build SDP answer
 	rtpPort := p.rtp.LocalAddr().(*net.UDPAddr).Port
@@ -165,9 +179,7 @@ func (p *trunkPeer) handleIncomingInvite(msg string, writeFunc func([]byte) erro
 		go receiveRTP(p.rtp, p.rtpCount, p.ctx, p.expectedServerSSRC)
 	}
 
-	p.mu.Lock()
 	p.answered = true
-	p.mu.Unlock()
 }
 
 func (p *trunkPeer) handleIncomingBye(msg string, writeFunc func([]byte) error) {
