@@ -313,12 +313,16 @@ func TestRefresherTimerLoop_NoOverlappingRefreshes(t *testing.T) {
 		AliceTransport:  tport,
 		AliceContactURI: "sip:alice@localhost:9999",
 		AliceTarget:     &sip.Target{},
+		// 2s interval (not 1s) so every timing window below has seconds of
+		// slack; at 1s the first transaction's in-call deadline came ~400ms
+		// after the test fed its 200 OK, which is flaky on loaded CI.
 		AliceSessionTimer: &SessionTimer{
-			Interval:  time.Second,
+			Interval:  2 * time.Second,
 			MinSE:     90 * time.Second,
 			Refresher: "uas",
 		},
 	}
+	interval := call.AliceSessionTimer.Interval
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -326,7 +330,7 @@ func TestRefresherTimerLoop_NoOverlappingRefreshes(t *testing.T) {
 
 	waitForRefreshes := func(n int) *proto.SIPMessage {
 		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
+		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) {
 			if tport.distinctBranches() >= n {
 				return tport.lastSent()
@@ -341,11 +345,11 @@ func TestRefresherTimerLoop_NoOverlappingRefreshes(t *testing.T) {
 	first := waitForRefreshes(1)
 
 	// The peer stays silent. The next refresh must not fire while the first
-	// transaction is still in flight: at 1.2x the half-interval after the
-	// first refresh, the pre-fix loop would already have sent a second
+	// transaction is still in flight: at half an interval plus 200ms after
+	// the first refresh, the pre-fix loop would already have sent a second
 	// INVITE (the first transaction's own deadline is a full interval away).
 	// Count Via branches, not sends: Timer A retransmits the first request.
-	time.Sleep(600 * time.Millisecond)
+	time.Sleep(interval/2 + 200*time.Millisecond)
 	if got := tport.distinctBranches(); got != 1 {
 		t.Fatalf("started %d refresh transactions while the first is in flight, want 1 (RFC 3261 §12.2.1)", got)
 	}
@@ -363,7 +367,7 @@ func TestRefresherTimerLoop_NoOverlappingRefreshes(t *testing.T) {
 
 	// Canceling the leg context stops the loop and the in-flight refresh.
 	cancel()
-	time.Sleep(700 * time.Millisecond)
+	time.Sleep(interval/2 + 200*time.Millisecond)
 	if got := tport.distinctBranches(); got != 2 {
 		t.Errorf("started %d refresh transactions after context cancel, want 2 (loop stopped)", got)
 	}
