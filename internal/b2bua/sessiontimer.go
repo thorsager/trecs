@@ -102,13 +102,24 @@ func HasTimerSupport(msg *proto.SIPMessage) bool {
 	return HasOptionTag(msg, "Supported", "timer")
 }
 
+// requestEngagesTimers reports whether a request or response engages RFC 4028
+// session timers on its own: it advertises timer support, requires the timer
+// extension, offers a session interval, or carries a Min-SE bound (RFC 4028
+// §4, §7.2). A message offering Session-Expires without Supported: timer is
+// still an offer; engagement must not hinge on a single signal, and the same
+// test must drive 422 enforcement and 200 OK negotiation alike.
+func requestEngagesTimers(msg *proto.SIPMessage) bool {
+	return HasTimerSupport(msg) || HasOptionTag(msg, "Require", "timer") ||
+		msg.Headers.GetFirst("Session-Expires") != "" ||
+		msg.Headers.GetFirst("Min-SE") != ""
+}
+
 // timersInPlay reports whether RFC 4028 session timers are relevant for a
 // forwarded in-dialog request: the request itself engages them (Supported:
-// timer or Session-Expires/Min-SE present), or a session timer has already
-// been negotiated on one of the call's legs.
+// timer, Require: timer, Session-Expires, or Min-SE present), or a session
+// timer has already been negotiated on one of the call's legs.
 func timersInPlay(req *proto.SIPMessage, call *Call) bool {
-	if HasTimerSupport(req) || req.Headers.GetFirst("Session-Expires") != "" ||
-		req.Headers.GetFirst("Min-SE") != "" {
+	if requestEngagesTimers(req) {
 		return true
 	}
 	return call.AliceSessionTimer != nil || call.BobSessionTimer != nil

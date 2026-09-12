@@ -408,6 +408,148 @@ func waitForRelayedResponse(t *testing.T, tx *mockB2BUATx) *proto.SIPMessage {
 	return nil
 }
 
+// TestReInviteResponseLoop_TimerResetOnlyOnConfirmedRefresh verifies a
+// forwarded re-INVITE extends session timers only when it is confirmed with
+// a 200 OK (RFC 4028 §7.2). A rejected refresh must leave both legs' timers
+// untouched, so the non-refresher can still expire a session that was never
+// actually refreshed.
+func TestReInviteResponseLoop_TimerResetOnlyOnConfirmedRefresh(t *testing.T) {
+	run := func(t *testing.T, feed func(t *testing.T) *proto.SIPMessage, wantReset bool, wantStatus int) {
+		t.Helper()
+		bobTP := &captureTransport{}
+		h := newTestHandler(t)
+		h.uacMgr = sip.NewUACManager()
+		call := newReInviteCall(t, bobTP)
+		// Long intervals: the loops must not fire refreshes on their own.
+		call.AliceSessionTimer = &SessionTimer{Interval: 600 * time.Second, MinSE: 90 * time.Second, Refresher: "uas"}
+		call.BobSessionTimer = &SessionTimer{Interval: 600 * time.Second, MinSE: 90 * time.Second, Refresher: "uac"}
+		h.StartSessionTimer(t.Context(), call, "alice")
+		h.StartSessionTimer(t.Context(), call, "bob")
+		startA, startB := call.AliceSessionTimer.StartTime, call.BobSessionTimer.StartTime
+
+		tx := &mockB2BUATx{}
+		req := reInviteRequest(t, call.AliceCallID, "timer", "600;refresher=uas", "90")
+		h.handleReInvite(t.Context(), req, tx, call)
+
+		fwd := bobTP.lastSent()
+		if fwd == nil {
+			t.Fatal("expected forwarded re-INVITE to be sent to Bob")
+		}
+		uac := h.uacMgr.Get(viaBranch(fwd.Headers.GetFirst("Via")))
+		if uac == nil {
+			t.Fatal("forwarded re-INVITE transaction not registered in UAC manager")
+		}
+		uac.Responses <- feed(t)
+		uac.Cancel() // bypasses production's final-delivery timer cleanup
+
+		relayed := waitForRelayedResponse(t, tx)
+		if got := relayed.StatusCode(); got != wantStatus {
+			t.Fatalf("relayed status = %d, want %d", got, wantStatus)
+		}
+		// The relay happens after any timer reset in the 200 branch, so the
+		// timer fields are stable here (ordered via the mock tx mutex).
+		advanced := call.AliceSessionTimer.StartTime.After(startA) || call.BobSessionTimer.StartTime.After(startB)
+		if wantReset && !advanced {
+			t.Error("timers not reset after confirmed 200 OK refresh")
+		}
+		if !wantReset && advanced {
+			t.Error("timers extended by a re-INVITE that was rejected; failed refresh must not renew the session")
+		}
+		if !wantReset {
+			if got := bobTP.sentCount(); got != 1 {
+				t.Errorf("captured %d forwards, want 1", got)
+			}
+		}
+	}
+
+	t.Run("rejected_refresh_does_not_extend_session", func(t *testing.T) {
+		run(t, func(t *testing.T) *proto.SIPMessage {
+			return trunk422Response(t, "300") // any non-2xx final response behaves alike
+		}, false, 422)
+	})
+	t.Run("accepted_refresh_extends_both_legs", func(t *testing.T) {
+		run(t, func(t *testing.T) *proto.SIPMessage {
+			return trunk200OK(t, "")
+		}, true, 200)
+	})
+}
+
+// TestB2BUAResponseLoop_ClosesRTPOn422 verifies the non-trunk 422 path
+// releases the allocated RTP ports: there is no retry mechanism there, so the
+// setup is failing and leaving the conns open would leak sockets until exit.
+func TestB2BUAResponseLoop_ClosesRTPOn422(t *testing.T) {
+	h := newTestHandler(t)
+	h.serverIP = "127.0.0.1"
+	h.serverPort = "5060"
+
+	tport := &captureTransport{}
+	rtpA, err := media.NewRTPConn()
+	if err != nil {
+		t.Fatalf("NewRTPConn A: %v", err)
+	}
+	defer rtpA.Close()
+	rtpB, err := media.NewRTPConn()
+	if err != nil {
+		t.Fatalf("NewRTPConn B: %v", err)
+	}
+	defer rtpB.Close()
+
+	uac := h.uacMgr.NewTransaction(t.Context(), proto.SIPMethodINVITE, tport, &sip.Target{})
+	bobInvite := proto.NewRequest(proto.SIPMethodINVITE, "sip:bob@localhost")
+	bobInvite.Headers.Add("Call-ID", "bob-call")
+	bobInvite.CSeq = proto.CSeq{Method: proto.SIPMethodINVITE, Seq: 1}
+	bobInvite.Headers.Add("Via", "SIP/2.0/UDP 127.0.0.1:5060;branch="+uac.Branch)
+
+	tx := &mockB2BUATx{}
+	cc := &callCtx{
+		req:           proto.NewRequest(proto.SIPMethodINVITE, "sip:alice@localhost"),
+		tx:            tx,
+		target:        &sip.Target{},
+		transportImpl: tport,
+		uac:           uac,
+		rtpConnA:      rtpA,
+		rtpConnB:      rtpB,
+		callID:        "alice-call",
+		bobCallID:     "bob-call",
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.b2buaResponseLoop(ctx, cc, bobInvite, &sip.Binding{ContactURI: "sip:bob@127.0.0.1:9999"}, false)
+	}()
+
+	uac.Responses <- trunk422Response(t, "300")
+	uac.Cancel()
+
+	relayed := waitForRelayedResponse(t, tx)
+	if relayed.StatusCode() != 422 {
+		t.Fatalf("relayed status = %d, want 422", relayed.StatusCode())
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("response loop did not return after relaying 422")
+	}
+
+	// A closed socket errors immediately even with a far deadline; an open
+	// one would block until the deadline expires.
+	assertClosed := func(r *media.RTPConn, name string) {
+		t.Helper()
+		_ = r.SetReadDeadline(time.Now().Add(10 * time.Second))
+		start := time.Now()
+		if _, _, err := r.ReadRTP(); err == nil {
+			t.Errorf("%s: ReadRTP succeeded, want closed", name)
+		} else if time.Since(start) > time.Second {
+			t.Errorf("%s: still open after 422 relay (blocked %v)", name, time.Since(start))
+		}
+	}
+	assertClosed(rtpA, "rtpConnA")
+	assertClosed(rtpB, "rtpConnB")
+}
+
 func TestSendBye_CSeqContiguous(t *testing.T) {
 	bobTP := &captureTransport{}
 	h := newTestHandler(t)
@@ -453,7 +595,21 @@ func trunk422Response(t *testing.T, minSE string) *proto.SIPMessage {
 	return msg
 }
 
-func TestTrunk422Retry_NewTransactionAndBranchNotMutatingHandlerMinSE(t *testing.T) {
+// trunk422Rig wires a minimal trunk call setup so trunkResponseLoop can be
+// driven response-by-response in tests.
+type trunk422Rig struct {
+	h          *Handler
+	tport      *captureTransport
+	cc         *callCtx
+	tx         *mockB2BUATx
+	initialUAC *sip.UACTransaction
+	trunkMgr   *trunk.TrunkManager
+	cancel     context.CancelFunc
+	done       chan struct{}
+}
+
+func startTrunk422Rig(t *testing.T) *trunk422Rig {
+	t.Helper()
 	h := newTestHandler(t)
 	h.serverIP = "127.0.0.1"
 	h.serverPort = "5060"
@@ -477,12 +633,12 @@ func TestTrunk422Retry_NewTransactionAndBranchNotMutatingHandlerMinSE(t *testing
 	if err != nil {
 		t.Fatalf("NewRTPConn A: %v", err)
 	}
-	defer rtpA.Close()
+	t.Cleanup(func() { rtpA.Close() })
 	rtpB, err := media.NewRTPConn()
 	if err != nil {
 		t.Fatalf("NewRTPConn B: %v", err)
 	}
-	defer rtpB.Close()
+	t.Cleanup(func() { rtpB.Close() })
 
 	bobInvite := proto.NewRequest(proto.SIPMethodINVITE, "sip:bob@trunk.invalid")
 	bobInvite.Headers.Add("Call-ID", "bob-call")
@@ -492,9 +648,10 @@ func TestTrunk422Retry_NewTransactionAndBranchNotMutatingHandlerMinSE(t *testing
 	uac := h.uacMgr.NewTransaction(t.Context(), proto.SIPMethodINVITE, tport, &sip.Target{})
 	bobInvite.Headers.Add("Via", "SIP/2.0/UDP 127.0.0.1:5060;branch="+uac.Branch)
 
+	tx := &mockB2BUATx{}
 	cc := &callCtx{
 		req:           proto.NewRequest(proto.SIPMethodINVITE, "sip:alice@localhost"),
-		tx:            &mockB2BUATx{},
+		tx:            tx,
 		target:        &sip.Target{},
 		transportImpl: tport,
 		uac:           uac,
@@ -506,10 +663,6 @@ func TestTrunk422Retry_NewTransactionAndBranchNotMutatingHandlerMinSE(t *testing
 	}
 
 	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-
-	// Track the pending call so the CANCEL path can be exercised: the stored
-	// EarlyCall must follow the retry onto the new transaction.
 	h.store.StoreEarly(&EarlyCall{
 		AliceCallID:    "alice-call",
 		BobCallID:      "bob-call",
@@ -523,33 +676,71 @@ func TestTrunk422Retry_NewTransactionAndBranchNotMutatingHandlerMinSE(t *testing
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		// sessionExpires large enough, minSE 90; the peer's 422 raises Min-SE to 300.
+		// sessionExpires large enough, minSE 90; the peer's 422 raises Min-SE.
 		h.trunkResponseLoop(ctx, cc, bobInvite, "trunk1", "sip:bob@trunk.invalid", 1800*time.Second, h.minSE, "127.0.0.1")
 	}()
 
+	return &trunk422Rig{h: h, tport: tport, cc: cc, tx: tx, initialUAC: uac, trunkMgr: tm, cancel: cancel, done: done}
+}
+
+// feed422 delivers a 422 for the newest transaction (empty minSE simulates a
+// missing/unparsable header) and stops its retransmit timers, which
+// production does on final-response delivery — bypassed here.
+func (r *trunk422Rig) feed422(t *testing.T, minSE string) {
+	t.Helper()
+	r.waitForSends(t, 1) // the loop sends the initial INVITE on its own goroutine
+	last := r.tport.lastSent()
+	if last == nil {
+		t.Fatal("no INVITE captured yet")
+	}
+	uac := r.h.uacMgr.Get(viaBranch(last.Headers.GetFirst("Via")))
+	if uac == nil {
+		t.Fatal("last captured INVITE has no registered transaction")
+	}
+	uac.Responses <- trunk422Response(t, minSE)
+	uac.Cancel()
+}
+
+func (r *trunk422Rig) waitForSends(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if r.tport.sentCount() >= n {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d INVITE sends, got %d", n, r.tport.sentCount())
+}
+
+func (r *trunk422Rig) waitForRelay(t *testing.T) *proto.SIPMessage {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if rs := r.tx.snapshot(); len(rs) > 0 {
+			return rs[len(rs)-1]
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for relayed response")
+	return nil
+}
+
+func TestTrunk422Retry_NewTransactionAndBranchNotMutatingHandlerMinSE(t *testing.T) {
+	r := startTrunk422Rig(t)
+
 	// Feed the 422 response into the initial UAC's response channel.
-	cc.uac.Responses <- trunk422Response(t, "300")
+	r.feed422(t, "300")
 
 	// The retry must be sent on a new transaction with a different branch.
-	deadline := time.After(2 * time.Second)
-	for {
-		sent := tport.sentCount()
-		if sent >= 2 {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("timed out waiting for 422 retry INVITE to be sent")
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
+	r.waitForSends(t, 2)
 
-	retry := tport.lastSent()
+	retry := r.tport.lastSent()
 	via := retry.Headers.GetFirst("Via")
 	if !strings.Contains(via, "branch=") {
 		t.Fatalf("retry INVITE Via missing branch: %q", via)
 	}
-	if strings.Contains(via, uac.Branch) {
+	if strings.Contains(via, r.initialUAC.Branch) {
 		t.Errorf("retry INVITE reused the previous transaction branch; want a new branch (RFC 4028 §7.3)")
 	}
 	// Retry CSeq must be one higher than the previous request.
@@ -561,21 +752,75 @@ func TestTrunk422Retry_NewTransactionAndBranchNotMutatingHandlerMinSE(t *testing
 		t.Errorf("retry INVITE Min-SE = %q, want 300", ms)
 	}
 	// The handler-wide minSE MUST NOT have been mutated (RFC 4028 §7.4 per-call scope).
-	if h.minSE != 90*time.Second {
-		t.Errorf("handler minSE mutated to %v after 422; want unchanged 90s", h.minSE)
+	if r.h.minSE != 90*time.Second {
+		t.Errorf("handler minSE mutated to %v after 422; want unchanged 90s", r.h.minSE)
 	}
 	// The stored early call must point at the retry transaction so CANCEL
 	// reaches the live INVITE (RFC 3261 §9.1).
-	if early := h.store.GetEarly(cc.callID); early == nil {
+	if early := r.h.store.GetEarly(r.cc.callID); early == nil {
 		t.Error("expected the early call to still be tracked after the 422 retry")
-	} else if early.BobTx == uac {
+	} else if early.BobTx == r.initialUAC {
 		t.Error("early call BobTx not updated to the retry transaction after 422")
-	} else if h.uacMgr.Get(viaBranch(retry.Headers.GetFirst("Via"))) != early.BobTx {
+	} else if r.h.uacMgr.Get(viaBranch(retry.Headers.GetFirst("Via"))) != early.BobTx {
 		t.Error("retry Via branch not registered to the early call's transaction")
 	}
 
-	cancel()
-	<-done
+	r.cancel()
+	<-r.done
+}
+
+// TestTrunk422Retry_UnusableMinSEFailsCall verifies that a 422 carrying no
+// usable Min-SE is not retried: resending the identical offer would loop
+// until the call context dies. The call must fail and resources release.
+func TestTrunk422Retry_UnusableMinSEFailsCall(t *testing.T) {
+	r := startTrunk422Rig(t)
+
+	r.feed422(t, "") // empty/unparsable Min-SE → nothing to renegotiate
+
+	relayed := r.waitForRelay(t)
+	if relayed.StatusCode() != 488 {
+		t.Fatalf("relayed status = %d, want 488 (unretryable 422 fails the call)", relayed.StatusCode())
+	}
+	select {
+	case <-r.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("trunk response loop did not return after unretryable 422")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := r.tport.sentCount(); got != 1 {
+		t.Errorf("captured %d INVITE sends after unretryable 422, want 1 (no retry loop)", got)
+	}
+	if !r.trunkMgr.AcquireChannel("trunk1") {
+		t.Error("trunk channel not released after failing call on unretryable 422")
+	}
+}
+
+// TestTrunk422Retry_Capped verifies a peer that keeps raising Min-SE cannot
+// drive an unbounded retry chain: after max422Retries renegotiations the
+// call fails cleanly.
+func TestTrunk422Retry_Capped(t *testing.T) {
+	r := startTrunk422Rig(t)
+
+	for i, minSE := range []string{"1801", "1802", "1803"} {
+		r.feed422(t, minSE)
+		r.waitForSends(t, i+2) // retry i+1 goes out
+	}
+
+	// The fourth 422 exceeds the cap even though it re-raises Min-SE.
+	r.feed422(t, "1804")
+	relayed := r.waitForRelay(t)
+	if relayed.StatusCode() != 488 {
+		t.Fatalf("relayed status = %d, want 488 after %d retries", relayed.StatusCode(), max422Retries)
+	}
+	select {
+	case <-r.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("trunk response loop did not return after capped 422 retries")
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := r.tport.sentCount(); got != 4 {
+		t.Errorf("captured %d INVITE sends, want 4 (1 initial + %d capped retries)", got, max422Retries)
+	}
 }
 
 func TestNewHandler_MinSEValidation(t *testing.T) {
@@ -755,6 +1000,21 @@ func TestNegotiateAliceSessionTimer(t *testing.T) {
 	// No timer support advertised → no timer.
 	if st := h2.negotiateAliceSessionTimer(mkReq(proto.SIPHeaders{})); st != nil {
 		t.Errorf("no timer support: got %+v, want nil", st)
+	}
+
+	// Engagement must mirror the 422 gate in HandleInvite: a bare
+	// Session-Expires offer engages timers even without Supported: timer
+	// (RFC 4028 §4/§7.2), and its default refresher is "uac".
+	st = h2.negotiateAliceSessionTimer(mkReq(proto.SIPHeaders{
+		"Session-Expires": []string{"300"},
+	}))
+	if st == nil || st.Interval != 300*time.Second || st.Refresher != "uac" {
+		t.Errorf("SE-only offer: got %+v, want interval 300s refresher uac", st)
+	}
+	if st := h2.negotiateAliceSessionTimer(mkReq(proto.SIPHeaders{
+		"Require": []string{"timer"},
+	})); st == nil {
+		t.Error("Require: timer did not engage session timers")
 	}
 
 	// Globally disabled → nil even with a fully-featured offer.

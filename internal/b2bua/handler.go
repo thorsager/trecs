@@ -821,13 +821,11 @@ func (h *Handler) handleReInvite(ctx context.Context, req *proto.SIPMessage, tx 
 		return
 	}
 
-	// Reset the session timer for the originating leg: any re-INVITE counts
-	// as a refresh of that dialog (RFC 4028 §7.2).
-	if isFromAlice && call.AliceSessionTimer != nil {
-		h.resetSessionTimer(call, "alice")
-	} else if !isFromAlice && call.BobSessionTimer != nil {
-		h.resetSessionTimer(call, "bob")
-	}
+	// Session-timer refreshes are NOT reset here: per RFC 4028 §7.2 the UAS
+	// refreshes its timer when it sends a 2xx, and the UAC when it receives
+	// one. Both legs' timers are reset in reInviteResponseLoop, only once the
+	// forwarded request is confirmed with a 200 OK — a re-INVITE that is
+	// ultimately rejected refreshed nothing and must not extend the session.
 
 	// Launch goroutine to wait for the response and relay it back.
 	go h.reInviteResponseLoop(ctx, req, tx, call, uac, isFromAlice)
@@ -876,12 +874,12 @@ func (h *Handler) reInviteResponseLoop(ctx context.Context, origReq *proto.SIPMe
 				log.Info("B2BUA: re-INVITE 200 OK received, forwarding to originating leg",
 					"fromAlice", isFromAlice)
 
-				// Reset session timer for the other leg.
-				if isFromAlice && call.BobSessionTimer != nil {
-					h.resetSessionTimer(call, "bob")
-				} else if !isFromAlice && call.AliceSessionTimer != nil {
-					h.resetSessionTimer(call, "alice")
-				}
+				// The refresh is confirmed: reset both legs' session timers
+				// (RFC 4028 §7.2 — the 2xx we are about to send completes the
+				// originating leg, and the 2xx we just received completes the
+				// forwarded leg).
+				h.resetSessionTimer(call, "alice")
+				h.resetSessionTimer(call, "bob")
 
 				okResp := proto.NewResponse(origReq, 200, "OK")
 				if isFromAlice {
@@ -1270,6 +1268,12 @@ func detect100relSupport(req *proto.SIPMessage, prackMgr *sip.ReliableProvisiona
 	return false
 }
 
+// max422Retries bounds per-call-setup Session-Expires renegotiations
+// (RFC 4028 §5). Each retry needs a strictly higher Min-SE than the previous
+// offer; the cap protects against a misbehaving peer that keeps raising the
+// bar.
+const max422Retries = 3
+
 func (h *Handler) trunkResponseLoop(ctx context.Context, cc *callCtx,
 	bobInvite *proto.SIPMessage, trunkName, bobReqURI string,
 	sessionExpires, minSE time.Duration, trunkIP string,
@@ -1293,6 +1297,8 @@ func (h *Handler) trunkResponseLoop(ctx context.Context, cc *callCtx,
 		return
 	}
 	log.Info("B2BUA: trunk INVITE sent", "dest", bobReqURI)
+
+	retries422 := 0
 
 	for {
 		select {
@@ -1331,20 +1337,36 @@ func (h *Handler) trunkResponseLoop(ctx context.Context, cc *callCtx,
 
 			// Handle 422 Session Interval Too Small (RFC 4028 §5).
 			if sc == proto.SIPStatusSessionIntervalTooSmall {
+				retries422++
 				peerMinSE := ParseMinSE(resp.Headers.GetFirst("Min-SE"))
 				// Track the minimum per-call (per Call-ID) rather than mutating
 				// the handler-wide default. RFC 4028 §7.4 scopes Min-SE negotiation
 				// to a single Call-ID and it is effectively cleared once the
 				// dialog is established.
+				prevSE, prevMinSE := sessionExpires, minSE
 				if peerMinSE > minSE {
 					minSE = peerMinSE
 				}
-				log.Info("B2BUA: trunk peer sent 422, retrying with higher Session-Expires",
-					"peerMinSE", peerMinSE, "newMinSE", minSE)
 				// Update sessionExpires to use the higher value.
 				if peerMinSE > sessionExpires {
 					sessionExpires = peerMinSE
 				}
+				// A 422 with a missing/unparsable Min-SE — or one whose Min-SE
+				// the current offer already satisfies — gives us nothing to
+				// renegotiate; resending the identical offer would loop until
+				// the call context dies. The retry cap covers a peer that keeps
+				// raising the bar.
+				if (sessionExpires == prevSE && minSE == prevMinSE) || retries422 > max422Retries {
+					log.Warn("B2BUA: trunk 422 not retryable, failing call",
+						"peerMinSE", peerMinSE, "retries422", retries422-1)
+					cc.rtpConnA.Close()
+					cc.rtpConnB.Close()
+					h.trunkMgr.ReleaseChannel(trunkName)
+					cc.tx.Respond(proto.NewResponse(cc.req, 488, "Not Acceptable Here"))
+					return
+				}
+				log.Info("B2BUA: trunk peer sent 422, retrying with higher Session-Expires",
+					"peerMinSE", peerMinSE, "newMinSE", minSE)
 				// Retry: rebuild and resend the INVITE with updated headers.
 				bobInvite.Headers.Set("Session-Expires", []string{FormatSessionExpires(DurationToSeconds(sessionExpires), "uac")})
 				bobInvite.Headers.Set("Min-SE", []string{FormatMinSE(DurationToSeconds(minSE))})
@@ -1593,14 +1615,16 @@ func (h *Handler) handleTrunk200OK(ctx context.Context, cc *callCtx,
 
 // negotiateAliceSessionTimer resolves the session timer for the inbound
 // (Alice) leg from her INVITE (RFC 4028). Returns nil when timers are
-// disabled globally or Alice did not indicate timer support, in which case
-// the 200 OK carries no Session-Expires and no timer state is kept.
+// disabled globally or Alice did not engage them (no timer support,
+// Session-Expires, Min-SE, or Require: timer), in which case the 200 OK
+// carries no Session-Expires and no timer state is kept. Engagement must
+// match the 422-enforcement gate in HandleInvite.
 //
 // An absent (or unparseable) inbound Session-Expires keeps our configured
 // default interval with us (UAS) as refresher; Alice's uac preference is
 // honored only when she actually offered one.
 func (h *Handler) negotiateAliceSessionTimer(req *proto.SIPMessage) *SessionTimer {
-	if h.sessionExpires <= 0 || !HasTimerSupport(req) {
+	if h.sessionExpires <= 0 || !requestEngagesTimers(req) {
 		return nil
 	}
 	inboundSE, inboundRefresher := ParseSessionExpires(req.Headers.GetFirst("Session-Expires"))
@@ -1776,6 +1800,11 @@ func (h *Handler) b2buaResponseLoop(ctx context.Context, cc *callCtx,
 				// would track the peer's minimum per-call rather than globally.
 				log.Info("B2BUA: Bob sent 422",
 					"peerMinSE", peerMinSE, "handlerMinSE", h.minSE)
+				// Release the allocated RTP ports like every other failure branch
+				// does; with no retry mechanism here the setup is failing, and
+				// without this the conns leak until process exit.
+				cc.rtpConnA.Close()
+				cc.rtpConnB.Close()
 				// For now, forward the 422 to Alice as we don't have a retry mechanism yet.
 				errResp := proto.NewResponse(cc.req, sc, "Session Interval Too Small")
 				// RFC 4028 §5: a 422 MUST carry a Min-SE header so the UAC can
