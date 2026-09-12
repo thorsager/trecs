@@ -67,6 +67,8 @@ const (
 	SIPStatusRequestPending              = 491 // RFC 3261
 	SIPStatusUndecipherable              = 493 // RFC 3261
 
+	SIPStatusSessionIntervalTooSmall = 422 // RFC 4028
+
 	SIPStatusServerInternalError = 500 // RFC 3261
 	SIPStatusNotImplemented      = 501 // RFC 3261
 	SIPStatusBadGateway          = 502 // RFC 3261

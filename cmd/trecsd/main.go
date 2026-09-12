@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/thorsager/trecs/internal/b2bua"
 	"github.com/thorsager/trecs/internal/dialplan"
@@ -19,18 +21,20 @@ import (
 )
 
 var (
-	flagAddr          string
-	flagRTPMin        int
-	flagRTPMax        int
-	flagDialplan      string
-	flagAuthUsers     string
-	flagAuthMaxFailed int
-	flagLogLevel      string
-	flagLogFormat     string
-	flagNoPRACK       bool
-	flagTrunks        string
-	flagExternalIP    string
-	flagNATAddress    string
+	flagAddr           string
+	flagRTPMin         int
+	flagRTPMax         int
+	flagDialplan       string
+	flagAuthUsers      string
+	flagAuthMaxFailed  int
+	flagLogLevel       string
+	flagLogFormat      string
+	flagNoPRACK        bool
+	flagTrunks         string
+	flagExternalIP     string
+	flagNATAddress     string
+	flagSessionExpires int
+	flagMinSE          int
 )
 
 func init() {
@@ -46,10 +50,31 @@ func init() {
 	flag.StringVar(&flagTrunks, "trunks", "", "Path to trunk configuration JSON file")
 	flag.StringVar(&flagExternalIP, "external-ip", "", "External IP for SDP c= lines and Contact headers")
 	flag.StringVar(&flagNATAddress, "nat-address", "", "NAT address to replace loopback in client SDP (e.g., host.docker.internal)")
+	flag.IntVar(&flagSessionExpires, "session-timer", 1800, "Default session timer interval in seconds (RFC 4028, 0 = disabled)")
+	flag.IntVar(&flagMinSE, "min-se", 90, "Minimum acceptable session timer interval in seconds (RFC 4028, min 90)")
 	flag.Parse()
 }
 
-func main() {
+// validateSessionTimerFlags checks the RFC 4028 session-timer flags. Min-SE
+// must be at least 90 seconds (§5); Session-Expires must not be negative
+// (0 disables session timers entirely).
+func validateSessionTimerFlags() error {
+	if flagMinSE < 90 {
+		return fmt.Errorf("invalid --min-se %d: must be at least 90 seconds (RFC 4028 §5)", flagMinSE)
+	}
+	if flagSessionExpires < 0 {
+		return fmt.Errorf("invalid --session-timer %d: must be >= 0 (0 disables the timer)", flagSessionExpires)
+	}
+	return nil
+}
+
+func main() { //nolint:gocyclo
+	if err := validateSessionTimerFlags(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		flag.Usage()
+		os.Exit(1)
+	}
+
 	var lvl slog.Level
 	switch flagLogLevel {
 	case "trace":
@@ -161,6 +186,10 @@ func main() {
 		PRACKEnabled:   !flagNoPRACK,
 		TrunkMgr:       trunkMgr,
 		NATAddress:     flagNATAddress,
+		SessionExpires: time.Duration(flagSessionExpires) * time.Second,
+		MinSE:          time.Duration(flagMinSE) * time.Second,
+		// 0 = session timers fully disabled (RFC 4028 opt-out).
+		SessionTimerDisabled: flagSessionExpires == 0,
 	})
 
 	if flagAuthMaxFailed < 1 || flagAuthMaxFailed > 10 {

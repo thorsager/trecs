@@ -26,17 +26,18 @@ type trunkPeer struct {
 	cancel context.CancelFunc
 	conn   *net.UDPConn
 
-	mu          sync.Mutex
-	callID      string
-	fromTag     string
-	toTag       string
-	cseq        int
-	contact     string
-	answered    bool
-	byeReceived chan struct{}
-	byeOnce     sync.Once
-	rtpCount    chan int
-	rtp         *net.UDPConn
+	mu              sync.Mutex
+	answeredCallIDs map[string]bool
+	callID          string
+	fromTag         string
+	toTag           string
+	cseq            int
+	contact         string
+	answered        bool
+	byeReceived     chan struct{}
+	byeOnce         sync.Once
+	rtpCount        chan int
+	rtp             *net.UDPConn
 
 	expectedServerSSRC uint32
 	serverRTPPort      int
@@ -57,13 +58,14 @@ func newTrunkPeer(t *testing.T) *trunkPeer {
 	require.NoError(t, err)
 
 	p := &trunkPeer{
-		t:           t,
-		ctx:         ctx,
-		cancel:      cancel,
-		conn:        conn,
-		byeReceived: make(chan struct{}),
-		rtpCount:    make(chan int, 1),
-		rtp:         rtp,
+		t:               t,
+		ctx:             ctx,
+		cancel:          cancel,
+		conn:            conn,
+		byeReceived:     make(chan struct{}),
+		rtpCount:        make(chan int, 1),
+		rtp:             rtp,
+		answeredCallIDs: make(map[string]bool),
 	}
 
 	go p.listen()
@@ -125,6 +127,19 @@ func (p *trunkPeer) handleIncomingInvite(msg string, writeFunc func([]byte) erro
 	callID := extractHeader(msg, "Call-ID")
 
 	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Answer an INVITE only once per Call-ID. In-dialog re-INVITEs (session
+	// timer refreshes) reuse the same Call-ID; ignoring them after the initial
+	// setup lets a peer appear as a ghost so the server's timer teardown path
+	// is exercised. Distinct Call-IDs (a second call on the same peer) are
+	// still answered.
+	if p.answeredCallIDs[callID] {
+		p.t.Logf("Trunk peer ignoring re-INVITE for already-answered Call-ID %s", callID)
+		return
+	}
+	p.answeredCallIDs[callID] = true
+
 	p.callID = callID
 	p.fromTag = extractTag(fromHeader)
 	p.toTag = fmt.Sprintf("trunk-peer-%d", time.Now().UnixNano())
@@ -147,15 +162,25 @@ func (p *trunkPeer) handleIncomingInvite(msg string, writeFunc func([]byte) erro
 			p.serverRTPPort = port
 		}
 	}
-	p.mu.Unlock()
 
 	// Build SDP answer
 	rtpPort := p.rtp.LocalAddr().(*net.UDPAddr).Port
 	sdp := fmt.Sprintf("v=0\r\no=- %d 1 IN IP4 127.0.0.1\r\ns=trunk-peer\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio %d RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n",
 		time.Now().UnixNano(), rtpPort)
 
-	resp := fmt.Sprintf("SIP/2.0 200 OK\r\nVia: %s\r\nCall-ID: %s\r\nFrom: %s\r\nTo: <sip:trunk@127.0.0.1>;tag=%s\r\nCSeq: 1 INVITE\r\nContent-Type: application/sdp\r\nContact: <sip:trunk@127.0.0.1:%d>\r\nContent-Length: %d\r\n\r\n%s",
-		viaHeader, callID, fromHeader, p.toTag, rtpPort, len(sdp), sdp)
+	// A RFC 4028-capable trunk confirms a session timer offer by copying the
+	// Session-Expires interval into its 2xx response (RFC 4028 §7.1). The
+	// refresher parameter is omitted, defaulting to the UAC (the server) per
+	// §8 Table 2 — so the server sends the refresh re-INVITEs this peer
+	// deliberately ignores to simulate a ghost session.
+	timerHeaders := ""
+	if se := extractHeader(msg, "Session-Expires"); se != "" {
+		interval := strings.TrimSpace(strings.SplitN(se, ";", 2)[0])
+		timerHeaders = fmt.Sprintf("Supported: timer\r\nSession-Expires: %s\r\n", interval)
+	}
+
+	resp := fmt.Sprintf("SIP/2.0 200 OK\r\nVia: %s\r\nCall-ID: %s\r\nFrom: %s\r\nTo: <sip:trunk@127.0.0.1>;tag=%s\r\nCSeq: 1 INVITE\r\n%sContent-Type: application/sdp\r\nContact: <sip:trunk@127.0.0.1:%d>\r\nContent-Length: %d\r\n\r\n%s",
+		viaHeader, callID, fromHeader, p.toTag, timerHeaders, rtpPort, len(sdp), sdp)
 
 	p.t.Logf("Trunk peer sending 200 OK")
 	if err := writeFunc([]byte(resp)); err != nil {
@@ -165,9 +190,7 @@ func (p *trunkPeer) handleIncomingInvite(msg string, writeFunc func([]byte) erro
 		go receiveRTP(p.rtp, p.rtpCount, p.ctx, p.expectedServerSSRC)
 	}
 
-	p.mu.Lock()
 	p.answered = true
-	p.mu.Unlock()
 }
 
 func (p *trunkPeer) handleIncomingBye(msg string, writeFunc func([]byte) error) {

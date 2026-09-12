@@ -535,8 +535,10 @@ func TestIntegration_Trunk(t *testing.T) {
 		}
 
 		// Don't send BYE from Alice — let session timer expire
-		// Wait for session timer (2s) plus margin
-		time.Sleep(3500 * time.Millisecond)
+		// Refresh goes out at t=1s (half interval); the ghost peer stops
+		// answering re-INVITEs, so teardown fires ~1s later. Sleep past that
+		// with margin so the channel is provably released.
+		time.Sleep(4500 * time.Millisecond)
 
 		// Now make a second call — should succeed because session timer
 		// should have released the channel
