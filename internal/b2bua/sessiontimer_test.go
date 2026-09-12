@@ -54,6 +54,13 @@ func (c *captureTransport) distinctBranches() int {
 	return len(seen)
 }
 
+// snapshotAll returns a copy of every message sent on the transport.
+func (c *captureTransport) snapshotAll() []*proto.SIPMessage {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]*proto.SIPMessage(nil), c.sent...)
+}
+
 // newTestHandler returns a handler with a UAC manager, suitable for
 // exercising outbound request construction.
 func newTestHandler(t *testing.T) *Handler {
@@ -373,7 +380,140 @@ func TestRefresherTimerLoop_NoOverlappingRefreshes(t *testing.T) {
 	}
 }
 
-// TestResetSessionTimer_KeepsParentContextLifecycle verifies that a timer
+// TestRefresherLoop_AcksRefresh2xx verifies the refresher ACKs the peer's
+// 200 OK to a session refresh re-INVITE (RFC 3261 §13.2.2.4). The UAC
+// transaction does not ACK 2xx responses itself; a missing ACK makes the
+// peer retransmit the 200 until Timer H and can tear the dialog down.
+func TestRefresherLoop_AcksRefresh2xx(t *testing.T) {
+	tport := &captureTransport{}
+	h := newTestHandler(t)
+
+	dlg := sip.NewDialog(
+		sip.DialogID{CallID: "alice-call", LocalTag: "local", RemoteTag: "remote"},
+		"sip:trec@127.0.0.1:5060", "sip:alice@localhost", "sip:alice@localhost:9999",
+	)
+	call := &Call{
+		AliceCallID:     "alice-call",
+		AliceDialog:     dlg,
+		AliceTransport:  tport,
+		AliceContactURI: "sip:alice@localhost:9999",
+		AliceTarget:     &sip.Target{},
+		AliceSessionTimer: &SessionTimer{
+			Interval:  2 * time.Second,
+			MinSE:     90 * time.Second,
+			Refresher: "uas",
+		},
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	h.StartSessionTimer(ctx, call, "alice")
+
+	// Wait for the refresh re-INVITE.
+	deadline := time.Now().Add(10 * time.Second)
+	var refresh *proto.SIPMessage
+	for time.Now().Before(deadline) {
+		for _, m := range tport.snapshotAll() {
+			if m.Method() == proto.SIPMethodINVITE {
+				refresh = m
+			}
+		}
+		if refresh != nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if refresh == nil {
+		t.Fatal("no refresh re-INVITE sent")
+	}
+
+	uac := h.uacMgr.Get(viaBranch(refresh.Headers.GetFirst("Via")))
+	if uac == nil {
+		t.Fatal("refresh transaction not registered in UAC manager")
+	}
+	ok := trunk200OK(t, "")
+	uac.Responses <- ok
+	uac.Cancel() // production stops retransmit timers on final delivery; test bypasses that path
+
+	// The ACK must appear on the leg's transport with the 200 OK's CSeq.
+	deadline = time.Now().Add(2 * time.Second)
+	var ack *proto.SIPMessage
+	for time.Now().Before(deadline) {
+		for _, m := range tport.snapshotAll() {
+			if m.Method() == proto.SIPMethodACK {
+				ack = m
+			}
+		}
+		if ack != nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if ack == nil {
+		t.Fatal("refresh 200 OK was not ACKed")
+	}
+	if ack.CSeq.Seq != ok.CSeq.Seq || ack.CSeq.Method != proto.SIPMethodACK {
+		t.Errorf("ACK CSeq = %v, want {ACK %d} (same seq as the refresh INVITE)", ack.CSeq, ok.CSeq.Seq)
+	}
+	if got := ack.Headers.GetFirst("Call-ID"); got != "alice-call" {
+		t.Errorf("ACK Call-ID = %q, want alice-call", got)
+	}
+}
+
+// TestSessionTimerLifecycle_ConcurrentStopResetRace hammers Stop/Reset/Start
+// concurrently and then tears the timer down: the lifecycle fields must be
+// synchronized so a teardown cannot race a reset into leaving a live refresh
+// goroutine behind (run with -race).
+func TestSessionTimerLifecycle_ConcurrentStopResetRace(t *testing.T) {
+	tport := &captureTransport{}
+	h := newTestHandler(t)
+
+	dlg := sip.NewDialog(
+		sip.DialogID{CallID: "alice-call", LocalTag: "local", RemoteTag: "remote"},
+		"sip:trec@127.0.0.1:5060", "sip:alice@localhost", "sip:alice@localhost:9999",
+	)
+	call := &Call{
+		AliceCallID:     "alice-call",
+		AliceDialog:     dlg,
+		AliceTransport:  tport,
+		AliceContactURI: "sip:alice@localhost:9999",
+		AliceTarget:     &sip.Target{},
+		AliceSessionTimer: &SessionTimer{
+			Interval:  300 * time.Millisecond,
+			MinSE:     90 * time.Second,
+			Refresher: "uas",
+		},
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	h.StartSessionTimer(ctx, call, "alice")
+
+	// Concurrent resets and stops while the refresher loop is running.
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				h.ResetSessionTimer(call, "alice")
+				h.StopSessionTimer(call, "alice")
+				h.StartSessionTimer(ctx, call, "alice")
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Final teardown: after this returns, no refresh goroutine may survive.
+	h.StopSessionTimer(call, "alice")
+	time.Sleep(500 * time.Millisecond) // several intervals' worth
+	baseline := tport.sentCount()
+	time.Sleep(700 * time.Millisecond)
+	if got := tport.sentCount(); got != baseline {
+		t.Errorf("refresh goroutine survived teardown: %d sends after stop (baseline %d)", got-baseline, baseline)
+	}
+}
+
 // restarted via ResetSessionTimer stays attached to the context it was
 // originally started with: it keeps refreshing, and it stops when that
 // context is canceled (no orphaned refreshes on context.Background()).

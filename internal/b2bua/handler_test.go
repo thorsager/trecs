@@ -474,7 +474,108 @@ func TestReInviteResponseLoop_TimerResetOnlyOnConfirmedRefresh(t *testing.T) {
 	})
 }
 
-// TestB2BUAResponseLoop_ClosesRTPOn422 verifies the non-trunk 422 path
+// TestSendInDialogACK verifies the 2xx-ACK helper builds a compliant
+// in-dialog ACK per RFC 3261 §13.2.2.4: same Call-ID, tags, and CSeq sequence
+// number as the INVITE, ACK method, and the dialog's remote target as
+// Request-URI.
+func TestSendInDialogACK(t *testing.T) {
+	bobTP := &captureTransport{}
+	h := newTestHandler(t)
+	h.serverIP = "127.0.0.1"
+	h.serverPort = "5060"
+	call := newReInviteCall(t, bobTP)
+
+	if !h.sendInDialogACK(call, "bob", 7) {
+		t.Fatal("sendInDialogACK(bob) returned false")
+	}
+	ack := bobTP.lastSent()
+	if ack == nil {
+		t.Fatal("no ACK captured on Bob transport")
+	}
+	if ack.Method() != proto.SIPMethodACK {
+		t.Errorf("method = %s, want ACK", ack.Method())
+	}
+	if ack.CSeq.Seq != 7 || ack.CSeq.Method != proto.SIPMethodACK {
+		t.Errorf("CSeq = %v, want {ACK 7} (must repeat the INVITE's CSeq)", ack.CSeq)
+	}
+	if got := ack.Headers.GetFirst("Call-ID"); got != "bob-call" {
+		t.Errorf("Call-ID = %q, want bob-call", got)
+	}
+	from := ack.Headers.GetFirst("From")
+	to := ack.Headers.GetFirst("To")
+	if !strings.Contains(from, "tag=server") || !strings.Contains(to, "tag=bob-remote") {
+		t.Errorf("tags wrong: From=%q To=%q (want local=server, remote=bob-remote)", from, to)
+	}
+	if got := ack.Headers.GetFirst("Via"); !strings.Contains(got, "branch=") {
+		t.Errorf("ACK Via missing branch: %q", got)
+	}
+
+	// The Alice leg uses its own dialog identity.
+	aliceTP := call.AliceTransport.(*captureTransport)
+	if !h.sendInDialogACK(call, "alice", 3) {
+		t.Fatal("sendInDialogACK(alice) returned false")
+	}
+	ackA := aliceTP.lastSent()
+	if ackA == nil {
+		t.Fatal("no ACK captured on Alice transport")
+	}
+	if ackA.CSeq.Seq != 3 {
+		t.Errorf("alice ACK CSeq.Seq = %d, want 3", ackA.CSeq.Seq)
+	}
+	if got := ackA.Headers.GetFirst("To"); !strings.Contains(got, "tag=alice-remote") {
+		t.Errorf("alice ACK To tag = %q, want alice-remote", got)
+	}
+
+	// A terminated dialog must not be ACKed.
+	call.BobDialog.SetState(sip.DialogStateTerminated)
+	if h.sendInDialogACK(call, "bob", 8) {
+		t.Error("sendInDialogACK on terminated dialog returned true")
+	}
+}
+
+// TestReInviteResponseLoop_AcksForwarded2xx verifies the 200 OK for a
+// forwarded re-INVITE is ACKed on the forwarded leg before being relayed
+// (RFC 3261 §13.2.2.4) — the UAC transaction does not ACK 2xx responses
+// itself, and an unACKed 200 OK gets retransmitted until Timer H.
+func TestReInviteResponseLoop_AcksForwarded2xx(t *testing.T) {
+	bobTP := &captureTransport{}
+	h := newTestHandler(t)
+	h.uacMgr = sip.NewUACManager()
+	call := newReInviteCall(t, bobTP)
+
+	tx := &mockB2BUATx{}
+	req := reInviteRequest(t, call.AliceCallID, "timer", "600;refresher=uas", "90")
+	h.handleReInvite(t.Context(), req, tx, call)
+
+	fwd := bobTP.lastSent()
+	if fwd == nil {
+		t.Fatal("expected forwarded re-INVITE to be sent to Bob")
+	}
+	uac := h.uacMgr.Get(viaBranch(fwd.Headers.GetFirst("Via")))
+	if uac == nil {
+		t.Fatal("forwarded re-INVITE transaction not registered in UAC manager")
+	}
+	ok := trunk200OK(t, "")
+	uac.Responses <- ok
+	uac.Cancel() // bypasses production's final-delivery timer cleanup
+
+	waitForRelayedResponse(t, tx) // relay confirms the 200 branch ran
+
+	// The ACK must carry the 200 OK's CSeq sequence number.
+	var ack *proto.SIPMessage
+	for _, m := range bobTP.snapshotAll() {
+		if m.Method() == proto.SIPMethodACK {
+			ack = m
+		}
+	}
+	if ack == nil {
+		t.Fatal("no ACK sent on the forwarded (Bob) leg for the re-INVITE 200 OK")
+	}
+	if ack.CSeq.Seq != ok.CSeq.Seq || ack.CSeq.Method != proto.SIPMethodACK {
+		t.Errorf("ACK CSeq = %v, want {ACK %d} (same seq as the INVITE)", ack.CSeq, ok.CSeq.Seq)
+	}
+}
+
 // releases the allocated RTP ports: there is no retry mechanism there, so the
 // setup is failing and leaving the conns open would leak sockets until exit.
 func TestB2BUAResponseLoop_ClosesRTPOn422(t *testing.T) {
@@ -886,50 +987,42 @@ func trunk200OK(t *testing.T, headers string) *proto.SIPMessage {
 func TestNegotiateBobSessionTimer(t *testing.T) {
 	h := newTestHandler(t)
 
-	const interval = 1800 * time.Second
 	const minSE = 300 * time.Second
 
 	tests := []struct {
-		name           string
-		respHeaders    string
-		sessionExpires time.Duration
-		want           *SessionTimer
+		name        string
+		respHeaders string
+		want        *SessionTimer
 	}{
 		{
-			name:           "peer negotiated timer",
-			respHeaders:    "Supported: timer\r\nSession-Expires: 600;refresher=uas\r\n",
-			sessionExpires: interval,
-			want:           &SessionTimer{Interval: 600 * time.Second, MinSE: minSE, Refresher: "uas"},
+			name:        "peer negotiated timer",
+			respHeaders: "Supported: timer\r\nSession-Expires: 600;refresher=uas\r\n",
+			want:        &SessionTimer{Interval: 600 * time.Second, MinSE: minSE, Refresher: "uas"},
 		},
 		{
-			name:           "peer supports timer but omitted Session-Expires",
-			respHeaders:    "Supported: timer\r\n",
-			sessionExpires: 600 * time.Second,
-			want:           &SessionTimer{Interval: 600 * time.Second, MinSE: minSE, Refresher: "uac"},
+			// RFC 4028 §7.1/§7.3: the UAS engages the timer by copying
+			// Session-Expires into the 2xx. A 200 OK without it means no
+			// session timer applies, even if we offered one and the peer
+			// claims timer support.
+			name:        "peer supports timer but omitted Session-Expires",
+			respHeaders: "Supported: timer\r\n",
+			want:        nil,
 		},
 		{
-			name:           "peer did not negotiate timer",
-			respHeaders:    "",
-			sessionExpires: interval,
-			want:           &SessionTimer{Interval: interval, MinSE: minSE, Refresher: "uac"},
+			name:        "peer did not negotiate timer",
+			respHeaders: "",
+			want:        nil,
 		},
 		{
-			name:           "no interval configured",
-			respHeaders:    "",
-			sessionExpires: 0,
-			want:           nil,
-		},
-		{
-			name:           "timers disabled with peer claiming timer support",
-			respHeaders:    "Supported: timer\r\n",
-			sessionExpires: 0,
-			want:           nil,
+			name:        "Session-Expires without Supported header still engages",
+			respHeaders: "Session-Expires: 900\r\n",
+			want:        &SessionTimer{Interval: 900 * time.Second, MinSE: minSE, Refresher: "uac"},
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := h.negotiateBobSessionTimer(trunk200OK(t, tc.respHeaders), tc.sessionExpires, minSE)
+			got := h.negotiateBobSessionTimer(trunk200OK(t, tc.respHeaders), minSE)
 			if tc.want == nil {
 				if got != nil {
 					t.Fatalf("got %+v, want nil", got)

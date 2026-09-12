@@ -129,6 +129,12 @@ type callCtx struct {
 	aliceSDPBytes     []byte
 	recordRoute       string
 	aliceSessionTimer *SessionTimer // session timer negotiated with Alice (inbound leg)
+	// bobInviteCSeq is the CSeq sequence number of the outbound (Bob) INVITE
+	// as last sent — it advances past 1 when a 422 retry re-sends the INVITE.
+	// The 2xx ACK must repeat this value (RFC 3261 §13.2.2.4) and the dialog's
+	// local sequence must start from it so subsequent in-dialog requests stay
+	// strictly increasing (RFC 3261 §12.2.1.1).
+	bobInviteCSeq int
 }
 
 // SetProxyPasswordStore enables proxy authentication for INVITE and BYE
@@ -705,7 +711,8 @@ func (h *Handler) handleB2BUAInvite(ctx context.Context, req *proto.SIPMessage, 
 		calleeTag: calleeTag, bobCallID: bobCallID, to: to,
 		selectedPT: selectedPT, hasEarlyOffer: hasEarlyOffer,
 		aliceSDPOffer: aliceSDPOffer, aliceSDPBytes: aliceSDPBytes,
-		recordRoute: recordRoute,
+		recordRoute:   recordRoute,
+		bobInviteCSeq: bobInvite.CSeq.Seq,
 	}
 
 	go h.b2buaResponseLoop(responseCtx, cc, bobInvite, binding, aliceSupports100rel)
@@ -874,6 +881,15 @@ func (h *Handler) reInviteResponseLoop(ctx context.Context, origReq *proto.SIPMe
 				log.Info("B2BUA: re-INVITE 200 OK received, forwarding to originating leg",
 					"fromAlice", isFromAlice)
 
+				// Complete the INVITE transaction on the forwarded leg with an
+				// ACK (RFC 3261 §13.2.2.4) — the UAC transaction does not ACK
+				// 2xx responses itself.
+				fwdLeg := "alice"
+				if isFromAlice {
+					fwdLeg = "bob"
+				}
+				h.sendInDialogACK(call, fwdLeg, resp.CSeq.Seq)
+
 				// The refresh is confirmed: reset both legs' session timers
 				// (RFC 4028 §7.2 — the 2xx we are about to send completes the
 				// originating leg, and the 2xx we just received completes the
@@ -929,6 +945,61 @@ func (h *Handler) reInviteResponseLoop(ctx context.Context, origReq *proto.SIPMe
 // resetSessionTimer resets the session timer for a call leg.
 func (h *Handler) resetSessionTimer(call *Call, leg string) {
 	h.ResetSessionTimer(call, leg)
+}
+
+// sendInDialogACK sends the ACK for a 2xx final response to an in-dialog
+// INVITE on the given leg ("alice" or "bob") (RFC 3261 §13.2.2.4).
+// UACTransaction.HandleResponse only generates ACKs for final responses
+// >= 300, so 2xx responses to in-dialog INVITEs must be ACKed explicitly;
+// otherwise the peer retransmits the 200 OK until Timer H and may terminate
+// the dialog. The ACK repeats the INVITE's Call-ID, tags, and CSeq sequence
+// number, but carries a fresh Via branch — a 2xx ACK constitutes a new
+// transaction. Returns false when the leg has no usable dialog.
+func (h *Handler) sendInDialogACK(call *Call, leg string, cseq int) bool {
+	log := slog.Default().With("callID", call.AliceCallID, "leg", leg)
+
+	var dlg *sip.Dialog
+	var transport sip.Transport
+	var target *sip.Target
+	var requestURI string
+
+	if leg == "alice" {
+		dlg = call.AliceDialog
+		transport = call.AliceTransport
+		target = call.AliceTarget
+		requestURI = call.AliceContactURI
+	} else {
+		dlg = call.BobDialog
+		transport = call.BobTransport
+		target = call.BobTarget
+		requestURI = call.BobContactURI
+	}
+
+	if dlg == nil || dlg.IsTerminated() || requestURI == "" || transport == nil || target == nil {
+		return false
+	}
+
+	ack := proto.NewRequest(proto.SIPMethodACK, sip.StripBrackets(requestURI))
+	ack.Headers.Add("Via",
+		fmt.Sprintf("SIP/2.0/%s %s:%s;branch=%s",
+			sip.TransportName(transport), h.serverIP, h.serverPort, sip.GenerateBranch()))
+	ack.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s",
+		sip.StripBrackets(dlg.LocalURI), dlg.ID.LocalTag))
+	ack.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s",
+		sip.StripBrackets(dlg.RemoteURI), dlg.ID.RemoteTag))
+	ack.Headers.Add("Call-ID", dlg.ID.CallID)
+	// The 2xx ACK carries the same CSeq sequence number as the INVITE
+	// (RFC 3261 §13.2.2.4).
+	ack.CSeq = proto.CSeq{Method: proto.SIPMethodACK, Seq: cseq}
+	ack.Headers.Add("Max-Forwards", "70")
+	ack.Headers.Add("Content-Length", "0")
+
+	if err := transport.Send(ack, target); err != nil {
+		log.Warn("failed to send in-dialog ACK", "error", err)
+		return false
+	}
+	log.Debug("sent in-dialog ACK", "cseq", cseq)
+	return true
 }
 
 // sendBye sends a BYE request to the specified leg.
@@ -1237,7 +1308,8 @@ func (h *Handler) handleTrunkInvite(ctx context.Context, req *proto.SIPMessage, 
 		calleeTag: calleeTag, bobCallID: bobCallID, to: to,
 		selectedPT: selectedPT, hasEarlyOffer: hasEarlyOffer,
 		aliceSDPOffer: aliceSDPOffer, aliceSDPBytes: aliceSDPBytes,
-		recordRoute: recordRoute,
+		recordRoute:   recordRoute,
+		bobInviteCSeq: bobInvite.CSeq.Seq,
 	}
 
 	go h.trunkResponseLoop(responseCtx, cc, bobInvite, trk.Name, bobReqURI, sessionExpires, h.minSE, trunkIP)
@@ -1331,7 +1403,7 @@ func (h *Handler) trunkResponseLoop(ctx context.Context, cc *callCtx,
 			}
 
 			if sc == 200 {
-				h.handleTrunk200OK(ctx, cc, resp, trunkName, bobReqURI, sessionExpires, minSE)
+				h.handleTrunk200OK(ctx, cc, resp, trunkName, bobReqURI, minSE)
 				return
 			}
 
@@ -1371,6 +1443,9 @@ func (h *Handler) trunkResponseLoop(ctx context.Context, cc *callCtx,
 				bobInvite.Headers.Set("Session-Expires", []string{FormatSessionExpires(DurationToSeconds(sessionExpires), "uac")})
 				bobInvite.Headers.Set("Min-SE", []string{FormatMinSE(DurationToSeconds(minSE))})
 				bobInvite.CSeq.Seq++
+				// Track the final INVITE CSeq: the 2xx ACK must repeat it and
+				// the dialog's local sequence continues from it.
+				cc.bobInviteCSeq = bobInvite.CSeq.Seq
 				// The retry is a new transaction per RFC 4028 §7.3. Create a fresh
 				// UAC transaction and point the Via branch at it so responses are
 				// routed back to this transaction (RFC 3261 §17.1.3). The previous
@@ -1423,7 +1498,7 @@ func (h *Handler) trunkResponseLoop(ctx context.Context, cc *callCtx,
 
 func (h *Handler) handleTrunk200OK(ctx context.Context, cc *callCtx,
 	resp *proto.SIPMessage, trunkName, bobReqURI string,
-	sessionExpires, minSE time.Duration,
+	minSE time.Duration,
 ) {
 	ctx = logutil.WithValues(ctx,
 		"bobCallID", cc.bobCallID,
@@ -1468,7 +1543,9 @@ func (h *Handler) handleTrunk200OK(ctx context.Context, cc *callCtx,
 	ackToTrunk.Headers.Add("From", fmt.Sprintf("<%s>;tag=%s", cc.from.URI, cc.calleeTag))
 	ackToTrunk.Headers.Add("To", fmt.Sprintf("<%s>;tag=%s", cc.to.URI, bobTo.Tag))
 	ackToTrunk.Headers.Add("Call-ID", cc.bobCallID)
-	ackToTrunk.CSeq = proto.CSeq{Method: proto.SIPMethodACK, Seq: 1}
+	// The 2xx ACK repeats the INVITE's CSeq sequence number (RFC 3261
+	// §13.2.2.4) — which is 2 or higher when a 422 retry re-sent the INVITE.
+	ackToTrunk.CSeq = proto.CSeq{Method: proto.SIPMethodACK, Seq: cc.bobInviteCSeq}
 	ackToTrunk.Headers.Add("Max-Forwards", "70")
 	ackToTrunk.Headers.Add("Content-Length", "0")
 	if err := cc.transportImpl.Send(ackToTrunk, cc.target); err != nil {
@@ -1549,6 +1626,10 @@ func (h *Handler) handleTrunk200OK(ctx context.Context, cc *callCtx,
 		RemoteTag: bobTo.Tag,
 	}
 	bobDialog := sip.NewDialog(bobDialogID, serverContact, cc.to.URI, bobReqURI)
+	// The initial INVITE (including any 422 retry) used cc.bobInviteCSeq;
+	// seed the local sequence so the first in-dialog request continues from
+	// it (RFC 3261 §12.2.1.1).
+	bobDialog.LocalSeq = cc.bobInviteCSeq
 	bobDialog.SetState(sip.DialogStateConfirmed)
 
 	aliceTarget := cc.tx.Target()
@@ -1595,8 +1676,10 @@ func (h *Handler) handleTrunk200OK(ctx context.Context, cc *callCtx,
 
 	h.store.Store(call)
 
-	// Negotiate the Bob-leg session timer from the 200 OK (RFC 4028).
-	call.BobSessionTimer = h.negotiateBobSessionTimer(resp, sessionExpires, minSE)
+	// Negotiate the Bob-leg session timer from the 200 OK (RFC 4028). The
+	// timer engages only when the peer confirmed it with a Session-Expires
+	// header in the 2xx.
+	call.BobSessionTimer = h.negotiateBobSessionTimer(resp, minSE)
 	if call.BobSessionTimer != nil {
 		log.Info("B2BUA: session timer established (trunk Bob leg)",
 			"interval", call.BobSessionTimer.Interval,
@@ -1646,31 +1729,23 @@ func (h *Handler) negotiateAliceSessionTimer(req *proto.SIPMessage) *SessionTime
 // negotiateBobSessionTimer decides the session timer for the outbound (Bob)
 // leg of a call from the peer's 200 OK (RFC 4028).
 //
-// If the peer negotiated a session timer (Supported: timer plus a resolved
-// Session-Expires), its interval and refresher are honored. If the peer
-// claims timer support but omits Session-Expires, or does not support the
-// timer at all, the interval we offered in the INVITE is kept and, per
-// RFC 4028 §8 Table 2, the UAC — the server — is the refresher. Min-SE is
+// Per RFC 4028 §7.1 the UAS engages the session timer by copying a
+// Session-Expires header into its 2xx response; per §7.3 a 2xx without
+// Session-Expires means no session timer applies, regardless of what the
+// request offered. Starting a timer the peer never negotiated would send
+// unsolicited refresh re-INVITEs and can tear down otherwise healthy calls.
+// Returns nil when the peer did not confirm timer negotiation. Min-SE is
 // tracked per Call-ID (RFC 4028 §7.4), so the negotiated minimum is used
-// rather than the handler-wide default. Returns nil when no interval applies.
-func (h *Handler) negotiateBobSessionTimer(resp *proto.SIPMessage, sessionExpires, minSE time.Duration) *SessionTimer {
-	if HasTimerSupport(resp) {
-		bobSE, bobRefresher := ParseSessionExpires(resp.Headers.GetFirst("Session-Expires"))
-		if bobSE > 0 {
-			return &SessionTimer{
-				Interval:  bobSE,
-				MinSE:     minSE,
-				Refresher: bobRefresher,
-			}
-		}
-	}
-	if sessionExpires <= 0 {
+// rather than the handler-wide default.
+func (h *Handler) negotiateBobSessionTimer(resp *proto.SIPMessage, minSE time.Duration) *SessionTimer {
+	bobSE, bobRefresher := ParseSessionExpires(resp.Headers.GetFirst("Session-Expires"))
+	if bobSE <= 0 {
 		return nil
 	}
 	return &SessionTimer{
-		Interval:  sessionExpires,
+		Interval:  bobSE,
 		MinSE:     minSE,
-		Refresher: "uac",
+		Refresher: bobRefresher,
 	}
 }
 
@@ -1970,6 +2045,9 @@ func (h *Handler) handleBob200OK(ctx context.Context, cc *callCtx,
 		RemoteTag: bobTo.Tag,
 	}
 	bobDialog := sip.NewDialog(bobDialogID, serverContact, cc.to.URI, binding.ContactURI)
+	// The initial INVITE used cc.bobInviteCSeq; seed the local sequence so
+	// the first in-dialog request continues from it (RFC 3261 §12.2.1.1).
+	bobDialog.LocalSeq = cc.bobInviteCSeq
 	bobDialog.SetState(sip.DialogStateConfirmed)
 
 	aliceTarget := cc.tx.Target()
@@ -2013,9 +2091,10 @@ func (h *Handler) handleBob200OK(ctx context.Context, cc *callCtx,
 		log.Debug("B2BUA: waiting for Alice ACK with SDP (delayed offer)")
 	}
 
-	// Negotiate the Bob-leg session timer from the 200 OK (RFC 4028), using
-	// the interval we offered in the INVITE as the fallback.
-	call.BobSessionTimer = h.negotiateBobSessionTimer(resp, h.sessionExpires, h.minSE)
+	// Negotiate the Bob-leg session timer from the 200 OK (RFC 4028). The
+	// timer engages only when the peer confirmed it with a Session-Expires
+	// header in the 2xx — never from our own offered interval alone.
+	call.BobSessionTimer = h.negotiateBobSessionTimer(resp, h.minSE)
 	if call.BobSessionTimer != nil {
 		log.Info("B2BUA: session timer established (Bob leg)",
 			"interval", call.BobSessionTimer.Interval,

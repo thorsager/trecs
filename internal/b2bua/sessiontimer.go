@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/thorsager/trecs/internal/sip"
@@ -26,10 +27,25 @@ type SessionTimer struct {
 	StartTime time.Time          // when this timer was last started/reset
 	Cancel    context.CancelFunc // to cancel the timer goroutine
 
+	// mu guards the lifecycle fields (Cancel, baseCtx, StartTime, ExpiresAt).
+	// StopSessionTimer (teardown), ResetSessionTimer (re-INVITE response) and
+	// StartSessionTimer (initial start and resets) can run concurrently; the
+	// mutex keeps stop/install atomic so a live refresh goroutine cannot
+	// survive a teardown, and keeps the race detector happy.
+	mu sync.Mutex
+
 	// baseCtx is the parent context captured at StartSessionTimer. Resets
 	// restart from this context rather than context.Background(), keeping the
 	// timer tied to the same lifecycle it was originally started under.
 	baseCtx context.Context
+}
+
+// legTimer returns the session timer for the given leg ("alice" or "bob").
+func legTimer(call *Call, leg string) *SessionTimer {
+	if leg == "bob" {
+		return call.BobSessionTimer
+	}
+	return call.AliceSessionTimer
 }
 
 // ParseSessionExpires extracts the interval and refresher from a Session-Expires header value.
@@ -165,25 +181,30 @@ func DurationToSeconds(d time.Duration) int {
 // For the refresher side, it sends a re-INVITE at half the interval.
 // For the non-refresher side, it monitors for incoming re-INVITEs.
 func (h *Handler) StartSessionTimer(ctx context.Context, call *Call, leg string) {
-	timer := call.AliceSessionTimer
-	if leg == "bob" {
-		timer = call.BobSessionTimer
-	}
+	timer := legTimer(call, leg)
 	if timer == nil || timer.Interval <= 0 {
 		return
 	}
 
-	// Cancel any existing timer for this leg.
-	h.StopSessionTimer(call, leg)
-
+	timer.mu.Lock()
+	// Cancel any existing goroutine for this leg before installing the new
+	// one. Holding the lock across stop+install keeps the pair atomic: two
+	// concurrent starts cannot leave an older goroutine running with a
+	// Cancel function that nobody holds a reference to anymore.
+	if timer.Cancel != nil {
+		timer.Cancel()
+	}
 	timerCtx, cancel := context.WithCancel(ctx)
 	timer.Cancel = cancel
 	timer.baseCtx = ctx
 	timer.StartTime = time.Now()
 	timer.ExpiresAt = timer.StartTime.Add(timer.Interval)
+	isRefresher := (leg == "alice" && timer.Refresher == "uas") ||
+		(leg == "bob" && timer.Refresher == "uac")
+	logInterval, logRefresher, logExpiresAt := timer.Interval, timer.Refresher, timer.ExpiresAt
+	timer.mu.Unlock()
 
-	if (leg == "alice" && timer.Refresher == "uas") ||
-		(leg == "bob" && timer.Refresher == "uac") {
+	if isRefresher {
 		// We are the refresher: send re-INVITE at half the interval.
 		go h.refresherTimerLoop(timerCtx, call, leg, timer)
 	} else {
@@ -195,18 +216,20 @@ func (h *Handler) StartSessionTimer(ctx context.Context, call *Call, leg string)
 	log.Info("session timer started",
 		"callID", call.AliceCallID,
 		"leg", leg,
-		"interval", timer.Interval,
-		"refresher", timer.Refresher,
-		"expiresAt", timer.ExpiresAt)
+		"interval", logInterval,
+		"refresher", logRefresher,
+		"expiresAt", logExpiresAt)
 }
 
 // StopSessionTimer stops the session timer goroutine for a call leg.
 func (h *Handler) StopSessionTimer(call *Call, leg string) {
-	timer := call.AliceSessionTimer
-	if leg == "bob" {
-		timer = call.BobSessionTimer
+	timer := legTimer(call, leg)
+	if timer == nil {
+		return
 	}
-	if timer != nil && timer.Cancel != nil {
+	timer.mu.Lock()
+	defer timer.mu.Unlock()
+	if timer.Cancel != nil {
 		timer.Cancel()
 		timer.Cancel = nil
 	}
@@ -214,20 +237,20 @@ func (h *Handler) StopSessionTimer(call *Call, leg string) {
 
 // ResetSessionTimer resets the session timer for a call leg (called on re-INVITE receipt).
 func (h *Handler) ResetSessionTimer(call *Call, leg string) {
-	timer := call.AliceSessionTimer
-	if leg == "bob" {
-		timer = call.BobSessionTimer
-	}
+	timer := legTimer(call, leg)
 	if timer == nil || timer.Interval <= 0 {
 		return
 	}
 
-	// Cancel existing timer and restart on the same parent context the timer
-	// was originally started with. context.Background() would disconnect the
-	// restarted timer from the call lifecycle; reusing the loop's own (soon to
-	// be canceled) context would kill it immediately.
-	h.StopSessionTimer(call, leg)
+	// Restart on the same parent context the timer was originally started
+	// with. context.Background() would disconnect the restarted timer from
+	// the call lifecycle; reusing the loop's own (soon to be canceled)
+	// context would kill it immediately. The parent is read under the lock;
+	// StartSessionTimer performs the stop+install atomically under it again.
+	timer.mu.Lock()
 	parent := timer.baseCtx
+	logInterval := timer.Interval
+	timer.mu.Unlock()
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -237,7 +260,7 @@ func (h *Handler) ResetSessionTimer(call *Call, leg string) {
 	log.Debug("session timer reset",
 		"callID", call.AliceCallID,
 		"leg", leg,
-		"interval", timer.Interval)
+		"interval", logInterval)
 }
 
 // refresherTimerLoop runs when we are the refresher. It sends a re-INVITE
@@ -453,6 +476,11 @@ func (h *Handler) waitForRefreshResponse(ctx context.Context, uac *sip.UACTransa
 			sc := resp.StatusCode()
 			if sc == 200 {
 				log.Info("session timer: refresh accepted", "leg", leg)
+				// Complete the INVITE transaction with an ACK (RFC 3261
+				// §13.2.2.4). UACTransaction only generates ACKs for final
+				// responses >= 300; without this the peer retransmits the
+				// 200 OK until Timer H and may tear the dialog down.
+				h.sendInDialogACK(call, leg, resp.CSeq.Seq)
 				// Reset the timer on successful refresh.
 				h.ResetSessionTimer(call, leg)
 				return refreshAccepted
