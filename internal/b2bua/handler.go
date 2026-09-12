@@ -178,6 +178,81 @@ func (h *Handler) requireProxyAuth(ctx context.Context, req *proto.SIPMessage, t
 	return creds
 }
 
+// authorizeInviteSource checks whether the sender of an INVITE — initial or
+// in-dialog — is a trusted trunk or holds valid proxy credentials. When
+// authentication is configured and the check fails, an error response has
+// already been sent and the caller must abort; the return value reports
+// whether the request may proceed.
+func (h *Handler) authorizeInviteSource(ctx context.Context, req *proto.SIPMessage, tx sip.Transaction, log *slog.Logger) bool {
+	// Trusted trunks are exempt from proxy auth.
+	if h.trunkMgr != nil {
+		if srcAddr := tx.Target().Addr; srcAddr != nil {
+			srcIP := srcAddr.String()
+			if host, _, err := net.SplitHostPort(srcIP); err == nil {
+				srcIP = host
+			}
+			if h.trunkMgr.TrustedIPMatches(srcIP) {
+				log.Debug("INVITE from trusted trunk, skipping proxy auth", "srcIP", srcIP)
+				return true
+			}
+		}
+	}
+	if h.proxyPasswd == nil {
+		return true
+	}
+	return h.requireProxyAuth(ctx, req, tx, "INVITE") != nil
+}
+
+// enforceSessionInterval rejects a request whose Session-Expires is below
+// minAllowed with 422 and the mandatory Min-SE header (RFC 4028 §5, §7.2).
+// It returns true when a 422 was sent and the caller must stop processing.
+func enforceSessionInterval(req *proto.SIPMessage, tx sip.Transaction, minAllowed time.Duration, log *slog.Logger) bool {
+	se := req.Headers.GetFirst("Session-Expires")
+	if se == "" {
+		return false
+	}
+	inboundSE, _ := ParseSessionExpires(se)
+	if inboundSE <= 0 || inboundSE >= minAllowed {
+		return false
+	}
+	log.Info("B2BUA: Session-Expires below Min-SE, sending 422",
+		"sessionExpires", inboundSE, "minSE", minAllowed)
+	resp := proto.NewResponse(req, proto.SIPStatusSessionIntervalTooSmall, "Session Interval Too Small")
+	resp.Headers.Add("Min-SE", FormatMinSE(DurationToSeconds(minAllowed)))
+	tx.Respond(resp)
+	return true
+}
+
+// reInviteLeg reports which leg ("alice" or "bob") an in-dialog request
+// arrived on, based on its Call-ID.
+func reInviteLeg(callID string, call *Call) string {
+	if callID == call.AliceCallID {
+		return "alice"
+	}
+	return "bob"
+}
+
+// reInviteLegTagsMatch verifies that an in-dialog INVITE's From/To tags match
+// the dialog of the leg its Call-ID belongs to (RFC 3261 §12.2 dialog
+// identification: Call-ID, local tag, remote tag). A request with a stale,
+// foreign, or cross-leg tag must be rejected instead of forwarded.
+func reInviteLegTagsMatch(call *Call, callID string, req *proto.SIPMessage) bool {
+	from, err := req.From()
+	if err != nil {
+		return false
+	}
+	to, err := req.To()
+	if err != nil {
+		return false
+	}
+	switch reInviteLeg(callID, call) {
+	case "alice":
+		return from.Tag == call.AliceFromTag && to.Tag == call.AliceServerTag
+	default:
+		return from.Tag == call.BobRemoteTag && to.Tag == call.BobCalleeTag
+	}
+}
+
 // HandleOptions responds to OPTIONS requests.
 func (h *Handler) HandleOptions(ctx context.Context, req *proto.SIPMessage, tx sip.Transaction) {
 	ctx = logutil.WithValues(ctx,
@@ -236,6 +311,32 @@ func (h *Handler) HandleInvite(ctx context.Context, req *proto.SIPMessage, tx si
 	// Detect in-dialog requests (re-INVITE): To tag present and Call-ID matches existing call.
 	if to, err := req.To(); err == nil && to.Tag != "" {
 		if call := h.store.Get(callID); call != nil {
+			// A dialog is identified by Call-ID plus both tags (RFC 3261
+			// §12.2). A request carrying stale, foreign, or cross-leg tags
+			// must not be forwarded into the other dialog.
+			if !reInviteLegTagsMatch(call, callID, req) {
+				log.Warn("B2BUA: re-INVITE with mismatched dialog tags, rejecting")
+				tx.Respond(proto.NewResponse(req, 481, "Call/Transaction Does Not Exist"))
+				return
+			}
+			// In-dialog refreshes are subject to the same Min-SE bound as
+			// initial INVITEs (RFC 4028 §7.2); the bound is the negotiated
+			// Min-SE of the leg the refresh arrived on.
+			if h.sessionExpires > 0 {
+				minAllowed := h.minSE
+				if st := legTimer(call, reInviteLeg(callID, call)); st != nil && st.MinSE > minAllowed {
+					minAllowed = st.MinSE
+				}
+				if enforceSessionInterval(req, tx, minAllowed, log) {
+					return
+				}
+			}
+			// In-dialog INVITEs get the same authentication treatment as
+			// initial ones: without this, an unauthenticated caller that
+			// learns an active Call-ID and tags could modify the dialog.
+			if !h.authorizeInviteSource(ctx, req, tx, log) {
+				return
+			}
 			log.Debug("B2BUA: re-INVITE detected, routing to dialog handler")
 			h.handleReInvite(ctx, req, tx, call)
 			return
@@ -246,14 +347,8 @@ func (h *Handler) HandleInvite(ctx context.Context, req *proto.SIPMessage, tx si
 	// If Session-Expires is below our Min-SE, reject with 422.
 	// When session timers are disabled we do not engage in timer negotiation
 	// at all, so an inbound Session-Expires is ignored rather than rejected.
-	if se := req.Headers.GetFirst("Session-Expires"); se != "" && h.sessionExpires > 0 {
-		inboundSE, _ := ParseSessionExpires(se)
-		if inboundSE > 0 && inboundSE < h.minSE {
-			log.Info("B2BUA: inbound INVITE Session-Expires below Min-SE, sending 422",
-				"sessionExpires", inboundSE, "minSE", h.minSE)
-			resp := proto.NewResponse(req, proto.SIPStatusSessionIntervalTooSmall, "Session Interval Too Small")
-			resp.Headers.Add("Min-SE", FormatMinSE(DurationToSeconds(h.minSE)))
-			tx.Respond(resp)
+	if h.sessionExpires > 0 {
+		if enforceSessionInterval(req, tx, h.minSE, log) {
 			return
 		}
 	}
@@ -262,24 +357,8 @@ func (h *Handler) HandleInvite(ctx context.Context, req *proto.SIPMessage, tx si
 	tx.Respond(trying)
 
 	// Check if source IP belongs to a static trunk (skip proxy auth)
-	isTrustedTrunk := false
-	if h.trunkMgr != nil {
-		if srcAddr := tx.Target().Addr; srcAddr != nil {
-			srcIP := srcAddr.String()
-			if host, _, err := net.SplitHostPort(srcIP); err == nil {
-				srcIP = host
-			}
-			if h.trunkMgr.TrustedIPMatches(srcIP) {
-				log.Debug("INVITE from trusted trunk, skipping proxy auth", "srcIP", srcIP)
-				isTrustedTrunk = true
-			}
-		}
-	}
-
-	if !isTrustedTrunk {
-		if h.requireProxyAuth(ctx, req, tx, "INVITE") == nil && h.proxyPasswd != nil {
-			return
-		}
+	if !h.authorizeInviteSource(ctx, req, tx, log) {
+		return
 	}
 
 	if h.dp != nil {
@@ -890,13 +969,6 @@ func (h *Handler) reInviteResponseLoop(ctx context.Context, origReq *proto.SIPMe
 				}
 				h.sendInDialogACK(call, fwdLeg, resp.CSeq.Seq)
 
-				// The refresh is confirmed: reset both legs' session timers
-				// (RFC 4028 §7.2 — the 2xx we are about to send completes the
-				// originating leg, and the 2xx we just received completes the
-				// forwarded leg).
-				h.resetSessionTimer(call, "alice")
-				h.resetSessionTimer(call, "bob")
-
 				okResp := proto.NewResponse(origReq, 200, "OK")
 				if isFromAlice {
 					okResp.Headers.Set("To", []string{fmt.Sprintf("<%s>;tag=%s",
@@ -915,6 +987,17 @@ func (h *Handler) reInviteResponseLoop(ctx context.Context, origReq *proto.SIPMe
 				// Relay RFC 4028 negotiation headers so the originating leg
 				// sees the timer values resolved by the peer (RFC 4028 §5).
 				copyTimerNegotiationHeaders(resp, okResp)
+				// Align both legs' timer state with the resolved negotiation
+				// (rewriting the dialog-relative refresher role for the
+				// originating dialog) before the timers are restarted below.
+				h.applyRelayedTimerNegotiation(call, isFromAlice, origReq, resp, okResp)
+				// The refresh is confirmed: reset both legs' session timers
+				// (RFC 4028 §7.2 — the 2xx we are about to send completes the
+				// originating leg, and the 2xx we just received completes the
+				// forwarded leg). The reset picks up the freshly applied
+				// interval and refresher roles.
+				h.resetSessionTimer(call, "alice")
+				h.resetSessionTimer(call, "bob")
 				origTx.Respond(okResp)
 				return
 			}

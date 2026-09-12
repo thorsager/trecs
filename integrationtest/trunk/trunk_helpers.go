@@ -168,8 +168,19 @@ func (p *trunkPeer) handleIncomingInvite(msg string, writeFunc func([]byte) erro
 	sdp := fmt.Sprintf("v=0\r\no=- %d 1 IN IP4 127.0.0.1\r\ns=trunk-peer\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio %d RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n",
 		time.Now().UnixNano(), rtpPort)
 
-	resp := fmt.Sprintf("SIP/2.0 200 OK\r\nVia: %s\r\nCall-ID: %s\r\nFrom: %s\r\nTo: <sip:trunk@127.0.0.1>;tag=%s\r\nCSeq: 1 INVITE\r\nContent-Type: application/sdp\r\nContact: <sip:trunk@127.0.0.1:%d>\r\nContent-Length: %d\r\n\r\n%s",
-		viaHeader, callID, fromHeader, p.toTag, rtpPort, len(sdp), sdp)
+	// A RFC 4028-capable trunk confirms a session timer offer by copying the
+	// Session-Expires interval into its 2xx response (RFC 4028 §7.1). The
+	// refresher parameter is omitted, defaulting to the UAC (the server) per
+	// §8 Table 2 — so the server sends the refresh re-INVITEs this peer
+	// deliberately ignores to simulate a ghost session.
+	timerHeaders := ""
+	if se := extractHeader(msg, "Session-Expires"); se != "" {
+		interval := strings.TrimSpace(strings.SplitN(se, ";", 2)[0])
+		timerHeaders = fmt.Sprintf("Supported: timer\r\nSession-Expires: %s\r\n", interval)
+	}
+
+	resp := fmt.Sprintf("SIP/2.0 200 OK\r\nVia: %s\r\nCall-ID: %s\r\nFrom: %s\r\nTo: <sip:trunk@127.0.0.1>;tag=%s\r\nCSeq: 1 INVITE\r\n%sContent-Type: application/sdp\r\nContact: <sip:trunk@127.0.0.1:%d>\r\nContent-Length: %d\r\n\r\n%s",
+		viaHeader, callID, fromHeader, p.toTag, timerHeaders, rtpPort, len(sdp), sdp)
 
 	p.t.Logf("Trunk peer sending 200 OK")
 	if err := writeFunc([]byte(resp)); err != nil {

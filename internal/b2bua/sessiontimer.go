@@ -48,6 +48,88 @@ func legTimer(call *Call, leg string) *SessionTimer {
 	return call.AliceSessionTimer
 }
 
+// setLegTimer installs the session timer for the given leg ("alice" or "bob").
+func setLegTimer(call *Call, leg string, st *SessionTimer) {
+	if leg == "bob" {
+		call.BobSessionTimer = st
+	} else {
+		call.AliceSessionTimer = st
+	}
+}
+
+// applyRelayedTimerNegotiation aligns both legs' session timer state with the
+// negotiation resolved by a relayed re-INVITE's 200 OK (RFC 4028 §7.2, §7.3)
+// and rewrites the relayed Session-Expires for the originating dialog.
+//
+// The refresher parameter is dialog-relative: on the forwarded leg the server
+// is the UAC toward Bob and the UAS toward Alice, while on the originating
+// leg the roles are mirrored. The forwarded leg takes the responder's values
+// verbatim; the originating leg — which requested the refresh — keeps the
+// refresher role it asked for (default UAC, RFC 4028 §8 Table 2) with the
+// interval resolved by the peer. Without this, the advertised negotiation and
+// the refresh goroutines' expiry/refresh behavior diverge. A leg without an
+// existing timer gets one: relaying a Session-Expires in a 2xx engages the
+// timer on that dialog (RFC 4028 §7.1).
+func (h *Handler) applyRelayedTimerNegotiation(call *Call, isFromAlice bool,
+	origReq, resp, okResp *proto.SIPMessage,
+) {
+	se, fwdRefresher := ParseSessionExpires(resp.Headers.GetFirst("Session-Expires"))
+	if se <= 0 {
+		return
+	}
+	peerMinSE := ParseMinSE(resp.Headers.GetFirst("Min-SE"))
+
+	fwdLeg := "alice"
+	if isFromAlice {
+		fwdLeg = "bob"
+	}
+	origLeg := "bob"
+	if isFromAlice {
+		origLeg = "alice"
+	}
+
+	// Forwarded leg: the responder's verdict applies as-is. A 2xx carrying
+	// Session-Expires engages the timer on this dialog even if none was
+	// running before (RFC 4028 §7.3).
+	if st := legTimer(call, fwdLeg); st != nil {
+		st.Interval = se
+		if peerMinSE > st.MinSE {
+			st.MinSE = peerMinSE
+		}
+		st.Refresher = fwdRefresher
+	} else {
+		setLegTimer(call, fwdLeg, &SessionTimer{
+			Interval:  se,
+			MinSE:     peerMinSE,
+			Refresher: fwdRefresher,
+		})
+	}
+
+	// Originating leg: honor the refresher the originator requested in its
+	// re-INVITE (default UAC) with the interval resolved by the peer.
+	_, origRefresher := ParseSessionExpires(origReq.Headers.GetFirst("Session-Expires"))
+	if st := legTimer(call, origLeg); st != nil {
+		st.Interval = se
+		if peerMinSE > st.MinSE {
+			st.MinSE = peerMinSE
+		}
+		st.Refresher = origRefresher
+	} else {
+		setLegTimer(call, origLeg, &SessionTimer{
+			Interval:  se,
+			MinSE:     peerMinSE,
+			Refresher: origRefresher,
+		})
+	}
+
+	// The relayed Session-Expires must carry the refresher role relative to
+	// the originating dialog, matching the state applied above.
+	okResp.Headers.Set("Session-Expires", []string{FormatSessionExpires(DurationToSeconds(se), origRefresher)})
+	if peerMinSE > 0 {
+		okResp.Headers.Set("Min-SE", []string{FormatMinSE(DurationToSeconds(peerMinSE))})
+	}
+}
+
 // ParseSessionExpires extracts the interval and refresher from a Session-Expires header value.
 // Format: "delta-seconds;refresher=uac|uas"
 // Returns an interval of 0 when the header is absent or unparseable, letting

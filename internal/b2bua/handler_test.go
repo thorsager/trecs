@@ -238,6 +238,244 @@ func viaBranch(via string) string {
 	return ""
 }
 
+// dispatchReInvite builds an in-dialog INVITE with explicit tags for
+// dispatch-level (HandleInvite) tests.
+func dispatchReInvite(t *testing.T, callID, fromTag, toTag, se string) *proto.SIPMessage {
+	t.Helper()
+	raw := "INVITE sip:bob@localhost SIP/2.0\r\n" +
+		"Via: SIP/2.0/UDP 127.0.0.1:9999;branch=z9hG4bKdispatch\r\n" +
+		"From: <sip:alice@localhost>;tag=" + fromTag + "\r\n" +
+		"To: <sip:bob@localhost>;tag=" + toTag + "\r\n" +
+		"Call-ID: " + callID + "\r\n" +
+		"CSeq: 2 INVITE\r\n" +
+		"Max-Forwards: 70\r\n"
+	if se != "" {
+		raw += "Session-Expires: " + se + "\r\n"
+	}
+	raw += "Content-Length: 0\r\n\r\n"
+	msg, err := proto.UnmarshalSIPDatagram([]byte(raw))
+	if err != nil {
+		t.Fatalf("UnmarshalSIPDatagram: %v", err)
+	}
+	return msg
+}
+
+// newDispatchCall returns a call with consistent per-leg dialog tags and
+// stores it in the handler's store, so HandleInvite routes in-dialog
+// INVITEs through the re-INVITE path.
+func newDispatchCall(t *testing.T, h *Handler, bobTransport sip.Transport) *Call {
+	t.Helper()
+	call := newReInviteCall(t, bobTransport)
+	call.AliceFromTag = "alice-tag"
+	call.AliceServerTag = "server-alice"
+	call.BobRemoteTag = "bob-tag"
+	call.BobCalleeTag = "server-bob"
+	h.store.Store(call)
+	return call
+}
+
+// TestHandleInvite_ReInviteTagMismatch481 verifies in-dialog INVITEs whose
+// From/To tags do not match the leg's dialog are rejected with 481 instead
+// of being forwarded (RFC 3261 §12.2 dialog identification).
+func TestHandleInvite_ReInviteTagMismatch481(t *testing.T) {
+	bobTP := &captureTransport{}
+	h := newTestHandler(t)
+	h.uacMgr = sip.NewUACManager()
+	call := newDispatchCall(t, h, bobTP)
+
+	tests := []struct {
+		name    string
+		callID  string
+		fromTag string
+		toTag   string
+	}{
+		{name: "wrong To tag on alice leg", callID: call.AliceCallID, fromTag: "alice-tag", toTag: "forged"},
+		{name: "wrong From tag on alice leg", callID: call.AliceCallID, fromTag: "forged", toTag: "server-alice"},
+		{name: "cross-leg tags on alice Call-ID", callID: call.AliceCallID, fromTag: "bob-tag", toTag: "server-bob"},
+		{name: "cross-leg tags on bob Call-ID", callID: call.BobCallID, fromTag: "alice-tag", toTag: "server-alice"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tx := &mockB2BUATx{}
+			h.HandleInvite(t.Context(), dispatchReInvite(t, tc.callID, tc.fromTag, tc.toTag, ""), tx)
+			resp := waitForRelayedResponse(t, tx)
+			if resp.StatusCode() != 481 {
+				t.Fatalf("status = %d, want 481", resp.StatusCode())
+			}
+			if got := bobTP.sentCount(); got != 0 {
+				t.Errorf("mismatched re-INVITE was forwarded (%d sends), want 0", got)
+			}
+		})
+	}
+}
+
+// TestHandleInvite_ReInviteMatchingTagsForwarded verifies a legitimately
+// tagged in-dialog INVITE still routes to the other leg after the tag
+// validation was introduced.
+func TestHandleInvite_ReInviteMatchingTagsForwarded(t *testing.T) {
+	bobTP := &captureTransport{}
+	h := newTestHandler(t)
+	h.uacMgr = sip.NewUACManager()
+	call := newDispatchCall(t, h, bobTP)
+
+	tx := &mockB2BUATx{}
+	h.HandleInvite(t.Context(), dispatchReInvite(t, call.AliceCallID, "alice-tag", "server-alice", ""), tx)
+
+	if bobTP.lastSent() == nil {
+		t.Fatal("matching re-INVITE was not forwarded to Bob")
+	}
+}
+
+// TestHandleInvite_ReInviteBelowMinSE422 verifies in-dialog refreshes with a
+// Session-Expires below the negotiated minimum are rejected with 422 and the
+// mandatory Min-SE header (RFC 4028 §7.2), using the leg's negotiated Min-SE
+// when one exists and the global floor otherwise.
+func TestHandleInvite_ReInviteBelowMinSE422(t *testing.T) {
+	tests := []struct {
+		name      string
+		legTimer  *SessionTimer
+		wantMinSE string
+	}{
+		{name: "leg negotiated Min-SE applies", legTimer: &SessionTimer{Interval: 600 * time.Second, MinSE: 300 * time.Second, Refresher: "uac"}, wantMinSE: "300"},
+		{name: "global floor without leg timer", legTimer: nil, wantMinSE: "90"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			bobTP := &captureTransport{}
+			h := newTestHandler(t)
+			h.uacMgr = sip.NewUACManager()
+			call := newDispatchCall(t, h, bobTP)
+			call.AliceSessionTimer = tc.legTimer
+
+			tx := &mockB2BUATx{}
+			h.HandleInvite(t.Context(), dispatchReInvite(t, call.AliceCallID, "alice-tag", "server-alice", "60"), tx)
+			resp := waitForRelayedResponse(t, tx)
+			if resp.StatusCode() != 422 {
+				t.Fatalf("status = %d, want 422", resp.StatusCode())
+			}
+			if got := resp.Headers.GetFirst("Min-SE"); got != tc.wantMinSE {
+				t.Errorf("Min-SE = %q, want %q", got, tc.wantMinSE)
+			}
+			if got := bobTP.sentCount(); got != 0 {
+				t.Errorf("below-minimum re-INVITE was forwarded (%d sends), want 0", got)
+			}
+		})
+	}
+}
+
+// staticPasswordStore is a minimal PasswordStore for auth dispatch tests.
+type staticPasswordStore struct{}
+
+func (staticPasswordStore) Realm() string             { return "127.0.0.1" }
+func (staticPasswordStore) Algorithm() string         { return "SHA-256" }
+func (staticPasswordStore) HA1(string) (string, bool) { return "aa", true }
+func (staticPasswordStore) AORs(string) ([]string, bool) {
+	return []string{"sip:alice@localhost"}, true
+}
+
+// TestHandleInvite_ReInviteRequiresAuth verifies an unauthenticated in-dialog
+// INVITE is challenged (407) when proxy auth is configured, instead of being
+// forwarded — previously the re-INVITE path bypassed authentication entirely.
+func TestHandleInvite_ReInviteRequiresAuth(t *testing.T) {
+	bobTP := &captureTransport{}
+	h := newTestHandler(t)
+	h.uacMgr = sip.NewUACManager()
+	h.SetProxyPasswordStore(staticPasswordStore{}, t.Context())
+	call := newDispatchCall(t, h, bobTP)
+
+	tx := &mockB2BUATx{}
+	h.HandleInvite(t.Context(), dispatchReInvite(t, call.AliceCallID, "alice-tag", "server-alice", ""), tx)
+	resp := waitForRelayedResponse(t, tx)
+	if resp.StatusCode() != 407 {
+		t.Fatalf("status = %d, want 407 (Proxy Authentication Required)", resp.StatusCode())
+	}
+	if got := bobTP.sentCount(); got != 0 {
+		t.Errorf("unauthenticated re-INVITE was forwarded (%d sends), want 0", got)
+	}
+}
+
+// TestApplyRelayedTimerNegotiation verifies a relayed re-INVITE 200 OK
+// updates both legs' timer state and rewrites the dialog-relative refresher
+// parameter for the originating dialog (RFC 4028 §7.2, §8).
+func TestApplyRelayedTimerNegotiation(t *testing.T) {
+	h := newTestHandler(t)
+
+	mkResp := func(headers string) *proto.SIPMessage {
+		return trunk200OK(t, headers)
+	}
+
+	t.Run("updates both legs and rewrites refresher", func(t *testing.T) {
+		call := &Call{AliceCallID: "alice-call", BobCallID: "bob-call"}
+		call.AliceSessionTimer = &SessionTimer{Interval: 600 * time.Second, MinSE: 90 * time.Second, Refresher: "uac"}
+		call.BobSessionTimer = &SessionTimer{Interval: 600 * time.Second, MinSE: 90 * time.Second, Refresher: "uac"}
+
+		origReq := reInviteRequest(t, call.AliceCallID, "timer", "600;refresher=uac", "90")
+		resp := mkResp("Session-Expires: 900;refresher=uas\r\nMin-SE: 300\r\n")
+		okResp := proto.NewResponse(origReq, 200, "OK")
+		copyTimerNegotiationHeaders(resp, okResp)
+
+		h.applyRelayedTimerNegotiation(call, true, origReq, resp, okResp)
+
+		// Forwarded (Bob) leg takes the responder's values verbatim.
+		if got := call.BobSessionTimer; got.Interval != 900*time.Second || got.Refresher != "uas" || got.MinSE != 300*time.Second {
+			t.Errorf("bob timer = %+v, want {900s uas minSE 300s}", got)
+		}
+		// Originating (Alice) leg keeps the refresher role it requested.
+		if got := call.AliceSessionTimer; got.Interval != 900*time.Second || got.Refresher != "uac" || got.MinSE != 300*time.Second {
+			t.Errorf("alice timer = %+v, want {900s uac minSE 300s}", got)
+		}
+		// The relayed header must match the originating dialog's role.
+		if got := okResp.Headers.GetFirst("Session-Expires"); got != "900;refresher=uac" {
+			t.Errorf("relayed Session-Expires = %q, want 900;refresher=uac", got)
+		}
+		if got := okResp.Headers.GetFirst("Min-SE"); got != "300" {
+			t.Errorf("relayed Min-SE = %q, want 300", got)
+		}
+	})
+
+	t.Run("creates timer for leg without one", func(t *testing.T) {
+		call := &Call{AliceCallID: "alice-call", BobCallID: "bob-call"}
+		// Refresh originated on the Bob leg, forwarded to Alice.
+		origReq := reInviteRequest(t, call.BobCallID, "timer", "600;refresher=uac", "90")
+		resp := mkResp("Session-Expires: 1200;refresher=uac\r\n")
+		okResp := proto.NewResponse(origReq, 200, "OK")
+		copyTimerNegotiationHeaders(resp, okResp)
+
+		h.applyRelayedTimerNegotiation(call, false, origReq, resp, okResp)
+
+		// Forwarded (Alice) leg: responder's values verbatim.
+		if got := call.AliceSessionTimer; got == nil || got.Interval != 1200*time.Second || got.Refresher != "uac" {
+			t.Errorf("alice timer = %+v, want {1200s uac}", got)
+		}
+		// Originating (Bob) leg: created with the originator's requested role.
+		if got := call.BobSessionTimer; got == nil || got.Interval != 1200*time.Second || got.Refresher != "uac" {
+			t.Errorf("bob timer = %+v, want {1200s uac}", got)
+		}
+		if got := okResp.Headers.GetFirst("Session-Expires"); got != "1200;refresher=uac" {
+			t.Errorf("relayed Session-Expires = %q, want 1200;refresher=uac", got)
+		}
+	})
+
+	t.Run("no Session-Expires in response leaves state untouched", func(t *testing.T) {
+		call := &Call{AliceCallID: "alice-call", BobCallID: "bob-call"}
+		call.AliceSessionTimer = &SessionTimer{Interval: 600 * time.Second, MinSE: 90 * time.Second, Refresher: "uas"}
+		call.BobSessionTimer = &SessionTimer{Interval: 600 * time.Second, MinSE: 90 * time.Second, Refresher: "uac"}
+
+		origReq := reInviteRequest(t, call.AliceCallID, "timer", "600;refresher=uas", "90")
+		resp := mkResp("")
+		okResp := proto.NewResponse(origReq, 200, "OK")
+
+		h.applyRelayedTimerNegotiation(call, true, origReq, resp, okResp)
+
+		if got := call.AliceSessionTimer; got.Interval != 600*time.Second || got.Refresher != "uas" {
+			t.Errorf("alice timer changed without negotiated Session-Expires: %+v", got)
+		}
+		if got := okResp.Headers.GetFirst("Session-Expires"); got != "" {
+			t.Errorf("relayed Session-Expires invented without peer negotiation: %q", got)
+		}
+	})
+}
+
 func TestHandleReInvite_ForwardsSessionHeaders(t *testing.T) {
 	bobTP := &captureTransport{}
 	h := newTestHandler(t)
